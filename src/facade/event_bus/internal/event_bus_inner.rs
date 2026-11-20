@@ -106,7 +106,6 @@ impl EventBusInner {
     /// # Returns
     /// Exact captured live gauges; clock failures preserve gauges with unknown
     /// age.
-    ///
     #[must_use = "delivery gauges are the current bus snapshot"]
     pub(in crate::facade) fn delivery_gauges(&self, scope: Option<Id>) -> crate::facade::DeliveryMetricsSnapshot {
         self.scheduler.snapshot(scope, self.clock.as_ref())

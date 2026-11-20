@@ -129,10 +129,7 @@ fn reentrant_delivery_metrics_during_receive_failure_is_nonterminal() {
         wake.calls.load(Ordering::SeqCst) > 0,
         "receive failure wakes the waiter, whose callback can safely read metrics"
     );
-    assert!(matches!(
-        poll_once(runner.as_mut()),
-        Poll::Ready(Err(_))
-    ));
+    assert!(matches!(poll_once(runner.as_mut()), Poll::Ready(Err(_))));
     let terminal_failure = subscription.terminal_failure();
     let Some(SubscriptionStopReason::Provider { error }) = terminal_failure.as_deref() else {
         panic!("the injected receive failure remains the terminal cause");
