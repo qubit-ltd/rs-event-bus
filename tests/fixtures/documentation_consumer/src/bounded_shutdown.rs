@@ -8,81 +8,86 @@
 //! Two bounded waits hand unresolved cleanup back to the application
 //! supervisor.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::EventBus;
+use qubit_event_bus::ShutdownReport;
 use qubit_event_bus::error::ShutdownError;
 use qubit_event_bus::spi::ShutdownMode;
-use qubit_event_bus::spi::ShutdownOutcome;
 
 /// Waits twice for graceful completion, without forcing running handlers to
 /// stop.
 ///
-/// Returns `false` after both waits expire or the provider reports incomplete
-/// shutdown. The application should record metrics and hand control to its
-/// external supervisor. Errors other than a caller deadline are propagated.
+/// Retries once only when the caller's first deadline expires. Provider
+/// reports, including `ShutdownOutcome::TimedOut`, are returned unchanged.
 ///
 /// # Returns
 ///
-/// `true` if either graceful wait completes shutdown; otherwise `false` when
-/// both waits expire or shutdown remains incomplete.
+/// The complete report from the first non-timeout result.
 ///
 /// # Errors
 ///
-/// Returns any shutdown error other than a timeout.
-pub fn try_shutdown(bus: &EventBus) -> Result<bool, ShutdownError> {
-    match bus.shutdown(ShutdownMode::Graceful {
-        timeout: Duration::from_secs(2),
-    }) {
-        Ok(report) if report.outcome == ShutdownOutcome::Complete => return Ok(true),
-        Ok(_) | Err(ShutdownError::TimedOut { .. }) => {}
-        Err(error) => return Err(error),
-    }
-    match bus.shutdown(ShutdownMode::Graceful {
-        timeout: Duration::from_secs(1),
-    }) {
-        Ok(report) => Ok(report.outcome == ShutdownOutcome::Complete),
-        Err(ShutdownError::TimedOut { .. }) => Ok(false),
+/// Returns the second timeout, or any shutdown error other than a timeout.
+pub fn try_shutdown(bus: &EventBus) -> Result<ShutdownReport, ShutdownError> {
+    retry_shutdown_with(Duration::from_secs(2), Duration::from_secs(1), |timeout| {
+        bus.shutdown(ShutdownMode::Graceful { timeout })
+    })
+}
+
+#[doc(hidden)]
+pub fn retry_shutdown_with<F>(
+    first_timeout: Duration,
+    retry_timeout: Duration,
+    mut shutdown: F,
+) -> Result<ShutdownReport, ShutdownError>
+where
+    F: FnMut(Duration) -> Result<ShutdownReport, ShutdownError>,
+{
+    match shutdown(first_timeout) {
+        Ok(report) => Ok(report),
+        Err(ShutdownError::TimedOut { .. }) => shutdown(retry_timeout),
         Err(error) => Err(error),
     }
 }
 
 /// Applies the same bounded policy while the caller drives async shutdown.
 ///
-/// Returns `false` if cleanup remains incomplete; other shutdown errors
-/// propagate. Dropping this future stops the current cleanup driver. To
+/// Retries once only when the caller's first deadline expires. Provider
+/// reports, including `ShutdownOutcome::TimedOut`, are returned unchanged.
+/// Dropping this future stops the current cleanup driver. To
 /// continue cleanup, the application must call `AsyncEventBus::shutdown`
 /// again and keep polling that future; async shutdown has no background
 /// coordinator.
 ///
 /// # Returns
 ///
-/// `true` if either graceful wait completes shutdown; otherwise `false` when
-/// both waits expire or shutdown remains incomplete.
+/// The complete report from the first non-timeout result.
 ///
 /// # Errors
 ///
-/// Returns any shutdown error other than a timeout.
-pub async fn try_shutdown_async(bus: &AsyncEventBus) -> Result<bool, ShutdownError> {
-    match bus
-        .shutdown(ShutdownMode::Graceful {
-            timeout: Duration::from_secs(2),
-        })
-        .await
-    {
-        Ok(report) if report.outcome == ShutdownOutcome::Complete => return Ok(true),
-        Ok(_) | Err(ShutdownError::TimedOut { .. }) => {}
-        Err(error) => return Err(error),
-    }
-    match bus
-        .shutdown(ShutdownMode::Graceful {
-            timeout: Duration::from_secs(1),
-        })
-        .await
-    {
-        Ok(report) => Ok(report.outcome == ShutdownOutcome::Complete),
-        Err(ShutdownError::TimedOut { .. }) => Ok(false),
+/// Returns the second timeout, or any shutdown error other than a timeout.
+pub async fn try_shutdown_async(bus: &AsyncEventBus) -> Result<ShutdownReport, ShutdownError> {
+    retry_shutdown_async_with(Duration::from_secs(2), Duration::from_secs(1), |timeout| {
+        Box::pin(bus.shutdown(ShutdownMode::Graceful { timeout }))
+    })
+    .await
+}
+
+#[doc(hidden)]
+pub async fn retry_shutdown_async_with<'a, F>(
+    first_timeout: Duration,
+    retry_timeout: Duration,
+    mut shutdown: F,
+) -> Result<ShutdownReport, ShutdownError>
+where
+    F: FnMut(Duration) -> Pin<Box<dyn Future<Output = Result<ShutdownReport, ShutdownError>> + 'a>>,
+{
+    match shutdown(first_timeout).await {
+        Ok(report) => Ok(report),
+        Err(ShutdownError::TimedOut { .. }) => shutdown(retry_timeout).await,
         Err(error) => Err(error),
     }
 }

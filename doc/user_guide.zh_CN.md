@@ -1877,94 +1877,99 @@ worker 完成状态包含资源清理，也包含 observer 捕获对象的析构
 
 ### 同步总线的停机流程
 
-先停止业务入口，在期限内关闭通知来源，并保留订阅句柄；然后从最外层应用关闭流程调用 `try_shutdown`，异步路径调用同文件的 `try_shutdown_async`。两个等待分别为 2 秒和 1 秒，只使用 `Graceful`。返回 `false` 表示清理仍未完成，应交由 supervisor 接管并记录结果。helper 不保证 provider 队列中的消息都已排空。
+先停止业务入口，在期限内关闭通知来源，并保留订阅句柄；然后从最外层应用关闭流程调用 `try_shutdown`，异步路径调用同文件的 `try_shutdown_async`。只有第一次调用方 deadline 到期时，helper 才会使用 `Graceful` 再重试一次，等待时间分别为 2 秒和 1 秒。首次返回报告（包括 provider 的 `TimedOut` outcome）会完整保留；第二次调用方超时则作为 `ShutdownError::TimedOut` 返回。helper 不保证 provider 队列中的消息都已排空。
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/bounded_shutdown.rs -->
 ```rust
 //! Two bounded waits hand unresolved cleanup back to the application
 //! supervisor.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::EventBus;
+use qubit_event_bus::ShutdownReport;
 use qubit_event_bus::error::ShutdownError;
 use qubit_event_bus::spi::ShutdownMode;
-use qubit_event_bus::spi::ShutdownOutcome;
 
 /// Waits twice for graceful completion, without forcing running handlers to
 /// stop.
 ///
-/// Returns `false` after both waits expire or the provider reports incomplete
-/// shutdown. The application should record metrics and hand control to its
-/// external supervisor. Errors other than a caller deadline are propagated.
+/// Retries once only when the caller's first deadline expires. Provider
+/// reports, including `ShutdownOutcome::TimedOut`, are returned unchanged.
 ///
 /// # Returns
 ///
-/// `true` if either graceful wait completes shutdown; otherwise `false` when
-/// both waits expire or shutdown remains incomplete.
+/// The complete report from the first non-timeout result.
 ///
 /// # Errors
 ///
-/// Returns any shutdown error other than a timeout.
-pub fn try_shutdown(bus: &EventBus) -> Result<bool, ShutdownError> {
-    match bus.shutdown(ShutdownMode::Graceful {
-        timeout: Duration::from_secs(2),
-    }) {
-        Ok(report) if report.outcome == ShutdownOutcome::Complete => return Ok(true),
-        Ok(_) | Err(ShutdownError::TimedOut { .. }) => {}
-        Err(error) => return Err(error),
-    }
-    match bus.shutdown(ShutdownMode::Graceful {
-        timeout: Duration::from_secs(1),
-    }) {
-        Ok(report) => Ok(report.outcome == ShutdownOutcome::Complete),
-        Err(ShutdownError::TimedOut { .. }) => Ok(false),
+/// Returns the second timeout, or any shutdown error other than a timeout.
+pub fn try_shutdown(bus: &EventBus) -> Result<ShutdownReport, ShutdownError> {
+    retry_shutdown_with(Duration::from_secs(2), Duration::from_secs(1), |timeout| {
+        bus.shutdown(ShutdownMode::Graceful { timeout })
+    })
+}
+
+#[doc(hidden)]
+pub fn retry_shutdown_with<F>(
+    first_timeout: Duration,
+    retry_timeout: Duration,
+    mut shutdown: F,
+) -> Result<ShutdownReport, ShutdownError>
+where
+    F: FnMut(Duration) -> Result<ShutdownReport, ShutdownError>,
+{
+    match shutdown(first_timeout) {
+        Ok(report) => Ok(report),
+        Err(ShutdownError::TimedOut { .. }) => shutdown(retry_timeout),
         Err(error) => Err(error),
     }
 }
 
 /// Applies the same bounded policy while the caller drives async shutdown.
 ///
-/// Returns `false` if cleanup remains incomplete; other shutdown errors
-/// propagate. Dropping this future stops the current cleanup driver. To
+/// Retries once only when the caller's first deadline expires. Provider
+/// reports, including `ShutdownOutcome::TimedOut`, are returned unchanged.
+/// Dropping this future stops the current cleanup driver. To
 /// continue cleanup, the application must call `AsyncEventBus::shutdown`
 /// again and keep polling that future; async shutdown has no background
 /// coordinator.
 ///
 /// # Returns
 ///
-/// `true` if either graceful wait completes shutdown; otherwise `false` when
-/// both waits expire or shutdown remains incomplete.
+/// The complete report from the first non-timeout result.
 ///
 /// # Errors
 ///
-/// Returns any shutdown error other than a timeout.
-pub async fn try_shutdown_async(bus: &AsyncEventBus) -> Result<bool, ShutdownError> {
-    match bus
-        .shutdown(ShutdownMode::Graceful {
-            timeout: Duration::from_secs(2),
-        })
-        .await
-    {
-        Ok(report) if report.outcome == ShutdownOutcome::Complete => return Ok(true),
-        Ok(_) | Err(ShutdownError::TimedOut { .. }) => {}
-        Err(error) => return Err(error),
-    }
-    match bus
-        .shutdown(ShutdownMode::Graceful {
-            timeout: Duration::from_secs(1),
-        })
-        .await
-    {
-        Ok(report) => Ok(report.outcome == ShutdownOutcome::Complete),
-        Err(ShutdownError::TimedOut { .. }) => Ok(false),
+/// Returns the second timeout, or any shutdown error other than a timeout.
+pub async fn try_shutdown_async(bus: &AsyncEventBus) -> Result<ShutdownReport, ShutdownError> {
+    retry_shutdown_async_with(Duration::from_secs(2), Duration::from_secs(1), |timeout| {
+        Box::pin(bus.shutdown(ShutdownMode::Graceful { timeout }))
+    })
+    .await
+}
+
+#[doc(hidden)]
+pub async fn retry_shutdown_async_with<'a, F>(
+    first_timeout: Duration,
+    retry_timeout: Duration,
+    mut shutdown: F,
+) -> Result<ShutdownReport, ShutdownError>
+where
+    F: FnMut(Duration) -> Pin<Box<dyn Future<Output = Result<ShutdownReport, ShutdownError>> + 'a>>,
+{
+    match shutdown(first_timeout).await {
+        Ok(report) => Ok(report),
+        Err(ShutdownError::TimedOut { .. }) => shutdown(retry_timeout).await,
         Err(error) => Err(error),
     }
 }
 ```
 
-`true` 表示报告为 `Complete`；`false` 表示两轮之后仍未完成，应记录 `bus.delivery_metrics()`、各订阅 `terminal_failure()` 与快照，由外部监督器决定进程如何处置。`TimedOut` 是调用方等待到期，其他错误继续返回给应用。`ShutdownReport` 中 `known_abandoned_deliveries` 统计已知放弃量，`provider_may_have_abandoned_deliveries` 提醒 provider 还有无法精确计数的损失可能；local 是临时实现。
+检查返回的完整报告，再决定清理是否完成。`ShutdownOutcome::TimedOut` 是 provider 返回的终态报告；`ShutdownError::TimedOut` 表示调用方第二次观察期限到期。应记录 `bus.delivery_metrics()`、各订阅 `terminal_failure()` 与快照，由外部监督器决定进程如何处置。`ShutdownReport` 中 `known_abandoned_deliveries` 统计已知放弃量，`provider_may_have_abandoned_deliveries` 提醒 provider 还有无法精确计数的损失可能；local 是临时实现。
 
 有界等待不等于强制退出：同步后台关闭线程可能继续等待不合作的 handler 或 SPI。`Immediate` 也不能中断正在运行的用户代码，不应作为超时后的有界救援。不要在同一总线 handler 内等待总线自身完成，相关调用会返回 `WouldDeadlock`。
 
@@ -2040,8 +2045,8 @@ let shutdown_result = try_shutdown_async(&bus).await;
 let mut cleanup_errors = Vec::new();
 if let Some(Err(error)) = run_result { cleanup_errors.push(error.to_string()); }
 match shutdown_result {
-    Ok(true) => {}
-    Ok(false) => cleanup_errors.push("停机仍未完成".into()),
+    Ok(report) if report.outcome == qubit_event_bus::spi::ShutdownOutcome::Complete => {}
+    Ok(report) => cleanup_errors.push(format!("停机报告：{report:?}")),
     Err(error) => cleanup_errors.push(error.to_string()),
 }
 if !cleanup_errors.is_empty() {
@@ -2049,7 +2054,7 @@ if !cleanup_errors.is_empty() {
 }
 ```
 
-示例保留 runner 结果和 shutdown 错误，供应用记录。`try_shutdown_async` 最多执行两轮有界 Graceful 停机；它会返回 shutdown 错误，不会让应用跳过其他清理。返回 `false` 表示清理仍未完成，不要再无限期等待 runner 的 JoinHandle；应把快照和进程处置交给外部监督器。如果总线仍为 `Running`，且应用需要单独观察 provider receiver close 错误，可在应用自己的 deadline 内调用 `close().await`。停机已经开始后，`close().await` 可能返回 `LifecycleError::Closed`；此时应继续驱动 shutdown 并观察其清理结果。丢弃 shutdown future 会停止当前驱动。应用必须再次调用 `AsyncEventBus::shutdown` 并持续 poll 该 future 才能继续清理；异步停机没有后台协调器。库不会隐式 spawn 来脱离调用方运行时。
+示例保留 runner 结果和 shutdown 错误，供应用记录。`try_shutdown_async` 仅在第一次调用方 deadline 到期时再执行一轮有界 Graceful 停机；provider 返回报告（包括 `TimedOut`）时会完整保留。它会返回 shutdown 错误，不会让应用跳过其他清理。不要无限期等待 runner 的 JoinHandle；应把快照和进程处置交给外部监督器。如果总线仍为 `Running`，且应用需要单独观察 provider receiver close 错误，可在应用自己的 deadline 内调用 `close().await`。停机已经开始后，`close().await` 可能返回 `LifecycleError::Closed`；此时应继续驱动 shutdown 并观察其清理结果。丢弃 shutdown future 会停止当前驱动。应用必须再次调用 `AsyncEventBus::shutdown` 并持续 poll 该 future 才能继续清理；异步停机没有后台协调器。库不会隐式 spawn 来脱离调用方运行时。
 
 异步总线没有 `wait_for_idle`；`wait_for_received_deliveries` 只统计 facade 已接收的工作。async local 关闭会丢弃仍在 provider 中的积压，durable provider 依其恢复协议保留尚未终结的工作。
 
