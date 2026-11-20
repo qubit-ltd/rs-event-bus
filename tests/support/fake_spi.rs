@@ -70,6 +70,7 @@ use qubit_id::Id;
 
 type SyncQueue = Arc<(Mutex<QueueState>, Condvar)>;
 type AsyncQueue = Arc<Mutex<QueueState>>;
+type ClosePollHook = Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>;
 
 #[derive(Clone, Copy)]
 pub(crate) enum ConformanceTamper {
@@ -668,6 +669,7 @@ pub(crate) struct FakeAsyncEventBusSpi {
     shutdown_paused: Arc<AtomicBool>,
     shutdown_wakers: Arc<Mutex<Vec<Waker>>>,
     receiver_drop_recoveries: Arc<AtomicUsize>,
+    close_poll_hook: ClosePollHook,
 }
 
 impl FakeAsyncEventBusSpi {
@@ -706,6 +708,7 @@ impl FakeAsyncEventBusSpi {
             shutdown_paused: Arc::default(),
             shutdown_wakers: Arc::default(),
             receiver_drop_recoveries: Arc::default(),
+            close_poll_hook: Arc::default(),
         }
     }
 
@@ -854,6 +857,9 @@ impl FakeAsyncEventBusSpi {
     pub(crate) fn pause_close(&self) {
         self.close_paused.store(true, Ordering::Release);
     }
+    pub(crate) fn on_next_close_poll(&self, hook: impl Fn() + Send + Sync + 'static) {
+        *self.close_poll_hook.lock().unwrap() = Some(Arc::new(hook));
+    }
     pub(crate) fn pause_first_close_call(&self) {
         self.pause_first_close_call.store(true, Ordering::Release);
     }
@@ -978,6 +984,7 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
                 active_close_calls: self.active_close_calls.clone(),
                 max_concurrent_close_calls: self.max_concurrent_close_calls.clone(),
                 receiver_drop_recoveries: self.receiver_drop_recoveries.clone(),
+                close_poll_hook: self.close_poll_hook.clone(),
                 close_panics: self.close_panics.clone(),
                 settle_panics: self.settle_panics.clone(),
             }) as Box<dyn AsyncEventSubscriptionSpi>)
@@ -1027,6 +1034,7 @@ struct FakeAsyncEventSubscriptionSpi {
     active_close_calls: Arc<AtomicUsize>,
     max_concurrent_close_calls: Arc<AtomicUsize>,
     receiver_drop_recoveries: Arc<AtomicUsize>,
+    close_poll_hook: ClosePollHook,
     close_panics: Arc<AtomicBool>,
     settle_panics: Arc<AtomicBool>,
 }
@@ -1158,6 +1166,9 @@ impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
     fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), SpiError>> {
         self.calls.lock().unwrap().push("close");
         self.close_calls.fetch_add(1, Ordering::AcqRel);
+        if let Some(hook) = self.close_poll_hook.lock().unwrap().take() {
+            hook();
+        }
         if self.close_panics.swap(false, Ordering::AcqRel) {
             panic!("fake async close call panic");
         }

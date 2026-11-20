@@ -1342,13 +1342,16 @@ Each turn polls started tasks in rotation, advances one receiver operation, then
 
 ### 9.5 `AsyncEventBus::subscribe` and subscriptions that never start
 
-`subscribe` returns as soon as the SPI receiver exists. If the caller never calls
-`run()` and then `shutdown`s, `close_unstarted_subscriptions` `lease()`s each control
-and `close_inner()`s it. A successful receiver close is recorded and cleaned up; a
-failed close retains its session and canonical error for retry or final shutdown
-cleanup. After provider shutdown returns successfully, any remaining control is
-disposed. This fallback releases facade-owned resources but does not imply that
-receiver close succeeded. If `subscribe` completes when the bus is no longer
+`subscribe` returns as soon as the SPI receiver exists. During shutdown,
+`close_subscription_receivers` leases every registered control, including paused
+sessions, and drives each receiver close under the shutdown leader's shared
+deadline. It checks the deadline before a non-empty batch and after each receiver
+poll, records completed closes before returning timeout, and does not start another
+receiver close after expiry. A successful receiver close is deregistered; a failed
+close retains its session and canonical error for retry or final shutdown cleanup.
+After provider shutdown returns successfully, any remaining control is disposed.
+This fallback releases facade-owned resources but does not imply that receiver
+close succeeded. If `subscribe` completes when the bus is no longer
 `Running`, the receiver is closed immediately and the call returns
 `SubscribeError::Closed`.
 
@@ -1368,17 +1371,30 @@ The async facade has no provider-view `wait_for_idle`. It has `wait_for_received
 ```
 shutdown(mode: ShutdownMode).await
   ├─ CAS elects a cleanup leader; other callers wait within their own deadlines, then recheck Closed or compete for leadership
-  ├─ lifecycle Closing; OperationGate closes admission
+  ├─ lifecycle Running → Closing; state rejects new publish/subscribe admission
+  ├─ stop admission; defer quiescence wait until after receiver-close attempts
   ├─ tell every control to stop (Graceful: finish in-flight; Immediate: return as soon as possible)
-  ├─ for each control: shutdown(mode) — lease the session → drain (Graceful) → close_inner
-  ├─ wait for runners_stopped (a timeout is measured with Timer; expiry is TimedOut)
+  ├─ close_subscription_receivers(mode, shared_deadline)
+  │     → each registered control: lease session → drain (Graceful) → close_inner
+  │     → check deadline before non-empty batch and after every receiver poll
+  │     → record completed close; stop before starting another close on expiry
+  ├─ wait for tracker.runners_stopped (active runners/publishes/subscribes/closes = 0)
+  │     shared Timer deadline; expiry returns TimedOut
   ├─ catch_spi_future(spi.shutdown(mode)) → Err: retain sessions; remain retryable
   ├─ on Ok(outcome): dispose remaining controls
-  ├─ cache report and set lifecycle Closed
+  ├─ cache cumulative facade-known unresolved ephemeral deliveries and provider uncertainty
+  ├─ set lifecycle Closed
   └─ return retained close errors, or the report
 ```
 
 `Immediate` can also strengthen a `Graceful` shutdown already in progress. A control's stop level only rises.
+
+`ShutdownReport::known_abandoned_deliveries` is a cumulative count of unresolved
+ephemeral deliveries the facade can verify were abandoned. It may include work
+whose handler already ran but whose settlement was not confirmed, and abandonment
+recorded by an earlier termination or close. It does not reveal whether the
+handler produced a business side effect. Provider-owned queued work is not
+included; `provider_may_have_abandoned_deliveries` expresses that uncertainty.
 
 Provider shutdown succeeds here when the SPI call returns `Ok(outcome)`; `Ok(ShutdownOutcome::TimedOut)` does not mean all provider background work has completed. A failed or cancelled provider shutdown does not trigger final control disposal. After successful provider shutdown, disposal and reporting a receiver-close error can occur together. Repeated shutdown returns the cached report or retained canonical close errors; it does not erase close errors.
 

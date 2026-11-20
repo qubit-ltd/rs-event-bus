@@ -1256,11 +1256,13 @@ lane 的键为 `(topic, key, subscription_id)`；未运行的同键消息不占 
 
 ### 9.5 `AsyncEventBus::subscribe` 与未启动订阅
 
-`subscribe` 在 SPI 侧建好接收器后立即返回；如果调用方从未 `run()` 就 `shutdown`，
-`close_unstarted_subscriptions` 会对每个 control `lease()` 并 `close_inner()`，确保
-尝试关闭 provider receiver。receiver close 成功时记录并清理；失败时保留 session 与规范化
-error，以便重试或由最终 shutdown 清理。provider shutdown 成功返回后，仍剩余的 control
-会被处置。此 fallback 释放 facade 所有的资源，但不表示 receiver close 已成功。若 `subscribe`
+`subscribe` 在 SPI 侧建好接收器后立即返回。shutdown 时，
+`close_subscription_receivers` 对所有已注册 control（包括暂停的 session）逐一 lease，
+并在 shutdown leader 共用的 deadline 下推进 receiver close。非空批次开始前及每次 receiver
+poll 后都会检查 deadline；已完成的关闭会先记录再返回超时，过期后不再启动下一个关闭。
+receiver close 成功时注销 control；失败时保留 session 与规范化 error，以便重试或由最终
+shutdown 清理。provider shutdown 成功返回后，仍剩余的 control 会被处置。此 fallback
+释放 facade 所有的资源，但不表示 receiver close 已成功。若 `subscribe`
 完成时 bus 已不是 `Running`，接收器会被立即关闭并返回 `SubscribeError::Closed`。
 
 ### 9.6 有限结算重试
@@ -1279,17 +1281,28 @@ error，以便重试或由最终 shutdown 清理。provider shutdown 成功返�
 ```
 shutdown(mode: ShutdownMode).await
   ├─ CAS 选出清理 leader；其他调用者在各自截止时间内等待，再检查 Closed 或重新竞争 leadership
-  ├─ lifecycle Closing；OperationGate 关闭准入
+  ├─ lifecycle Running → Closing；state 拒绝新的 publish/subscribe 准入
+  ├─ 停止准入；receiver close 尝试完成后再等待已跟踪操作静止
   ├─ 通知所有 control 停止（Graceful: 完成 in-flight；Immediate: 尽快返回）
-  ├─ 对每个 control: shutdown(mode) —— lease session → drain（Graceful）→ close_inner
-  ├─ 等待 runners_stopped（有 timeout 则以 Timer 计时，超时 TimedOut）
+  ├─ close_subscription_receivers(mode, shared_deadline)
+  │     → 每个已注册 control：lease session → drain（Graceful）→ close_inner
+  │     → 非空批次前及每次 receiver poll 后检查 deadline
+  │     → 记录已完成关闭；过期后不启动下一个关闭
+  ├─ 等待 tracker.runners_stopped（active runner/publish/subscribe/close = 0）
+  │     共用 Timer deadline；超时返回 TimedOut
   ├─ catch_spi_future(spi.shutdown(mode)) → Err：保留 session，仍可重试
   ├─ 返回 Ok(outcome)：处置剩余 control
-  ├─ 缓存 report 并设 lifecycle Closed
+  ├─ 缓存 facade 已知未解决 ephemeral 投递累计数及 provider 不确定性
+  ├─ 设 lifecycle Closed
   └─ 返回保留的 close errors，或 report
 ```
 
 `Immediate` 同样可以加强正在进行的 `Graceful`（control 的停止级别只升不降）。
+
+`ShutdownReport::known_abandoned_deliveries` 是 facade 可确认已放弃的未解决
+ephemeral 投递累计数。它可能包含 handler 已运行但 settlement 尚未确认的工作，或在更早的
+终止/关闭过程中记录的放弃数量；无法据此判断 handler 是否已产生业务副作用。provider
+自有队列中的工作不计入该值，由 `provider_may_have_abandoned_deliveries` 表达相应不确定性。
 
 此处 provider shutdown 成功是指 SPI 调用返回 `Ok(outcome)`；`Ok(ShutdownOutcome::TimedOut)`
 不表示所有 provider 后台工作都已完成。provider shutdown 失败或取消不会触发最终 control

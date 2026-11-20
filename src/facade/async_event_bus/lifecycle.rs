@@ -87,9 +87,13 @@ impl AsyncEventBus {
     ///
     /// Immediate shutdown requests active runners to stop receiving but waits
     /// for an already-running handler, its settlement, and receiver close
-    /// before shutting down the provider. Receivers for subscriptions that
-    /// have not started are closed directly by shutdown. Unstarted ephemeral
-    /// deliveries may be abandoned and are counted in the returned report.
+    /// before shutting down the provider. Shutdown closes every registered
+    /// subscription receiver, including receivers whose `run` method was
+    /// never started. The report's known-abandoned count is cumulative across
+    /// facade-held unresolved ephemeral deliveries; it can include deliveries
+    /// whose handler ran but whose settlement was not confirmed, as well as
+    /// work discarded by earlier subscription termination or close operations.
+    /// It does not imply whether a handler produced a business side effect.
     /// It cannot forcibly cancel user code and may therefore wait indefinitely.
     /// Graceful shutdown applies this call's timeout budget to receiver close,
     /// runner and publish completion, and provider shutdown. If it times out,
@@ -115,11 +119,14 @@ impl AsyncEventBus {
     /// - `mode`: Shutdown policy and, for graceful mode, its deadline.
     ///
     /// # Returns
-    /// The cached provider outcome, the number of deliveries already accepted
-    /// by this facade but not started by a handler that the facade can verify
-    /// were abandoned, and whether the provider may have abandoned additional
-    /// work still queued in its own mailbox. The facade cannot count
-    /// provider-owned queued deliveries.
+    /// The cached provider outcome, the cumulative number of facade-held
+    /// unresolved ephemeral deliveries that the facade can verify were
+    /// abandoned, and whether the provider may have abandoned additional work
+    /// still queued in its own mailbox. This count can include deliveries
+    /// whose handler ran but whose settlement was not confirmed, and may
+    /// include abandonment recorded before this shutdown call. It cannot
+    /// establish whether a handler produced a business side effect. The
+    /// facade cannot count provider-owned queued deliveries.
     ///
     /// # Errors
     /// Returns [`ShutdownError::TimedOut`] when this graceful call's timeout
@@ -245,8 +252,10 @@ impl AsyncEventBus {
         timeout: Option<Duration>,
         deadline: &mut Option<TimerFuture>,
     ) -> Result<ShutdownReport, ShutdownError> {
-        let close = self.close_unstarted_subscriptions(requested_mode);
-        if await_until_deadline(close, deadline.as_mut()).await?.is_none() {
+        if !self
+            .close_subscription_receivers(requested_mode, deadline.as_mut())
+            .await?
+        {
             return Err(ShutdownError::TimedOut {
                 timeout: timeout.expect("a deadline exists for graceful shutdown"),
             });
@@ -358,12 +367,24 @@ impl AsyncEventBus {
         }
     }
 
-    /// Closes provider receivers not yet transferred to a runner and records
-    /// any close failures.
+    /// Closes all registered subscription receivers and records close results.
+    /// The same shutdown deadline is checked before the batch and after each
+    /// receiver poll so an expired budget does not start another close.
     ///
     /// # Parameters
     /// - `mode`: receiver shutdown policy.
-    async fn close_unstarted_subscriptions(&self, mode: ShutdownMode) {
+    /// - `deadline`: shared shutdown deadline, if this call is graceful.
+    ///
+    /// # Returns
+    /// `true` when every receiver close future completed before the deadline.
+    ///
+    /// # Errors
+    /// Returns a timer error if polling the shared deadline fails.
+    async fn close_subscription_receivers(
+        &self,
+        mode: ShutdownMode,
+        deadline: Option<&mut TimerFuture>,
+    ) -> Result<bool, LifecycleError> {
         let controls: Vec<_> = self
             .inner
             .controls
@@ -376,8 +397,19 @@ impl AsyncEventBus {
             .into_iter()
             .map(|(id, control)| Some(Box::pin(async move { (id, control.shutdown(mode).await) }) as _))
             .collect();
+        if closes.is_empty() {
+            return Ok(true);
+        }
 
+        let mut deadline = deadline;
         poll_fn(|context| {
+            if let Some(deadline) = deadline.as_deref_mut() {
+                match deadline.as_mut().poll(context) {
+                    Poll::Ready(Ok(())) => return Poll::Ready(Ok(false)),
+                    Poll::Ready(Err(error)) => return Poll::Ready(Err(LifecycleError::Timer(error))),
+                    Poll::Pending => {}
+                }
+            }
             let mut pending = false;
             for close in &mut closes {
                 let Some(future) = close.as_mut() else {
@@ -396,9 +428,16 @@ impl AsyncEventBus {
                         }
                     }
                 }
+                if let Some(deadline) = deadline.as_deref_mut() {
+                    match deadline.as_mut().poll(context) {
+                        Poll::Ready(Ok(())) => return Poll::Ready(Ok(false)),
+                        Poll::Ready(Err(error)) => return Poll::Ready(Err(LifecycleError::Timer(error))),
+                        Poll::Pending => {}
+                    }
+                }
             }
-            if pending { Poll::Pending } else { Poll::Ready(()) }
+            if pending { Poll::Pending } else { Poll::Ready(Ok(true)) }
         })
-        .await;
+        .await
     }
 }

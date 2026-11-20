@@ -1927,6 +1927,144 @@ fn test_injected_manual_timer_wakes_idle_timeout_and_cleans_up_waiter() {
 }
 
 #[test]
+fn test_zero_budget_shutdown_does_not_start_receiver_close() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let clock = ManualMonotonicClock::new_shared();
+    let bus = AsyncEventBus::with_timer(ProviderId::new("fake").unwrap(), spi.clone(), clock.new_timer())
+        .expect("valid provider capabilities");
+
+    block_on(async {
+        let _subscription = bus
+            .subscribe(SubscribeRequest::new("zero-budget-close", topic()).expect("valid subscription"))
+            .await
+            .expect("subscription");
+
+        assert!(matches!(
+            bus.shutdown(ShutdownMode::Graceful {
+                timeout: Duration::ZERO
+            })
+            .await,
+            Err(ShutdownError::TimedOut {
+                timeout: Duration::ZERO
+            })
+        ));
+        assert_eq!(
+            0,
+            spi.close_call_count(),
+            "an expired budget must not start a receiver close"
+        );
+
+        let _ = bus.shutdown(ShutdownMode::Immediate).await.expect("retry shutdown");
+        assert_eq!(
+            1,
+            spi.close_call_count(),
+            "the retry closes the retained receiver exactly once"
+        );
+    });
+}
+
+#[test]
+fn test_receiver_close_batch_stops_after_deadline_expires_during_first_close() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let clock = ManualMonotonicClock::new_shared();
+    let bus = AsyncEventBus::with_timer(ProviderId::new("fake").unwrap(), spi.clone(), clock.new_timer())
+        .expect("valid provider capabilities");
+    let clock_for_close = clock.clone();
+    spi.on_next_close_poll(move || {
+        clock_for_close
+            .advance(Duration::from_secs(1))
+            .expect("advance close deadline");
+    });
+
+    block_on(async {
+        let _first = bus
+            .subscribe(SubscribeRequest::new("deadline-close-a", topic()).expect("valid subscription"))
+            .await
+            .expect("subscription");
+        let _second = bus
+            .subscribe(SubscribeRequest::new("deadline-close-b", topic()).expect("valid subscription"))
+            .await
+            .expect("subscription");
+
+        assert!(matches!(
+            bus.shutdown(ShutdownMode::Graceful {
+                timeout: Duration::from_secs(1)
+            })
+            .await,
+            Err(ShutdownError::TimedOut { timeout }) if timeout == Duration::from_secs(1)
+        ));
+        assert_eq!(1, spi.close_call_count(), "no receiver close may start after expiry");
+
+        let _ = bus
+            .shutdown(ShutdownMode::Immediate)
+            .await
+            .expect("retry remaining close");
+        assert_eq!(
+            2,
+            spi.close_call_count(),
+            "the next shutdown closes the remaining receiver"
+        );
+    });
+}
+
+#[test]
+fn test_receiver_close_completion_at_deadline_is_kept_before_timeout() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let clock = ManualMonotonicClock::new_shared();
+    let bus = AsyncEventBus::with_timer(ProviderId::new("fake").unwrap(), spi.clone(), clock.new_timer())
+        .expect("valid provider capabilities");
+    let clock_for_close = clock.clone();
+    spi.on_next_close_poll(move || {
+        clock_for_close
+            .advance(Duration::from_secs(1))
+            .expect("advance close deadline");
+    });
+
+    block_on(async {
+        let _subscription = bus
+            .subscribe(SubscribeRequest::new("deadline-last-close", topic()).expect("valid subscription"))
+            .await
+            .expect("subscription");
+
+        assert!(matches!(
+            bus.shutdown(ShutdownMode::Graceful {
+                timeout: Duration::from_secs(1)
+            })
+            .await,
+            Err(ShutdownError::TimedOut { timeout }) if timeout == Duration::from_secs(1)
+        ));
+        assert_eq!(1, spi.close_call_count());
+        assert_eq!(
+            1,
+            spi.completed_close_call_count(),
+            "successful close is recorded before timeout"
+        );
+
+        let _ = bus.shutdown(ShutdownMode::Immediate).await.expect("finish shutdown");
+        assert_eq!(
+            1,
+            spi.close_call_count(),
+            "retry must not close a deregistered receiver again"
+        );
+    });
+}
+
+#[test]
+fn test_empty_receiver_batch_proceeds_to_provider_with_zero_budget() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let clock = ManualMonotonicClock::new_shared();
+    let bus = AsyncEventBus::with_timer(ProviderId::new("fake").unwrap(), spi.clone(), clock.new_timer())
+        .expect("valid provider capabilities");
+
+    let report = block_on(bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::ZERO,
+    }))
+    .expect("empty close batch proceeds to existing shutdown stages");
+    assert_eq!(ShutdownOutcome::Complete, report.outcome);
+    assert_eq!(0, spi.close_call_count());
+}
+
+#[test]
 fn test_async_failure_with_unsupported_reject_reports_unavailable_without_spi_call() {
     let spi = Arc::new(FakeAsyncEventBusSpi::with_capabilities(
         crate::support::fake_spi::native_no_settlement_capabilities(),
@@ -3946,6 +4084,43 @@ fn test_permanent_settlement_failure_yields_to_same_executor_shutdown() {
             .filter(|operation| **operation == "settle")
             .count(),
         1
+    );
+}
+
+#[test]
+fn test_shutdown_report_counts_ephemeral_delivery_after_handler_before_settlement() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").expect("provider"), spi.clone()).expect("bus");
+    let subscription = block_on(bus.subscribe(SubscribeRequest::new("report-unsettled", topic()).expect("request")))
+        .expect("subscribe");
+    let handler_calls = Arc::new(AtomicUsize::new(0));
+    spi.fail_all_settles();
+    spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+        subscription.id(),
+        "report-unsettled-token",
+    ))));
+    let calls = handler_calls.clone();
+    let mut runner = Box::pin(subscription.run(move |_| {
+        calls.fetch_add(1, Ordering::SeqCst);
+        async { Ok(()) }
+    }));
+    let mut result = Poll::Pending;
+    for _ in 0..16 {
+        result = crate::support::manual_async::poll_once(runner.as_mut());
+        if result.is_ready() {
+            break;
+        }
+    }
+    assert!(matches!(result, Poll::Ready(Err(ReceiveError::Stopped(_)))));
+    assert_eq!(1, handler_calls.load(Ordering::SeqCst));
+    drop(runner);
+
+    let report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+    assert_eq!(1, report.known_abandoned_deliveries);
+    assert_eq!(
+        1,
+        handler_calls.load(Ordering::SeqCst),
+        "cleanup must not rerun the handler"
     );
 }
 

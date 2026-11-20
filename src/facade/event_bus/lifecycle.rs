@@ -141,7 +141,11 @@ impl EventBus {
     /// - `mode`: graceful or immediate shutdown policy.
     ///
     /// # Returns
-    /// The cached provider outcome and facade-known abandoned-delivery count.
+    /// The cached provider outcome and cumulative facade-known count of
+    /// unresolved ephemeral deliveries abandoned by this facade. The count may
+    /// include work from earlier termination or close operations; it does not
+    /// indicate whether a handler produced a business side effect. Provider-
+    /// owned queued deliveries are not included.
     ///
     /// # Errors
     /// Returns `WouldDeadlock` for a call from a bus callback or worker,

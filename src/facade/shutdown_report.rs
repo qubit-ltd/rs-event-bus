@@ -36,7 +36,15 @@ use crate::spi::ShutdownOutcome;
 pub struct ShutdownReport {
     /// Final provider shutdown result.
     pub outcome: ShutdownOutcome,
-    /// Number of facade-owned deliveries explicitly abandoned during shutdown.
+    /// Cumulative number of facade-held unresolved ephemeral deliveries the
+    /// facade can verify were abandoned.
+    ///
+    /// Depending on the facade and provider lifecycle, this may include
+    /// abandonment recorded before the final shutdown call and deliveries whose
+    /// handler ran but whose settlement was not confirmed. It does not indicate
+    /// whether a handler produced a business side effect. Provider-owned queued
+    /// deliveries are not included; see
+    /// [`Self::provider_may_have_abandoned_deliveries`].
     pub known_abandoned_deliveries: u64,
     /// Whether provider-owned ephemeral work may have been abandoned without a
     /// count that the facade can verify.
@@ -48,7 +56,8 @@ impl ShutdownReport {
     ///
     /// # Parameters
     /// - `outcome`: provider's final shutdown outcome.
-    /// - `known_abandoned_deliveries`: facade-counted deliveries abandoned.
+    /// - `known_abandoned_deliveries`: cumulative facade-counted ephemeral
+    ///   deliveries abandoned.
     /// - `provider_may_have_abandoned_deliveries`: whether the provider may
     ///   have abandoned work the facade cannot count.
     ///
