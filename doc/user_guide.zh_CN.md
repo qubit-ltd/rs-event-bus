@@ -1913,8 +1913,7 @@ pub fn try_shutdown(bus: &EventBus) -> Result<ShutdownReport, ShutdownError> {
     })
 }
 
-#[doc(hidden)]
-pub fn retry_shutdown_with<F>(
+fn retry_shutdown_with<F>(
     first_timeout: Duration,
     retry_timeout: Duration,
     mut shutdown: F,
@@ -1952,8 +1951,7 @@ pub async fn try_shutdown_async(bus: &AsyncEventBus) -> Result<ShutdownReport, S
     .await
 }
 
-#[doc(hidden)]
-pub async fn retry_shutdown_async_with<'a, F>(
+async fn retry_shutdown_async_with<'a, F>(
     first_timeout: Duration,
     retry_timeout: Duration,
     mut shutdown: F,
