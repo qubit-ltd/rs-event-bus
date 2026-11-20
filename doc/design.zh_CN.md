@@ -1,6 +1,6 @@
-# Qubit Event Bus 设计文档（0.21）
+# Qubit Event Bus 设计文档（0.21.x）
 
-> 本文档以 `qubit-event-bus` 0.21.0 的实际源码为准。
+> 本文档以 `qubit-event-bus` 0.21.x 系列的实际源码为准。
 > 如果文档与代码出现分歧，以代码为准，并请修订本文档。
 > 英文版：[design.md](design.md)。
 >
@@ -204,7 +204,7 @@ payload。该异常路径可能泄漏二次 payload 持有的资源，泄漏量�
 
 ### 2.3 crate 元数据、feature 与外部依赖
 
-- 包名 `qubit-event-bus`，版本 `0.21.0`，edition 2024，`rust-version = 1.94`。
+- 包名 `qubit-event-bus`，支持版本范围 `0.21.x`，edition 2024，`rust-version = 1.94`。
 - features：
   - `discovery = ["qubit-spi/inventory"]`：启用 `inventory` 驱动的 provider
     自动登记（见 §6.4）。
