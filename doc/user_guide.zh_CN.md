@@ -530,7 +530,7 @@ let global = bus.delivery_metrics();
 eprintln!("subscription={per_subscription:?}, global={global:?}");
 ```
 
-总线快照提供 `reserved_receives`、`queued`、`running_handlers`、`settling`、`lane_waiting`（queued 的子集），以及结算尝试/重试/终止、完成/临时消息放弃计数、handler 与结算耗时的次数/总和/最大值、`oldest_owned_age`。没有在途时间戳，或任一已捕获时间戳无法与采样时钟比较时，年龄为 `None`。指标读取是只读快照：年龄样本无效不会停止订阅、取消工作或发出诊断；后续有效采样仍可恢复年龄读数。跨线程读取不保证所有字段构成同一个事务快照。关闭后的订阅 handle 保留最终计数，总线只保留聚合量，不建立每事件或每键的永久索引。数量上限也不是 Native payload 或 codec 分配的字节上限。
+总线快照提供 `reserved_receives`、`queued`、`running_handlers`、`settling`、`lane_waiting`（queued 的子集），以及结算尝试/重试/终止、完成/临时消息放弃计数、handler 与结算耗时的次数/总和/最大值、`oldest_owned_age`。没有在途时间戳，或任一已捕获时间戳无法与采样时钟比较时，年龄为 `None`。当前 `v0.21.4` 之后的源码变更（尚未分配给后续发行版）将指标读取限定为只读快照：年龄样本无效不会停止订阅、取消工作或发出诊断；后续有效采样仍可恢复年龄读数。请用 `terminal_failure()` 或异步 `run()` 结果检查真实停止原因，不要把年龄缺失当作生命周期失败。跨线程读取不保证所有字段构成同一个事务快照。关闭后的订阅 handle 保留最终计数，总线只保留聚合量，不建立每事件或每键的永久索引。数量上限也不是 Native payload 或 codec 分配的字节上限。
 
 订单消费者停止后，保存原因与 `Diagnostic::SettlementFailed` / `SettlementStopped`，修正 provider、codec、容量或策略，关闭旧订阅，再用同一持久消费组建立新订阅。Redis 按配置认领尚在 PEL 的工作；已经 ACK 的消息不能仅凭失败记录恢复。local 重新订阅从空队列开始，需要应用补偿。异步 `run` 返回 `ReceiveError::Stopped`，再次运行同一个已停止 handle 不会清除原因。取消仍活跃的 `run` future 则只是暂停，owned 任务和计时状态会保留，可恢复 `run` 或交给 shutdown 接管。
 
@@ -2093,6 +2093,8 @@ provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过
 
 0.21 版本包含自 0.20 以来累积的源码变化。请同步更新 core 依赖和受影响调用点。
 
+- Core 0.21.1 引入默认 facade headers 限额：1,024 项及 key/value UTF-8 累计 65,536 字节。应用需要更大边界时可配置 `EventBusFacadeConfig::with_header_limits(...)`。发布超限返回 `PublishError::Headers`；接收会在解码或调用 handler 前以 `SubscriptionStopReason::Headers` 停止。`SubscriptionStopReason` 是穷尽 enum，穷尽匹配须增加该变体。此限额不改变编码载荷限额或 provider transport 限额。
+
 - 构造 `Diagnostic::AdmissionRejected` 时须提供真实 `subscription_id`；完整解构须添加该字段或使用 `..`。
 - 构造 `ReceiveError::DeadLetterForwardFailed` 时须提供新的 `source`，完整解构也须处理该字段；只匹配部分字段时可用 `..`。本手册前面的死信失败说明展示了如何遍历错误链、读取 `qubit_retry::RetryError<DeadLetterForwardError>` 元数据。应用应直接依赖 `qubit-retry`；core 不会重新导出它。
 - 完整 `AsyncConformanceHooks` 字面量须设置 `subscribe_cancellation` 或使用 `..Default::default()`。Strict provider 须提供 fixture：取消一个已部分分配且仍 pending 的订阅，并证明资源可复用。
@@ -2100,6 +2102,7 @@ provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过
 - 没有 `retry_policy` 的 `retry_rule` 或 `retry_cancellation_token` 会在请求构造及 facade 执行时被拒绝。请添加显式策略或删除未使用的 rule/token。
 - local 发布前拒绝改用 `SpiError::Publish`；匹配旧 `SpiError::Operation` 的调用方应检查 `kind()`、`retryable()` 和 `publish_effect()`。
 - `rs-event-bus-redis`、`rs-task`、`rs-ioc`、`rs-execution-services` checkout 的清单或传递依赖可能仍固定在 0.20。本地 sibling 联用时，请更新相关 checkout 的 core 约束、确保公共类型边界使用同一 core minor，并运行各项目自身的 locked 检查。已发布的 Redis 0.7 和 task 0.10 面向 core 0.20；core 0.21 本地 path 图通过不表示这些发布版本兼容。发布支持需要消费者发布并测试依赖 registry core 0.21 的版本。
+- 后续源码变更使投递指标快照只用于观察；该变更晚于 `v0.21.4`，尚无对应发行标签。升级到包含它的发行版后，应把 `oldest_owned_age == None` 视为样本不可用，并通过 `terminal_failure()` 或异步 `run()` 判断订阅是否停止。详见[迁移指南](migration.zh_CN.md#core-0214-之后的投递指标快照)。
 
 ## 边界与实践清单
 
