@@ -25,12 +25,40 @@ encoding and before provider admission; receive checks before codec callbacks.
 These limits do not cap codec allocations or native Rust object memory. Check
 the version-specific guide before carrying these values into another release.
 
-## Header boundaries and the next incompatible release
+## Facade header limits (core 0.21.1 and later)
 
-The next incompatible core release is planned to be handled as 0.22; this note does not announce or publish that release. It will apply finite facade header limits by default: at most 1,024 headers and 65,536 aggregate UTF-8 bytes across keys and values. Publications outside either limit fail with `PublishError::Headers`; received deliveries stop with `SubscriptionStopReason::Headers` before decoding/handler invocation. `SubscriptionStopReason` currently has no `non_exhaustive` attribute, so downstream exhaustive matches must add a `Headers` arm where applicable. A fallback arm is recommended for forward compatibility.
+Core 0.21.1 introduced finite facade header limits by default: at most 1,024
+headers and 65,536 aggregate UTF-8 bytes across keys and values. Publications
+outside either limit fail with `PublishError::Headers`; received deliveries stop
+with `SubscriptionStopReason::Headers` before decoding or handler invocation.
+`SubscriptionStopReason` is not `non_exhaustive`, so downstream exhaustive
+matches must add a `Headers` arm. A fallback arm is recommended for future
+compatibility.
 
-Applications that require larger headers should set `EventBusFacadeConfig::with_header_limits(HeaderLimits::new(count, bytes))` with positive `NonZeroUsize` values. This facade boundary counts header text only. It is distinct from `PayloadLimits` for encoded message bytes and from Redis/provider transport limits: increasing Redis JSON or wire payload limits does not raise the core header limit. Configure both layers if both boundaries need adjustment. Repair incompatible producers or configure compatible limits, then recreate stopped subscriptions. Durable recovery follows the provider contract; local delivery is ephemeral and pending/unsettled work can be lost on close/drop.
+Applications that require larger headers should set
+`EventBusFacadeConfig::with_header_limits(HeaderLimits::new(count, bytes))` with
+positive `NonZeroUsize` values. This facade boundary counts header text only. It
+is distinct from `PayloadLimits` for encoded message bytes and from
+Redis/provider transport limits: increasing Redis JSON or wire payload limits
+does not raise the core header limit. Configure both layers if both boundaries
+need adjustment. Repair incompatible producers or configure compatible limits,
+then recreate stopped subscriptions. Durable recovery follows the provider
+contract; local delivery is ephemeral and pending/unsettled work can be lost on
+close/drop.
+
+## Delivery metric snapshots after core 0.21.4
+
+The current unreleased source tree makes `delivery_metrics()` snapshots
+observational only. An invalid or incomparable clock sample leaves
+`oldest_owned_age` unavailable; it does not stop receiving or emit a diagnostic.
+This behavior is newer than the `v0.21.4` release, and no later release tag is
+available to assign it a published version. Monitoring that previously treated
+a metrics sampling failure as a subscription failure should instead inspect
+`Subscription::terminal_failure()` (or the async `run()` result) for actual stop
+causes, and treat a missing age as unavailable data. Snapshot collection can
+then remain on the regular monitoring path without controlling subscription
+lifecycle.
 
 ## Current upgrade guide
 
-For changes accumulated since core 0.20, follow [Migrate from 0.20 to 0.21](user_guide.md#migrate-from-020-to-021). Earlier transitions are recorded in the sections above; verify the exact source and provider versions used by your application.
+For changes accumulated since core 0.20, follow [Migrate from 0.20 to 0.21](user_guide.md#migrate-from-020-to-021). Earlier transitions are recorded in the sections above; verify the exact source and provider versions used by your application. Adopt the unreleased metric snapshot change only when upgrading to a release that contains it; do not infer a published version from the current source tree.

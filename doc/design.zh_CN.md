@@ -1628,7 +1628,7 @@ wrapper 中的身份和效果；透明错误传播保留底层 source 链。
 
 ---
 
-`delivery_metrics()` 返回 `DeliveryMetricsSnapshot`；订阅返回带 subscription/subscriber ID 的 `SubscriptionDeliveryMetricsSnapshot`。预留、排队、running、settling、lane_waiting、尝试/重试/终止、完成/放弃、耗时与最老 owned 年龄均可观察。没有在途时间戳，或任一已捕获时间戳无法与采样时钟比较时，年龄不可用。指标快照是只读的；年龄样本无效不会停止订阅、取消工作或发出诊断。快照不含 payload/token，不保存每键或每事件历史，跨线程不承诺事务一致。关闭后的 handle 保留最终订阅计数。observer 应经应用自己的有界非阻塞队列转出，panic 隔离不等于耗时隔离。恢复步骤和完整字段见[用户手册](user_guide.zh_CN.md#排查结算终止并恢复消费)。
+`delivery_metrics()` 返回 `DeliveryMetricsSnapshot`；订阅返回带 subscription/subscriber ID 的 `SubscriptionDeliveryMetricsSnapshot`。预留、排队、running、settling、lane_waiting、尝试/重试/终止、完成/放弃、耗时与最老 owned 年龄均可观察。没有在途时间戳，或任一已捕获时间戳无法与采样时钟比较时，年龄不可用。`v0.21.4` 之后的源码变更（尚未分配给后续发行版）使指标快照只用于观察：年龄样本无效不会停止订阅、取消工作或发出诊断。快照不含 payload/token，不保存每键或每事件历史，跨线程不承诺事务一致。关闭后的 handle 保留最终订阅计数。observer 应经应用自己的有界非阻塞队列转出，panic 隔离不等于耗时隔离。恢复步骤和完整字段见[用户手册](user_guide.zh_CN.md#排查结算终止并恢复消费)及[迁移指南](migration.zh_CN.md#core-0214-之后的投递指标快照)。
 
 ## 14. 并发不变量汇总
 
