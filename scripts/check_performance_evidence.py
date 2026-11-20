@@ -27,6 +27,11 @@ ARCHIVES = (
     ),
 )
 PERFORMANCE_DOC = "doc/performance.md"
+SHUTDOWN_DOC = "doc/local-shutdown-measurements-20261109.md"
+PUBLIC_EVIDENCE = (
+    "doc/cancellation-causal-probe-20261109.csv",
+    "doc/cancellation-causal-probe-20261109.raw.txt",
+)
 
 
 def fail(path: str, message: str) -> None:
@@ -56,6 +61,9 @@ def check(package_list: Path) -> bool:
     if PERFORMANCE_DOC not in packaged:
         fail(PERFORMANCE_DOC, "consolidated performance document must be included in the Cargo package list")
         ok = False
+    if SHUTDOWN_DOC not in packaged:
+        fail(SHUTDOWN_DOC, "shutdown measurement document must be included in the Cargo package list")
+        ok = False
     performance = read_text(root / PERFORMANCE_DOC, PERFORMANCE_DOC)
     if performance is None:
         ok = False
@@ -68,6 +76,25 @@ def check(package_list: Path) -> bool:
             ]
             if found != [FIXED_COMMIT]:
                 fail(PERFORMANCE_DOC, f"must link exactly once to fixed raw evidence file {evidence} at {FIXED_COMMIT}")
+                ok = False
+
+    shutdown = read_text(root / SHUTDOWN_DOC, SHUTDOWN_DOC)
+    if shutdown is None:
+        ok = False
+    for source_doc, content in ((PERFORMANCE_DOC, performance), (SHUTDOWN_DOC, shutdown)):
+        if content is None:
+            continue
+        for evidence in PUBLIC_EVIDENCE:
+            found = [
+                sha
+                for sha, target in RAW_URL.findall(content)
+                if target == evidence
+            ]
+            if found != [FIXED_COMMIT]:
+                fail(source_doc, f"must link exactly once to fixed raw evidence file {evidence} at {FIXED_COMMIT}")
+                ok = False
+            if evidence in packaged:
+                fail(evidence, "public raw evidence must remain outside the Cargo package")
                 ok = False
 
     for readme, archive, evidence in ARCHIVES:
