@@ -28,6 +28,22 @@ use qubit_operation::OperationOutcome;
 use qubit_operation::ShutdownMode as OperationShutdownMode;
 use qubit_operation::ShutdownWait;
 
+struct ObserverRelease(Option<mpsc::Sender<()>>);
+
+impl ObserverRelease {
+    fn release(&mut self) -> Result<(), mpsc::SendError<()>> {
+        self.0.take().expect("observer release already used").send(())
+    }
+}
+
+impl Drop for ObserverRelease {
+    fn drop(&mut self) {
+        if let Some(release) = self.0.take() {
+            let _ = release.send(());
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bus = EventBus::local(Default::default())?;
     let topic = Topic::<String>::new("notification.lifecycle")?;
@@ -43,11 +59,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let first = seen_tx.send(outcome).is_ok();
             if first {
                 if let Some(release) = release_rx.lock().expect("release lock").take() {
-                    let _ = release.recv_timeout(Duration::from_secs(5));
+                    let _ = release.recv();
                 }
             }
         },
     )?);
+    // This is declared after `publisher`, so it releases the observer before
+    // dropping the publisher if any assertion or operation below returns early.
+    let mut observer_release = ObserverRelease(Some(release_tx));
 
     let manager = OperationManager::new(ManagerOptions::default())?;
     publisher.try_publish("first".to_owned())?;
@@ -75,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     assert!(matches!(seen_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
 
-    release_tx.send(())?;
+    observer_release.release()?;
     let closing = Arc::clone(&publisher);
     let mut retry = manager
         .try_submit(OperationOptions::default(), move |_| {
