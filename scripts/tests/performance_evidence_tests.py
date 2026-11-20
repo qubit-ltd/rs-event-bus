@@ -14,6 +14,9 @@ SNAPSHOT = "7299e7d19b1889655e28625a6ca3e47af926e6d4"
 ORDERING = "doc/ordering_performance_artifacts/README.md"
 CAPACITY_ARCHIVE = "doc/capacity_performance_artifacts/20261104-review/README.md"
 PERFORMANCE = "doc/performance.md"
+SHUTDOWN = "doc/local-shutdown-measurements-20261109.md"
+CAUSAL_CSV = "doc/cancellation-causal-probe-20261109.csv"
+CAUSAL_LOG = "doc/cancellation-causal-probe-20261109.raw.txt"
 ORDERING_ARCHIVE = "doc/ordering_performance_artifacts"
 CAPACITY_ARCHIVE_DIR = "doc/capacity_performance_artifacts/20261104-review"
 ORDERING_LINK = f"https://github.com/qubit-ltd/rs-event-bus/tree/{SNAPSHOT}/{ORDERING_ARCHIVE}"
@@ -22,6 +25,8 @@ ORDERING_EVIDENCE = "doc/ordering_performance_artifacts/paired_samples.txt"
 CAPACITY_EVIDENCE = f"{CAPACITY_ARCHIVE_DIR}/manifest.json"
 ORDERING_RAW = f"https://raw.githubusercontent.com/qubit-ltd/rs-event-bus/{SNAPSHOT}/{ORDERING_EVIDENCE}"
 CAPACITY_RAW = f"https://raw.githubusercontent.com/qubit-ltd/rs-event-bus/{SNAPSHOT}/{CAPACITY_EVIDENCE}"
+CAUSAL_CSV_RAW = f"https://raw.githubusercontent.com/qubit-ltd/rs-event-bus/{SNAPSHOT}/{CAUSAL_CSV}"
+CAUSAL_LOG_RAW = f"https://raw.githubusercontent.com/qubit-ltd/rs-event-bus/{SNAPSHOT}/{CAUSAL_LOG}"
 
 
 class PerformanceEvidenceTests(unittest.TestCase):
@@ -39,9 +44,13 @@ class PerformanceEvidenceTests(unittest.TestCase):
         )
         (self.root / ORDERING).write_text(archive_text + f"Consult the evidence: {ORDERING_LINK}\n", encoding="utf-8")
         (self.root / CAPACITY_ARCHIVE).write_text(archive_text + f"Consult the evidence: {CAPACITY_LINK}\n", encoding="utf-8")
-        (self.root / PERFORMANCE).write_text(f"# Performance\n\n{ORDERING_RAW}\n{CAPACITY_RAW}\n", encoding="utf-8")
+        (self.root / PERFORMANCE).write_text(
+            f"# Performance\n\n{ORDERING_RAW}\n{CAPACITY_RAW}\n{CAUSAL_CSV_RAW}\n{CAUSAL_LOG_RAW}\n",
+            encoding="utf-8",
+        )
+        (self.root / SHUTDOWN).write_text(f"# Shutdown\n\n{CAUSAL_CSV_RAW}\n{CAUSAL_LOG_RAW}\n", encoding="utf-8")
         self.listing = self.root / "package-list.txt"
-        self.files = [ORDERING, CAPACITY_ARCHIVE, PERFORMANCE]
+        self.files = [ORDERING, CAPACITY_ARCHIVE, PERFORMANCE, SHUTDOWN]
         self.write_listing()
 
     def tearDown(self):
@@ -122,6 +131,22 @@ class PerformanceEvidenceTests(unittest.TestCase):
         )
         self.assert_rejected(PERFORMANCE)
 
+    def test_shutdown_page_must_link_to_both_fixed_sources(self):
+        (self.root / SHUTDOWN).write_text(f"# Shutdown\n\n{CAUSAL_CSV_RAW}\n", encoding="utf-8")
+        self.assert_rejected(SHUTDOWN)
+
+    def test_wrong_causal_snapshot_is_rejected(self):
+        (self.root / PERFORMANCE).write_text(
+            f"# Performance\n\n{CAUSAL_CSV_RAW.replace(SNAPSHOT, '0' * 40)}\n{CAUSAL_LOG_RAW}\n",
+            encoding="utf-8",
+        )
+        self.assert_rejected(PERFORMANCE)
+
+    def test_causal_sources_must_not_be_packaged(self):
+        self.files.append(CAUSAL_CSV)
+        self.write_listing()
+        self.assert_rejected(CAUSAL_CSV)
+
     def test_missing_package_list_rejected(self):
         missing = self.root / "missing-list.txt"
         result = self.run_checker(missing)
@@ -156,6 +181,13 @@ class RealCheckoutEntryPointTests(unittest.TestCase):
         self.assertTrue((REPO / "doc/ordering_performance_artifacts/README.md").is_file())
         self.assertIn(ORDERING_RAW, content)
         self.assertIn(CAPACITY_RAW, content)
+        for url in (CAUSAL_CSV_RAW, CAUSAL_LOG_RAW):
+            self.assertIn(url, content)
+
+    def test_shutdown_measurement_page_has_fixed_public_source_links(self):
+        content = (REPO / SHUTDOWN).read_text(encoding="utf-8")
+        self.assertIn(CAUSAL_CSV_RAW, content)
+        self.assertIn(CAUSAL_LOG_RAW, content)
 
 
 if __name__ == "__main__":
