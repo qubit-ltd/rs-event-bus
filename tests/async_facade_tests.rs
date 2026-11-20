@@ -1553,6 +1553,56 @@ fn test_graceful_shutdown_timeout_bounds_pending_unstarted_receiver_close() {
 }
 
 #[test]
+fn test_graceful_shutdown_keeps_progress_when_one_receiver_close_times_out() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    spi.pause_first_close_call();
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
+    let timeout = std::time::Duration::from_millis(100);
+
+    block_on(async {
+        let _first = bus
+            .subscribe(SubscribeRequest::new("graceful-close-first", topic()).expect("valid subscriber ID"))
+            .await
+            .unwrap();
+        let _second = bus
+            .subscribe(SubscribeRequest::new("graceful-close-second", topic()).expect("valid subscriber ID"))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            bus.shutdown(ShutdownMode::Graceful { timeout }).await,
+            Err(ShutdownError::TimedOut { timeout: elapsed }) if elapsed == timeout
+        ));
+        assert_eq!(
+            2,
+            spi.close_call_count(),
+            "both receiver closes are polled under one deadline"
+        );
+        assert_eq!(
+            1,
+            spi.completed_close_call_count(),
+            "one receiver completes before the shared deadline"
+        );
+
+        let report = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
+        assert_eq!(ShutdownOutcome::Complete, report.outcome);
+    });
+
+    assert_eq!(
+        3,
+        spi.close_call_count(),
+        "retry closes only the receiver left pending after timeout"
+    );
+    assert_eq!(2, spi.completed_close_call_count());
+    assert_eq!(
+        1,
+        spi.operation_log().iter().filter(|&&call| call == "shutdown").count(),
+        "provider shutdown begins only after all receivers close"
+    );
+}
+
+#[test]
 fn test_shutdown_waits_for_in_flight_subscribe_to_close_late_receiver_first() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     spi.pause_subscribe();

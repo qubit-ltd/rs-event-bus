@@ -659,8 +659,10 @@ pub(crate) struct FakeAsyncEventBusSpi {
     subscribe_paused: Arc<AtomicBool>,
     subscribe_wakers: Arc<Mutex<Vec<Waker>>>,
     close_paused: Arc<AtomicBool>,
+    pause_first_close_call: Arc<AtomicBool>,
     close_wakers: Arc<Mutex<Vec<Waker>>>,
     close_calls: Arc<AtomicUsize>,
+    completed_close_calls: Arc<AtomicUsize>,
     active_close_calls: Arc<AtomicUsize>,
     max_concurrent_close_calls: Arc<AtomicUsize>,
     shutdown_paused: Arc<AtomicBool>,
@@ -695,8 +697,10 @@ impl FakeAsyncEventBusSpi {
             subscribe_paused: Arc::default(),
             subscribe_wakers: Arc::default(),
             close_paused: Arc::default(),
+            pause_first_close_call: Arc::default(),
             close_wakers: Arc::default(),
             close_calls: Arc::default(),
+            completed_close_calls: Arc::default(),
             active_close_calls: Arc::default(),
             max_concurrent_close_calls: Arc::default(),
             shutdown_paused: Arc::default(),
@@ -720,6 +724,10 @@ impl FakeAsyncEventBusSpi {
     #[must_use]
     pub(crate) fn close_call_count(&self) -> usize {
         self.close_calls.load(Ordering::Acquire)
+    }
+    #[must_use]
+    pub(crate) fn completed_close_call_count(&self) -> usize {
+        self.completed_close_calls.load(Ordering::Acquire)
     }
     #[must_use]
     pub(crate) fn max_concurrent_close_calls(&self) -> usize {
@@ -846,6 +854,9 @@ impl FakeAsyncEventBusSpi {
     pub(crate) fn pause_close(&self) {
         self.close_paused.store(true, Ordering::Release);
     }
+    pub(crate) fn pause_first_close_call(&self) {
+        self.pause_first_close_call.store(true, Ordering::Release);
+    }
     pub(crate) fn release_close(&self) {
         self.close_paused.store(false, Ordering::Release);
         for waker in take(&mut *self.close_wakers.lock().unwrap()) {
@@ -960,8 +971,10 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
                 queue,
                 calls: self.calls.clone(),
                 close_paused: self.close_paused.clone(),
+                pause_first_close_call: self.pause_first_close_call.clone(),
                 close_wakers: self.close_wakers.clone(),
                 close_calls: self.close_calls.clone(),
+                completed_close_calls: self.completed_close_calls.clone(),
                 active_close_calls: self.active_close_calls.clone(),
                 max_concurrent_close_calls: self.max_concurrent_close_calls.clone(),
                 receiver_drop_recoveries: self.receiver_drop_recoveries.clone(),
@@ -1007,8 +1020,10 @@ struct FakeAsyncEventSubscriptionSpi {
     queue: Arc<Mutex<QueueState>>,
     calls: Arc<Mutex<Vec<&'static str>>>,
     close_paused: Arc<AtomicBool>,
+    pause_first_close_call: Arc<AtomicBool>,
     close_wakers: Arc<Mutex<Vec<Waker>>>,
     close_calls: Arc<AtomicUsize>,
+    completed_close_calls: Arc<AtomicUsize>,
     active_close_calls: Arc<AtomicUsize>,
     max_concurrent_close_calls: Arc<AtomicUsize>,
     receiver_drop_recoveries: Arc<AtomicUsize>,
@@ -1148,7 +1163,9 @@ impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
         }
         let queue = self.queue.clone();
         let paused = self.close_paused.clone();
+        let pause_first = self.pause_first_close_call.swap(false, Ordering::AcqRel);
         let wakers = self.close_wakers.clone();
+        let completed_close_calls = self.completed_close_calls.clone();
         let active_close_calls = self.active_close_calls.clone();
         let max_concurrent_close_calls = self.max_concurrent_close_calls.clone();
         Box::pin(async move {
@@ -1168,7 +1185,7 @@ impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
                 state.closed = true;
             }
             poll_fn(|context| {
-                if !paused.load(Ordering::Acquire) {
+                if !pause_first && !paused.load(Ordering::Acquire) {
                     return Poll::Ready(());
                 }
                 let mut waiters = wakers.lock().unwrap();
@@ -1185,6 +1202,7 @@ impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
             for waker in state.wakers.drain(..) {
                 waker.wake();
             }
+            completed_close_calls.fetch_add(1, Ordering::AcqRel);
             Ok(())
         })
     }
