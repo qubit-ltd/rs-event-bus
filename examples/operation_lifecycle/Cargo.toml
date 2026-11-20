@@ -1,0 +1,12 @@
+[package]
+name = "qubit-event-bus-operation-lifecycle-examples"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+publish = false
+
+[dependencies]
+qubit-event-bus = { path = "../.." }
+qubit-operation = "=0.3.1"
+
+[workspace]
