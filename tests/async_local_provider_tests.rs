@@ -126,6 +126,30 @@ fn test_async_local_reports_capacity_rejection_per_destination() {
     let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("local event bus shutdown must complete");
 }
 
+#[test]
+fn test_async_local_shutdown_separates_facade_and_provider_abandonment_counts() {
+    let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::default()))
+        .expect("local event bus must be created from valid configuration");
+    let topic = Topic::<String>::new("async.local.shutdown-abandonment").expect("static test topic must be valid");
+    let _subscription = block_on(
+        bus.subscribe(
+            SubscribeRequest::new("unstarted-shutdown-abandonment", topic.clone())
+                .expect("test subscription request must be valid"),
+        ),
+    )
+    .expect("async subscription must be created");
+    let published = block_on(bus.publish(
+        PublishRequest::new(topic, "queued-before-run".to_owned()).expect("test publish request must be valid"),
+    ))
+    .expect("publish request must be admitted");
+    assert!(matches!(published.admission_outcome(), AdmissionOutcome::Accepted(_)));
+
+    let report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("local event bus shutdown must complete");
+    assert_eq!(ShutdownOutcome::Complete, report.outcome);
+    assert_eq!(0, report.known_abandoned_deliveries);
+    assert!(report.provider_may_have_abandoned_deliveries);
+}
+
 fn assert_async_pre_admission_error(error: &qubit_event_bus::error::SpiError, expected_kind: &str) {
     assert_eq!(expected_kind, error.kind());
     assert_eq!(Some(false), error.retryable());

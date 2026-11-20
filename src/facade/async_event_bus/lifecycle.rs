@@ -7,12 +7,17 @@
 // =============================================================================
 //! Asynchronous event bus lifecycle operations.
 
+use std::future::Future;
+use std::future::poll_fn;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::PoisonError;
 use std::sync::atomic::Ordering;
+use std::task::Poll;
 use std::time::Duration;
 
 use qubit_clock::TimerFuture;
+use qubit_id::Id;
 
 use crate::AsyncEventBus;
 use crate::LifecycleError;
@@ -33,6 +38,10 @@ use crate::spi::DurabilityCapability;
 use crate::spi::ShutdownMode;
 use crate::spi::ShutdownOutcome;
 use crate::spi::panic_boundary::catch_spi_call;
+
+/// Future that closes one receiver and returns its control-table identity.
+type ReceiverCloseFuture<'a> =
+    Pin<Box<dyn Future<Output = (Id, Result<(), Arc<crate::error::SubscriptionCloseFailure>>)> + Send + 'a>>;
 
 impl AsyncEventBus {
     /// Waits until this facade has no delivery it has already received for the
@@ -106,7 +115,11 @@ impl AsyncEventBus {
     /// - `mode`: Shutdown policy and, for graceful mode, its deadline.
     ///
     /// # Returns
-    /// The cached provider outcome and facade-known abandoned-delivery count.
+    /// The cached provider outcome, the number of deliveries already accepted
+    /// by this facade but not started by a handler that the facade can verify
+    /// were abandoned, and whether the provider may have abandoned additional
+    /// work still queued in its own mailbox. The facade cannot count
+    /// provider-owned queued deliveries.
     ///
     /// # Errors
     /// Returns [`ShutdownError::TimedOut`] when this graceful call's timeout
@@ -359,15 +372,33 @@ impl AsyncEventBus {
             .iter()
             .map(|(id, control)| (*id, control.clone()))
             .collect();
-        for (id, control) in controls {
-            if control.shutdown(mode).await.is_err() {
-                continue;
+        let mut closes: Vec<Option<ReceiverCloseFuture<'_>>> = controls
+            .into_iter()
+            .map(|(id, control)| Some(Box::pin(async move { (id, control.shutdown(mode).await) }) as _))
+            .collect();
+
+        poll_fn(|context| {
+            let mut pending = false;
+            for close in &mut closes {
+                let Some(future) = close.as_mut() else {
+                    continue;
+                };
+                match future.as_mut().poll(context) {
+                    Poll::Pending => pending = true,
+                    Poll::Ready((id, result)) => {
+                        close.take();
+                        if result.is_ok() {
+                            self.inner
+                                .controls
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .remove(&id);
+                        }
+                    }
+                }
             }
-            self.inner
-                .controls
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .remove(&id);
-        }
+            if pending { Poll::Pending } else { Poll::Ready(()) }
+        })
+        .await;
     }
 }

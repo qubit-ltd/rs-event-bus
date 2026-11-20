@@ -1488,6 +1488,44 @@ fn test_cancelling_shutdown_while_unstarted_receiver_close_is_pending_allows_ret
 }
 
 #[test]
+fn test_shutdown_polls_each_unstarted_receiver_close_before_waiting() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    spi.pause_close();
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
+
+    block_on(async {
+        let _first = bus
+            .subscribe(SubscribeRequest::new("parallel-close-first", topic()).expect("valid subscriber ID"))
+            .await
+            .unwrap();
+        let _second = bus
+            .subscribe(SubscribeRequest::new("parallel-close-second", topic()).expect("valid subscriber ID"))
+            .await
+            .unwrap();
+
+        let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+        assert!(matches!(
+            crate::support::manual_async::poll_once(shutdown.as_mut()),
+            Poll::Pending
+        ));
+        assert_eq!(
+            spi.close_call_count(),
+            2,
+            "each receiver close must be polled before shutdown waits"
+        );
+        assert_eq!(
+            spi.max_concurrent_close_calls(),
+            2,
+            "both close futures are live in the same poll"
+        );
+
+        spi.release_close();
+        let _ = block_on(shutdown).expect("shutdown closes both receivers");
+    });
+}
+
+#[test]
 fn test_graceful_shutdown_timeout_bounds_pending_unstarted_receiver_close() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     spi.pause_close();
@@ -4002,9 +4040,18 @@ fn test_async_receiver_close_call_panic_is_reported_during_shutdown() {
             .subscribe(SubscribeRequest::new("async-close-panic", topic()).expect("valid subscriber ID"))
             .await
             .unwrap();
+        let _other_subscription = bus
+            .subscribe(SubscribeRequest::new("async-close-after-panic", topic()).expect("valid subscriber ID"))
+            .await
+            .unwrap();
         spi.panic_on_close_call();
         let error = bus.shutdown(ShutdownMode::Immediate).await.unwrap_err();
         assert!(error.to_string().contains("provider_panicked"));
+        assert_eq!(
+            spi.close_call_count(),
+            2,
+            "a close failure must not block other receiver cleanup"
+        );
     });
 }
 
