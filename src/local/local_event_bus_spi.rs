@@ -148,15 +148,27 @@ impl EventBusSpi for LocalEventBusSpi {
     fn wait_for_topic_idle(&self, topic: &TopicAddress, timeout: Option<Duration>) -> Result<Option<bool>, SpiError> {
         let budget = timeout.map(FiniteWait::new);
         loop {
-            let (version, queues) = {
-                let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
-                let queues = state.live_queues_for_topic(topic);
-                (state.change_version, queues)
+            let queues;
+            let (version, busy) = {
+                let mut bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+                queues = bus.live_queues_for_topic(topic);
+                let mut empty_queues = Vec::with_capacity(queues.len());
+                let mut busy = false;
+                for queue in &queues {
+                    let queue_state = queue.lock();
+                    if !queue_state.is_pending_empty() || !queue_state.in_flight.is_empty() {
+                        busy = true;
+                        break;
+                    }
+                    empty_queues.push(queue_state);
+                    #[cfg(test)]
+                    crate::internal::test_wait_probe::announce("topic_idle_after_queue_check");
+                }
+                (bus.change_version, busy)
             };
-            let busy = queues.iter().any(|queue| {
-                let state = queue.lock();
-                !state.is_pending_empty() || !state.in_flight.is_empty()
-            });
+            // Keep the temporary queue owners alive until all queue guards and
+            // the bus-state guard have been released.
+            drop(queues);
             if !busy {
                 return Ok(Some(true));
             }
@@ -474,10 +486,6 @@ impl EventBusSpi for LocalEventBusSpi {
         if matches!(mode, ShutdownMode::Graceful { .. }) {
             #[cfg(test)]
             crate::internal::test_wait_probe::announce("graceful_shutdown_decision");
-            let state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
-            if state.shutdown_immediate_requested {
-                outcome = ShutdownOutcome::Complete;
-            }
         }
 
         let queues = {
@@ -495,15 +503,226 @@ impl EventBusSpi for LocalEventBusSpi {
             queue.ready.notify_all();
             discarded.extend(pending);
         }
-        self.shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .shutdown_outcome = Some(outcome);
+        #[cfg(test)]
+        crate::internal::test_wait_probe::announce("shutdown_before_outcome_cache");
+        {
+            let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if matches!(mode, ShutdownMode::Graceful { .. }) && state.shutdown_immediate_requested {
+                outcome = ShutdownOutcome::Complete;
+            }
+            state.shutdown_outcome = Some(outcome);
+        }
         signal_changed(&self.shared);
         drop(shutdown_gate);
         drop(discarded);
         Ok(outcome)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    use super::PoisonError;
+    use crate::internal::test_wait_probe;
+    use crate::local::LocalEventBusConfig;
+    use crate::local::LocalEventBusSpi;
+    use crate::model::AdmissionStatus;
+    use crate::model::PublishAcknowledgement;
+    use crate::spi::DeliveryDisposition;
+    use crate::spi::EventBusSpi;
+    use crate::spi::ReceiveOutcome;
+    use crate::spi::ShutdownMode;
+    use crate::spi::ShutdownOutcome;
+    use crate::spi::TopicAddress;
+
+    #[test]
+    fn test_local_topic_idle_requires_consistent_queue_snapshot() {
+        crate::tests::large_timeout_wait_tests::isolated(
+            "test_local_topic_idle_requires_consistent_queue_snapshot",
+            "topic-idle-consistent-snapshot",
+            || {
+                let topic = "probe.topic.consistent-snapshot";
+                let spi = Arc::new(LocalEventBusSpi::new(&LocalEventBusConfig::new().queue_capacity(1)).unwrap());
+                let mut receiver_a = spi
+                    .subscribe(crate::tests::large_timeout_wait_tests::subscription(101, topic))
+                    .unwrap();
+                let mut receiver_b = spi
+                    .subscribe(crate::tests::large_timeout_wait_tests::subscription(102, topic))
+                    .unwrap();
+                crate::tests::large_timeout_wait_tests::publish(&*spi, topic, "snapshot-first");
+
+                let ReceiveOutcome::Message(message_a) = receiver_a.receive(Duration::ZERO).unwrap() else {
+                    panic!("first queue receives the initial message");
+                };
+                receiver_a
+                    .settle(message_a.settlement().unwrap(), DeliveryDisposition::Accept)
+                    .unwrap();
+                drop(message_a);
+
+                let queues = spi
+                    .shared
+                    .state
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .live_queues_for_topic(&TopicAddress::new(topic).unwrap());
+                let queue_a = Arc::clone(&queues[0]);
+                drop(queues);
+                let (scan_gate, _, release_scan) =
+                    test_wait_probe::install_gated("topic_idle_after_queue_check", "unused_topic_idle_signal");
+                let wait_spi = Arc::clone(&spi);
+                let waiter = thread::spawn(move || {
+                    wait_spi
+                        .wait_for_topic_idle(&TopicAddress::new(topic).unwrap(), Some(Duration::ZERO))
+                        .unwrap()
+                });
+                scan_gate
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("scan checked the first empty queue");
+
+                let lock_was_retained = match queue_a.state.try_lock() {
+                    Ok(guard) => {
+                        drop(guard);
+                        let PublishAcknowledgement::DestinationAdmissions(admissions) =
+                            crate::tests::large_timeout_wait_tests::publish_ack(&*spi, topic, "snapshot-second")
+                        else {
+                            panic!("local publish reports destination admissions");
+                        };
+                        assert_eq!(&AdmissionStatus::Accepted, admissions[0].status());
+                        assert!(matches!(admissions[1].status(), AdmissionStatus::Rejected(_)));
+                        let ReceiveOutcome::Message(message_b) = receiver_b.receive(Duration::ZERO).unwrap() else {
+                            panic!("second queue retains its first delivery");
+                        };
+                        receiver_b
+                            .settle(message_b.settlement().unwrap(), DeliveryDisposition::Accept)
+                            .unwrap();
+                        drop(message_b);
+                        false
+                    }
+                    Err(_) => true,
+                };
+                release_scan.send(()).unwrap();
+                assert_eq!(Some(false), waiter.join().unwrap());
+                assert!(
+                    lock_was_retained,
+                    "an empty queue lock remains held through the idle decision"
+                );
+
+                if lock_was_retained {
+                    let ReceiveOutcome::Message(message_b) = receiver_b.receive(Duration::ZERO).unwrap() else {
+                        panic!("second queue retains its first delivery");
+                    };
+                    receiver_b
+                        .settle(message_b.settlement().unwrap(), DeliveryDisposition::Accept)
+                        .unwrap();
+                    drop(message_b);
+                    let PublishAcknowledgement::DestinationAdmissions(admissions) =
+                        crate::tests::large_timeout_wait_tests::publish_ack(&*spi, topic, "snapshot-second")
+                    else {
+                        panic!("local publish reports destination admissions");
+                    };
+                    assert!(
+                        admissions
+                            .iter()
+                            .all(|admission| admission.status() == &AdmissionStatus::Accepted)
+                    );
+                }
+                assert_eq!(
+                    Some(false),
+                    spi.wait_for_topic_idle(&TopicAddress::new(topic).unwrap(), Some(Duration::ZERO))
+                        .unwrap()
+                );
+                let ReceiveOutcome::Message(message_a) = receiver_a.receive(Duration::ZERO).unwrap() else {
+                    panic!("second message is pending for the first queue");
+                };
+                receiver_a
+                    .settle(message_a.settlement().unwrap(), DeliveryDisposition::Accept)
+                    .unwrap();
+                drop(message_a);
+                if let ReceiveOutcome::Message(message_b) = receiver_b.receive(Duration::ZERO).unwrap() {
+                    receiver_b
+                        .settle(message_b.settlement().unwrap(), DeliveryDisposition::Accept)
+                        .unwrap();
+                    drop(message_b);
+                }
+                assert_eq!(
+                    Some(true),
+                    spi.wait_for_topic_idle(&TopicAddress::new(topic).unwrap(), Some(Duration::ZERO))
+                        .unwrap()
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn test_local_immediate_escalates_graceful_during_cleanup() {
+        crate::tests::large_timeout_wait_tests::isolated(
+            "test_local_immediate_escalates_graceful_during_cleanup",
+            "immediate-escalates-graceful-during-cleanup",
+            || {
+                let topic = "probe.shutdown.cleanup-escalation";
+                let spi = Arc::new(LocalEventBusSpi::new(&LocalEventBusConfig::default()).unwrap());
+                let capacity = spi.capacity_monitor();
+                let mut receiver = spi
+                    .subscribe(crate::tests::large_timeout_wait_tests::subscription(103, topic))
+                    .unwrap();
+                crate::tests::large_timeout_wait_tests::publish(&*spi, topic, "cleanup-escalation");
+                let ReceiveOutcome::Message(message) = receiver.receive(Duration::ZERO).unwrap() else {
+                    panic!("published message is received");
+                };
+
+                let (cache_gate, immediate_registered, release_cache) =
+                    test_wait_probe::install_gated("shutdown_before_outcome_cache", "shutdown_immediate_registered");
+                let graceful_spi = Arc::clone(&spi);
+                let (graceful_tx, graceful_rx) = mpsc::channel();
+                let graceful = thread::spawn(move || {
+                    graceful_tx
+                        .send(graceful_spi.shutdown(ShutdownMode::Graceful {
+                            timeout: Duration::ZERO,
+                        }))
+                        .unwrap();
+                });
+                cache_gate
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("cleanup completed before caching outcome");
+
+                let immediate_spi = Arc::clone(&spi);
+                let (immediate_tx, immediate_rx) = mpsc::channel();
+                let immediate = thread::spawn(move || {
+                    immediate_tx
+                        .send(immediate_spi.shutdown(ShutdownMode::Immediate))
+                        .unwrap();
+                });
+                immediate_registered
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("Immediate registered before cache");
+                release_cache.send(()).unwrap();
+
+                assert_eq!(
+                    ShutdownOutcome::Complete,
+                    graceful_rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap()
+                );
+                assert_eq!(
+                    ShutdownOutcome::Complete,
+                    immediate_rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap()
+                );
+                assert_eq!(
+                    ShutdownOutcome::Complete,
+                    spi.shutdown(ShutdownMode::Immediate).unwrap()
+                );
+                assert!(matches!(
+                    receiver.receive(Duration::ZERO).unwrap(),
+                    ReceiveOutcome::Closed
+                ));
+                drop(message);
+                assert_eq!(0, capacity.snapshot().outstanding_count);
+                immediate.join().unwrap();
+                graceful.join().unwrap();
+            },
+        );
     }
 }
 

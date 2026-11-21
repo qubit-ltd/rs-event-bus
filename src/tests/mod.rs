@@ -10,7 +10,7 @@
 mod codec;
 mod error;
 mod facade;
-mod large_timeout_wait_tests;
+pub(crate) mod large_timeout_wait_tests;
 mod local;
 mod model;
 mod pipeline;

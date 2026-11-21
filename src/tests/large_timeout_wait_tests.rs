@@ -660,7 +660,7 @@ fn test_notification_close_and_join_share_total_budget() {
     );
 }
 
-fn isolated(test_name: &str, case: &str, child: impl FnOnce()) {
+pub(crate) fn isolated(test_name: &str, case: &str, child: impl FnOnce()) {
     isolated_with_watchdog(test_name, case, WATCHDOG, child);
 }
 
@@ -728,7 +728,7 @@ fn local_spi_with(local: LocalEventBusConfig) -> Arc<dyn EventBusSpi> {
     LocalEventBusProvider.create_configured(&config).unwrap()
 }
 
-fn subscription(id: u64, topic: &str) -> SpiSubscriptionRequest {
+pub(crate) fn subscription(id: u64, topic: &str) -> SpiSubscriptionRequest {
     SpiSubscriptionRequest::new(
         Id::new(id),
         TopicAddress::new(topic).unwrap(),
@@ -741,7 +741,7 @@ fn subscription(id: u64, topic: &str) -> SpiSubscriptionRequest {
     )
 }
 
-fn publish(spi: &dyn EventBusSpi, topic: &str, id: &str) {
+pub(crate) fn publish(spi: &dyn EventBusSpi, topic: &str, id: &str) {
     let acknowledgement = publish_ack(spi, topic, id);
     assert!(matches!(
         acknowledgement,
@@ -749,7 +749,7 @@ fn publish(spi: &dyn EventBusSpi, topic: &str, id: &str) {
     ));
 }
 
-fn publish_ack(spi: &dyn EventBusSpi, topic: &str, id: &str) -> PublishAcknowledgement {
+pub(crate) fn publish_ack(spi: &dyn EventBusSpi, topic: &str, id: &str) -> PublishAcknowledgement {
     spi.publish(OutboundMessage::new(
         TopicAddress::new(topic).unwrap(),
         EventId::new(id).unwrap(),
