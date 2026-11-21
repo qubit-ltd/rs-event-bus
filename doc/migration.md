@@ -11,13 +11,20 @@ claim that older provider releases are compatible with the current core.
 The source changes after core v0.21.4 add `SentUnconfirmed` to
 `PublishAcknowledgement` and `AdmissionOutcome`. Providers declaring
 `FireAndForget` should return this variant instead of legacy `Accepted`; the
-facade also normalizes legacy acknowledgements. Ordinary publish still returns
-a receipt, while every checked admission requirement fails with
-`VisibilityUnavailable` and retains that receipt for inspection. Do not
-interpret the send as rejected or automatically retry it: the external effect
-may already have happened. Providers declaring `Accepted` or stronger, and
-providers reporting per-destination admissions, retain their existing
-acknowledgement behavior.
+facade also normalizes legacy acknowledgements. For opaque providers, a checked
+publish requiring per-destination visibility fails before publication with
+`CheckedPublishError::UnsupportedVisibility`; no receipt is produced and no
+publish side effect occurs. This preflight applies to synchronous and
+asynchronous `publish_checked`.
+
+If publication does proceed and returns `SentUnconfirmed`, ordinary publish
+returns its receipt. `PublishReceipt::check_admission` then returns
+`AdmissionCheckError::VisibilityUnavailable`. Checked publish returns
+`CheckedPublishError::Admission` with the complete receipt and
+`VisibilityUnavailable`. The send may already have caused an external effect:
+reconcile by event ID before deciding whether to retry. Providers declaring
+`Accepted` or stronger, and providers reporting per-destination admissions,
+retain their existing acknowledgement behavior.
 
 ## Codec registration (core 0.18 to 0.19)
 

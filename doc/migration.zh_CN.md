@@ -9,10 +9,17 @@
 
 core v0.21.4 之后的源码变更在 `PublishAcknowledgement` 和
 `AdmissionOutcome` 中加入 `SentUnconfirmed`。声明 `FireAndForget` 的 provider
-应返回该变体，而不是旧版 `Accepted`；facade 也会归一化旧回执。普通发布仍返回回执，
-但所有 checked 接纳条件都会以 `VisibilityUnavailable` 失败，并保留完整回执供检查。
-不要把发送解释为已拒绝，也不要自动重试：外部副作用可能已经发生。声明 `Accepted` 或
-更强保证的 provider，以及返回逐目标接纳结果的 provider，行为保持不变。
+应返回该变体，而不是旧版 `Accepted`；facade 也会归一化旧回执。对于 opaque provider，
+要求逐目标可见性的 checked publish 会在发布前以
+`CheckedPublishError::UnsupportedVisibility` 失败；不会生成回执，也不会产生发布副作用。
+同步和异步 `publish_checked` 都会进行此预检。
+
+如果发布已经执行并返回 `SentUnconfirmed`，普通发布会返回该回执。
+`PublishReceipt::check_admission` 随后返回
+`AdmissionCheckError::VisibilityUnavailable`。checked publish 则以
+`CheckedPublishError::Admission` 返回完整回执和 `VisibilityUnavailable`。发送可能已经产生
+外部副作用；决定是否重试前，应先按事件 ID 对账。声明 `Accepted` 或更强保证的 provider，
+以及返回逐目标接纳结果的 provider，行为保持不变。
 
 ## Codec 注册（core 0.18 到 0.19）
 
