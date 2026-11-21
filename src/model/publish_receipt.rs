@@ -184,30 +184,24 @@ impl PublishReceipt {
         self
     }
 
-    /// Checks whether reported destination admissions meet `requirement`.
-    ///
-    /// This checks admission, not handler completion. Returns
-    /// [`AdmissionCheckError::Dropped`] when interception stopped dispatch,
-    /// [`AdmissionCheckError::VisibilityUnavailable`] when a provider did not
-    /// identify destinations and `requirement` requires destination details,
-    /// and
-    /// [`AdmissionCheckError::NoAcceptedDestination`] when none accepted.
-    /// The stricter requirement returns
-    /// [`AdmissionCheckError::RejectedDestinations`] if any reported
-    /// destination rejected admission after at least one accepted.
+    /// Checks the admission result in this existing receipt; it does not
+    /// publish or check handler completion. A `SentUnconfirmed` receipt means
+    /// the send attempt finished but admission is unknown, so every
+    /// requirement returns [`AdmissionCheckError::VisibilityUnavailable`].
     ///
     /// # Parameters
     /// - `requirement`: minimum admission condition to enforce.
     ///
     /// # Returns
-    /// `Ok(())` when the admission result satisfies `requirement`. Provider
-    /// A confirmed provider acknowledgement or reported destination admission
+    /// `Ok(())` when the admission result satisfies `requirement`. A confirmed
+    /// opaque provider acknowledgement or reported destination admission
     /// satisfies `ProviderOrDestinationAccepted`.
     ///
     /// # Errors
     /// Returns [`AdmissionCheckError::Dropped`] if interception stopped
     /// dispatch, [`AdmissionCheckError::VisibilityUnavailable`] if the
-    /// provider hid destination details required by `requirement`,
+    /// receipt is `SentUnconfirmed` or the provider hid destination details
+    /// required by `requirement`,
     /// [`AdmissionCheckError::NoAcceptedDestination`] if none accepted, or
     /// [`AdmissionCheckError::RejectedDestinations`] when the strict
     /// requirement observes any rejection.

@@ -1127,7 +1127,7 @@ fn test_publication_acknowledgement_matrix_for_sync_and_async_runners() {
             "opaque declaration with detailed target acceptance",
             PublishAcknowledgement::DestinationAdmissions(vec![admission(1, AdmissionStatus::Accepted)]),
             PublishVisibility::Opaque,
-            true,
+            false,
         ),
     ];
     for (label, acknowledgement, visibility, expected_pass) in cases {
@@ -1179,8 +1179,15 @@ fn test_publication_acknowledgement_matrix_for_sync_and_async_runners() {
                 report.cases().iter().any(|case| matches!(case,
                     ConformanceCase::Passed { case_id } if case_id == "receive-payload"
                 )),
-                "{label}: successful publish must retain the receive path"
+                "{label}: receive probe must run independently of publish acknowledgement"
             );
+            if label == "opaque declaration with detailed target acceptance" {
+                assert!(report.cases().iter().any(|case| matches!(case,
+                    ConformanceCase::Failed { case_id, detail }
+                        if case_id == "declared-native-publish"
+                            && detail.contains("provider declared opaque visibility but returned destination admissions")
+                )), "{label}: expected an explicit visibility mismatch diagnostic");
+            }
             for case_id in ["close", "shutdown"] {
                 assert!(
                     report.cases().iter().any(|case| matches!(case,

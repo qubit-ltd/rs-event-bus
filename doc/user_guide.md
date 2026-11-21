@@ -301,6 +301,7 @@ In the API, a `provider` is the backend that actually delivers messages. `local`
 | `NoneAccepted(summary)` | Destinations were found, but none admitted the message. Inspect skip and rejection reasons. |
 | `NoDestinations` | No destination was found. Check that subscriptions exist and that the topic name matches. |
 | `OpaqueAccepted` | The transport says it accepted the message and does not identify the destinations. |
+| `SentUnconfirmed` | The send attempt finished, but the provider did not confirm admission. Reconcile by event ID; do not assume rejection or retry automatically. |
 | `Dropped` | A publish interceptor discarded the message before delivery. |
 
 ### Decide whether a failed publication can be repeated
@@ -348,14 +349,16 @@ if let PublishAcknowledgement::DestinationAdmissions(destinations) = receipt.ack
 
 `Accepted`, with both destinations in status `Accepted`, means the order scenario is integrated. That is success at the bus layer: the message has entered both subscribers' queues, and the handlers then run on the bus worker threads. Whether the audit row and the customer view were written is visible only in the store's return value and logs. The receipt does not say.
 
-The receipt reports only whether each subscriber **admitted** the message. Handlers have usually not run yet. `check_admission` tests the receipt against the condition you pass. It only reads the receipt: it does not publish again, and it does not wait for handlers.
+The receipt reports only whether each subscriber **admitted** the message. Handlers have usually not run yet. `check_admission` tests the receipt against the condition you pass. It only reads the receipt: it does not publish again, and it does not wait for handlers. See [preflight rejection and an unconfirmed send](#preflight-rejection-and-an-unconfirmed-send) for the two checked-publish failure stages.
 
 When one order event goes to both audit and the customer view, the two conditions differ like this:
 
 - `AtLeastOneAccepted`: one admission is enough. If audit admits the event and the customer view rejects it because its queue is full, the check still passes.
 - `AtLeastOneAcceptedAndNoRejected`: at least one admission, and nobody rejected. The case above returns `RejectedDestinations`. The order example uses this condition.
 
-These two conditions require a provider that reports destination admissions. The order example uses local, which does. With an opaque provider such as Redis, `publish_checked` returns `CheckedPublishError::UnsupportedVisibility { event_id, provider_id }` before interceptors, codec encoding, metrics, or the provider publish call. If the application only needs the provider to accept the event, use `ProviderOrDestinationAccepted` instead:
+### Preflight rejection and an unconfirmed send
+
+These two conditions require a provider that reports destination admissions. The order example uses local, which does. With an opaque provider such as Redis, `publish_checked` returns `CheckedPublishError::UnsupportedVisibility { event_id, provider_id }` before interceptors, codec encoding, metrics, or the provider publish call. This preflight rejection means no publish occurred. If the application only needs the provider to accept the event, use `ProviderOrDestinationAccepted` instead:
 
 ```rust
 use qubit_event_bus::CheckedPublishError;
@@ -370,7 +373,7 @@ fn publish_to_redis<T: Send + Sync + 'static>(
 }
 ```
 
-For Redis, success means `XADD` was accepted by the broker; the returned receipt has opaque destination visibility. It does not prove a consumer ran, a business write completed, or Redis performed a disk fsync. On a provider with visible destinations, this new condition accepts any reported destination acceptance, even alongside rejections; `NoDestinations` and `NoneAccepted` return `CheckedPublishError::Admission` with the full receipt. `Dropped` also fails. Inspect the receipt and reconcile uncertain or partial work before retrying.
+For Redis, success means `XADD` was accepted by the broker; the returned receipt has opaque destination visibility. It does not prove a consumer ran, a business write completed, or Redis performed a disk fsync. On a provider with visible destinations, this new condition accepts any reported destination acceptance, even alongside rejections; `NoDestinations` and `NoneAccepted` return `CheckedPublishError::Admission` with the full receipt. `Dropped` also fails. If a publish proceeds and returns `SentUnconfirmed`, checked publish instead returns `CheckedPublishError::Admission` containing that complete receipt and `VisibilityUnavailable`: an external effect may already have occurred, so reconcile by event ID before deciding whether to retry. `PublishReceipt::check_admission` only evaluates an existing receipt; for `SentUnconfirmed`, every requirement returns `VisibilityUnavailable`.
 
 After publishing, the order service checks the stricter condition and branches on the failure:
 

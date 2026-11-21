@@ -357,6 +357,7 @@ pub struct PublishReceipt {
 }
 
 pub enum PublishAcknowledgement {
+    SentUnconfirmed, // send attempt finished; admission was not confirmed
     Accepted { provider_message_id: Option<String>, metadata: ProviderMessageMetadata }, // opaque accept
     DestinationAdmissions(Vec<DestinationAdmission>),   // per destination: Accepted / Filtered / Rejected
     DroppedByInterceptor,
@@ -366,25 +367,35 @@ pub enum PublishAcknowledgement {
 - The provider SPI `publish` returns only `PublishAcknowledgement`. The facade adds
   the event ids and provider id to form `PublishReceipt`.
 - `admission_outcome()` classifies `PublishAcknowledgement` as `AdmissionOutcome`:
-  `OpaqueAccepted` (the provider does not report destinations),
+  `SentUnconfirmed` (the send attempt finished without confirmed admission),
+  `OpaqueAccepted` (the provider reports acceptance but not destinations),
   `Accepted` / `PartiallyAccepted` / `NoneAccepted(AdmissionSummary)`,
   `NoDestinations` (the provider reported an empty destination list),
   or `Dropped` (an interceptor dropped the message). `Filtered` destinations
   (a subscription filter declined them) and `Rejected` destinations (capacity or
   admission declined them) are counted separately in `AdmissionSummary`.
-- `check_admission(AdmissionRequirement)` lets the caller require at least one
+  `SentUnconfirmed` has no admission summary; ordinary `publish` returns its
+  receipt, but every `check_admission` requirement returns
+  `VisibilityUnavailable`. Reconcile by event ID before deciding to retry.
+- `check_admission(AdmissionRequirement)` checks the existing receipt only; it
+  does not publish again or wait for handlers. It lets the caller require at least one
   destination, or every destination, to be accepted. It returns
   `Result<(), AdmissionCheckError>` (`VisibilityUnavailable`, `Dropped`,
   `NoAcceptedDestination`, `RejectedDestinations { .. }`).
 - `publish_checked(request, requirement)` combines publication and that
   requirement check. If the provider cannot expose required destination
   visibility, it rejects the request before interceptors, codec callbacks,
-  metrics, and SPI publication. For opaque transports such as Redis, use
-  `ProviderOrDestinationAccepted`; that means provider acceptance only.
+  metrics, and SPI publication with `UnsupportedVisibility`; this preflight
+  rejection means no publish occurred. For opaque transports such as Redis,
+  use `ProviderOrDestinationAccepted`; that means confirmed provider acceptance
+  only. If publication runs and returns `SentUnconfirmed`, checked publish
+  returns `Admission` with the complete receipt and `VisibilityUnavailable`;
+  the external effect may already have occurred, so reconcile before retrying.
 
 A successful `publish` call means the provider call completed and returned a receipt; it
-does not by itself mean acceptance. `admission_outcome()` may report accepted, partial,
-no destinations, no accepted destinations, dropped, or opaque admission. Only a provider
+does not by itself mean acceptance. `admission_outcome()` may report unconfirmed
+send, accepted, partial, no destinations, no accepted destinations, dropped, or
+opaque admission. Only a provider
 with `PublishVisibility::DestinationAdmissions` can report destination-level detail.
 `publish_all` returns `BatchPublishResult`, preserving each request's
 `Result<PublishReceipt, PublishFailure>` in input order. One failure does not stop the later requests.

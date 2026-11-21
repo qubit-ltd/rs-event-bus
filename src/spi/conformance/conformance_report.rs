@@ -406,12 +406,14 @@ pub(super) fn settlement_case(
 ///
 /// # Parameters
 /// - `acknowledgement`: provider's publish acknowledgement.
+/// - `guarantee`: publication guarantee declared by the provider.
 /// - `visibility`: acknowledgement visibility declared by the provider.
 /// - `subscription_id`: target subscription created for this probe.
 ///
 /// # Returns
-/// `Ok(())` when the acknowledgement satisfies the declared visibility and
-/// admits the probe subscription; otherwise an explanation of the mismatch.
+/// `Ok(())` when the acknowledgement matches the declared visibility and
+/// guarantee and admits the probe subscription; otherwise an explanation of
+/// the mismatch.
 pub(super) fn validate_probe_acknowledgement(
     acknowledgement: &PublishAcknowledgement,
     guarantee: PublishGuarantee,
@@ -431,6 +433,9 @@ pub(super) fn validate_probe_acknowledgement(
         PublishAcknowledgement::Accepted { .. } if visibility == PublishVisibility::Opaque => Ok(()),
         PublishAcknowledgement::Accepted { .. } => {
             Err("provider declared destination admissions but returned opaque acceptance".into())
+        }
+        PublishAcknowledgement::DestinationAdmissions(_) if visibility == PublishVisibility::Opaque => {
+            Err("provider declared opaque visibility but returned destination admissions".into())
         }
         PublishAcknowledgement::DestinationAdmissions(admissions) => {
             if admissions.is_empty() {

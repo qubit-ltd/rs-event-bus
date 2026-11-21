@@ -6,9 +6,18 @@ This page is a stable entry point for core API changes. It summarizes selected
 historical transitions and links to the current upgrade guide; it does not
 claim that older provider releases are compatible with the current core.
 
-## Unconfirmed publish acknowledgements (core 0.21.5 and later)
+## Unconfirmed publish acknowledgements (source changes after v0.21.4)
 
-`PublishAcknowledgement` and `AdmissionOutcome` now include `SentUnconfirmed`. Providers declaring `FireAndForget` should return this variant instead of legacy `Accepted`. The facade also normalizes legacy `Accepted` from such providers. Ordinary publish still returns a receipt, while every checked admission requirement fails with `VisibilityUnavailable` and retains that receipt for inspection. Do not interpret the send as rejected or automatically retry it: the external effect may already have happened. Providers declaring `Accepted` or stronger, and providers reporting per-destination admissions, retain their existing acknowledgement behavior.
+The source changes after core v0.21.4 add `SentUnconfirmed` to
+`PublishAcknowledgement` and `AdmissionOutcome`. Providers declaring
+`FireAndForget` should return this variant instead of legacy `Accepted`; the
+facade also normalizes legacy acknowledgements. Ordinary publish still returns
+a receipt, while every checked admission requirement fails with
+`VisibilityUnavailable` and retains that receipt for inspection. Do not
+interpret the send as rejected or automatically retry it: the external effect
+may already have happened. Providers declaring `Accepted` or stronger, and
+providers reporting per-destination admissions, retain their existing
+acknowledgement behavior.
 
 ## Codec registration (core 0.18 to 0.19)
 

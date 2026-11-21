@@ -301,6 +301,7 @@ API 中的 `provider` 指负责实际传递消息的后端实现，`local` 是�
 | `NoneAccepted(summary)` | 找到了处理方，但无人接收；查看跳过或拒绝原因。 |
 | `NoDestinations` | 没找到处理方；检查是否先完成订阅，主题名是否一致。 |
 | `OpaqueAccepted` | 消息传递实现说已接收，但不告诉你具体是哪些处理方。 |
+| `SentUnconfirmed` | 发送尝试已经完成，但 provider 没有确认接纳。按事件 ID 对账；不要当成已拒绝，也不要自动重试。 |
 | `Dropped` | 发布前的拦截规则主动丢弃了消息。 |
 
 ### 判断发布失败后能否重发
@@ -348,14 +349,16 @@ if let PublishAcknowledgement::DestinationAdmissions(destinations) = receipt.ack
 
 看到 `Accepted`，且两个目标的状态都是 `Accepted`，订单场景的接入就完成了。这是总线层面的成功标志：消息已经进入两个订阅者的队列，处理函数随后会在总线的工作线程上运行。审计记录和客户视图是否真的写入数据库，要看各自存储的返回值和日志，回执不会告诉你。
 
-回执只说明各订阅者是否**接纳**了这条消息，处理函数此时通常还没执行。`check_admission` 按你给出的条件判断这次发布算不算成功，它只读回执：不会重发，也不会等待处理函数跑完。
+回执只说明各订阅者是否**接纳**了这条消息，处理函数此时通常还没执行。`check_admission` 按你给出的条件判断这次发布算不算成功，它只读回执：不会重发，也不会等待处理函数跑完。两种 checked publish 失败阶段见[预检拒绝与未确认发送](#预检拒绝与未确认发送)。
 
 以订单事件同时发给审计和客户视图为例，两种条件的差别是：
 
 - `AtLeastOneAccepted`：至少有一个订阅者接纳即可。审计接纳、客户视图因队列已满拒绝时，检查仍通过。
 - `AtLeastOneAcceptedAndNoRejected`：至少一个接纳，并且没有人拒绝。上面那种情况会返回 `RejectedDestinations`。前面订单示例用的就是这个条件。
 
-这两种条件需要 provider 报告每个目标的接纳情况。上面的订单示例使用 local，能提供这类回执；Redis 等不公开目标的 provider 会在发布前返回 `CheckedPublishError::UnsupportedVisibility { event_id, provider_id }`，不会运行拦截器、编码器或 SPI 发布，也不会增加发布指标。如果业务只要求 provider 接纳事件，应改用 `ProviderOrDestinationAccepted`：
+### 预检拒绝与未确认发送
+
+这两种条件需要 provider 报告每个目标的接纳情况。上面的订单示例使用 local，能提供这类回执；Redis 等不公开目标的 provider 会在发布前返回 `CheckedPublishError::UnsupportedVisibility { event_id, provider_id }`，不会运行拦截器、编码器或 SPI 发布，也不会增加发布指标。这是预检拒绝，本次没有发布。如果业务只要求 provider 接纳事件，应改用 `ProviderOrDestinationAccepted`：
 
 ```rust
 use qubit_event_bus::CheckedPublishError;
@@ -370,7 +373,7 @@ fn publish_to_redis<T: Send + Sync + 'static>(
 }
 ```
 
-对 Redis，成功表示 broker 接纳了 `XADD`；回执仍不公开具体目标。这不能证明消费者已执行、业务数据已写入，也不保证 Redis 已将数据 fsync 到磁盘。若 provider 提供逐目标结果，新条件允许至少一个目标接纳，即使同时有目标拒绝；`NoDestinations` 和 `NoneAccepted` 会带完整回执返回 `CheckedPublishError::Admission`，拦截器主动丢弃的发布也会失败。重试前应检查回执，先处理不确定或部分成功的结果。
+对 Redis，成功表示 broker 接纳了 `XADD`；回执仍不公开具体目标。这不能证明消费者已执行、业务数据已写入，也不保证 Redis 已将数据 fsync 到磁盘。若 provider 提供逐目标结果，新条件允许至少一个目标接纳，即使同时有目标拒绝；`NoDestinations` 和 `NoneAccepted` 会带完整回执返回 `CheckedPublishError::Admission`，拦截器主动丢弃的发布也会失败。若发布已执行并返回 `SentUnconfirmed`，checked publish 会以 `CheckedPublishError::Admission` 返回完整回执和 `VisibilityUnavailable`：外部副作用可能已经发生，应先按事件 ID 对账，再决定是否重试。`PublishReceipt::check_admission` 只检查已有回执；对于 `SentUnconfirmed`，所有条件都会返回 `VisibilityUnavailable`。
 
 订单服务在发布后按较严的条件检查，并按失败原因决定怎么处理：
 

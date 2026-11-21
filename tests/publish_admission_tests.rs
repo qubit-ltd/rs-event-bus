@@ -349,6 +349,14 @@ fn test_admission_checks_cover_every_acknowledgement_outcome() {
             Ok(()),
         ),
         (
+            "sent unconfirmed",
+            PublishAcknowledgement::SentUnconfirmed,
+            None,
+            Err(AdmissionCheckError::VisibilityUnavailable),
+            Err(AdmissionCheckError::VisibilityUnavailable),
+            Err(AdmissionCheckError::VisibilityUnavailable),
+        ),
+        (
             "interceptor dropped",
             PublishAcknowledgement::DroppedByInterceptor,
             None,

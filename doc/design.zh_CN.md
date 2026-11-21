@@ -340,18 +340,20 @@ pub enum PublishAcknowledgement {
 - `admission_outcome()` 把 `PublishAcknowledgement` 归一为 `AdmissionOutcome`：
   `SentUnconfirmed`（尝试已完成但未确认接纳）、`OpaqueAccepted`（provider 报告接纳但不提供目的地明细）、`Accepted`/`PartiallyAccepted`/
   `NoneAccepted(AdmissionSummary)`、`NoDestinations`（provider 报告了空目的地列表）、
-  `Dropped`（被拦截器丢弃）。`SentUnconfirmed` 没有接纳摘要，checked 接纳以 `VisibilityUnavailable` 失败，并保留完整回执。`FireAndForget` provider 的旧版 `Accepted` 会被归一为 `SentUnconfirmed`，逐目标结果保持原样。未确认发送可能已产生外部副作用，不会自动重试。`Filtered` 目的地（订阅 filter 拒绝）与 `Rejected`
+  `Dropped`（被拦截器丢弃）。`SentUnconfirmed` 没有接纳摘要。普通 `publish` 会返回该回执；`check_admission` 只检查已有回执，不会重新发布或等待 handler，且对所有条件返回 `VisibilityUnavailable`。`FireAndForget` provider 的旧版 `Accepted` 会被归一为 `SentUnconfirmed`，逐目标结果保持原样。未确认发送可能已产生外部副作用，应按事件 ID 对账后再决定是否重试。`Filtered` 目的地（订阅 filter 拒绝）与 `Rejected`
   目的地（容量/准入拒绝）在 `AdmissionSummary` 中分别计数。
 - `check_admission(AdmissionRequirement)` 让调用方声明"我要求至少一个/全部目的地接纳"，
   返回 `Result<(), AdmissionCheckError>`（`VisibilityUnavailable`、`Dropped`、
   `NoAcceptedDestination`、`RejectedDestinations { .. }`）。
 - `publish_checked(request, requirement)` 把发布和接纳条件检查合在一起。如果 provider
   无法提供所需的逐目标可见性，它会在 interceptor、codec 回调、metrics 和 SPI publish
-  之前拒绝请求。对 Redis 等不透明传输应使用 `ProviderOrDestinationAccepted`；它只表示
-  provider 接纳。
+  之前以 `UnsupportedVisibility` 拒绝请求；这是预检拒绝，本次没有发布。对 Redis 等
+  不透明传输应使用 `ProviderOrDestinationAccepted`；它只表示 provider 已确认接纳。若发布
+  已执行并返回 `SentUnconfirmed`，checked publish 会以 `Admission` 返回完整回执和
+  `VisibilityUnavailable`；外部副作用可能已经发生，应先按事件 ID 对账。
 
 这体现 P6：`publish` 返回 `Ok(receipt)` 只表示 provider 调用产生了回执，不一定表示
-目的地已接纳。`admission_outcome()` 区分已知接纳、部分接纳、无目的地、丢弃和 opaque
+目的地已接纳。`admission_outcome()` 区分未确认发送、已知接纳、部分接纳、无目的地、丢弃和 opaque
 确认；只有 `PublishVisibility::DestinationAdmissions` 才能提供目的地明细。
 `publish_all` 返回 `BatchPublishResult`，按输入顺序保留每个请求的
 `Result<PublishReceipt, PublishFailure>`，某一条失败不影响后续请求继续发布。
