@@ -411,6 +411,8 @@ impl EventBusSpi for LocalEventBusSpi {
                 state.change_version = state.change_version.wrapping_add(1);
                 drop(state);
                 self.shared.changed.notify_all();
+                #[cfg(test)]
+                crate::internal::test_wait_probe::announce("shutdown_immediate_registered");
             }
         }
         let shutdown_gate = self.shared.shutdown_gate.lock().unwrap_or_else(PoisonError::into_inner);
@@ -426,7 +428,7 @@ impl EventBusSpi for LocalEventBusSpi {
         self.shared.state.lock().unwrap_or_else(PoisonError::into_inner).closed = true;
         signal_changed(&self.shared);
 
-        let outcome = match mode {
+        let mut outcome = match mode {
             ShutdownMode::Immediate => ShutdownOutcome::Complete,
             ShutdownMode::Graceful { timeout } => {
                 let budget = FiniteWait::new(timeout);
@@ -468,6 +470,15 @@ impl EventBusSpi for LocalEventBusSpi {
                 }
             }
         };
+
+        if matches!(mode, ShutdownMode::Graceful { .. }) {
+            #[cfg(test)]
+            crate::internal::test_wait_probe::announce("graceful_shutdown_decision");
+            let state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if state.shutdown_immediate_requested {
+                outcome = ShutdownOutcome::Complete;
+            }
+        }
 
         let queues = {
             let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
