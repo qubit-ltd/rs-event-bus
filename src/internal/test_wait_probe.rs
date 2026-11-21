@@ -63,7 +63,8 @@ pub(crate) fn install_gated(
     (gate_receiver, observed_receiver, gate_release_sender)
 }
 
-/// Signals at the named synchronization point, blocking if a gate was installed.
+/// Signals at the named synchronization point, blocking if a gate was
+/// installed.
 pub(crate) fn announce(wait_site: &'static str) {
     let mut probes = PROBE
         .get_or_init(|| Mutex::new(Vec::new()))
