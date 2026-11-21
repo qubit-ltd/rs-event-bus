@@ -113,6 +113,10 @@ pub trait AsyncEventBusSpi: Send + Sync + 'static {
     /// backend has already closed must succeed and report a stable outcome.
     /// A later `Immediate` call may strengthen a previously requested
     /// `Graceful` shutdown.
+    /// The facade isolates unwind from destroying a cancelled shutdown
+    /// future, so a destructor panic does not replace a timeout or immediate
+    /// upgrade. Cancellation may still leave partial provider-side effects;
+    /// implementations must make a later call safe and able to finish them.
     /// When called by the facade, creation, polling, and destruction of this
     /// future are scoped for same-bus reentrancy detection. A completed future
     /// whose destructor panics is reported as a structured `provider_panicked`

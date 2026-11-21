@@ -101,6 +101,10 @@ pub trait AsyncEventSubscriptionSpi: Send + 'static {
     /// safe and converge to the closed state; closing an already-closed
     /// receiver must succeed. This lets a facade retry after timeout or future
     /// cancellation without losing ownership of the receiver.
+    /// The facade isolates unwind from destroying a cancelled close future,
+    /// so a destructor panic does not replace the timeout or cancellation.
+    /// Cancellation may still leave partial provider-side effects; a retry
+    /// must safely continue or complete closing the retained receiver.
     /// When called by the facade, creation, polling, and destruction of this
     /// future are scoped for same-bus reentrancy detection. A completed future
     /// whose destructor panics is reported as a structured `provider_panicked`

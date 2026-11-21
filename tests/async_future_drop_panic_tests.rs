@@ -9,6 +9,7 @@
 mod support;
 
 use std::future::Future;
+use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -113,6 +114,193 @@ impl Future for PendingThenDropPanic {
     fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
         Poll::Pending
     }
+}
+
+struct PendingCleanupDropPanic<T>(Arc<AtomicUsize>, PhantomData<fn() -> T>);
+impl<T> Future for PendingCleanupDropPanic<T> {
+    type Output = T;
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        Poll::Pending
+    }
+}
+impl<T> Drop for PendingCleanupDropPanic<T> {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        panic!("pending cleanup future destructor panic");
+    }
+}
+
+struct PendingCleanupDropPanicSpi {
+    inner: FakeAsyncEventBusSpi,
+    pending_shutdown: bool,
+    pending_close: bool,
+    shutdown_drops: Arc<AtomicUsize>,
+    shutdown_calls: Arc<AtomicUsize>,
+    close_drops: Arc<AtomicUsize>,
+    close_calls: Arc<AtomicUsize>,
+}
+
+impl AsyncEventBusSpi for PendingCleanupDropPanicSpi {
+    fn capabilities(&self) -> qubit_event_bus::spi::EventBusCapabilities {
+        self.inner.capabilities()
+    }
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        self.inner.publish(message)
+    }
+    fn subscribe<'a>(
+        &'a self,
+        request: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+        let future = self.inner.subscribe(request);
+        let close_drops = self.close_drops.clone();
+        let close_calls = self.close_calls.clone();
+        let pending_close = self.pending_close;
+        Box::pin(async move {
+            let receiver = future.await?;
+            Ok(Box::new(PendingCleanupDropPanicReceiver {
+                inner: receiver,
+                pending_close,
+                close_drops,
+                close_calls,
+            }) as Box<dyn AsyncEventSubscriptionSpi>)
+        })
+    }
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        if self.pending_shutdown && self.shutdown_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            Box::pin(PendingCleanupDropPanic(self.shutdown_drops.clone(), PhantomData))
+        } else {
+            self.inner.shutdown(mode)
+        }
+    }
+}
+
+struct PendingCleanupDropPanicReceiver {
+    inner: Box<dyn AsyncEventSubscriptionSpi>,
+    pending_close: bool,
+    close_drops: Arc<AtomicUsize>,
+    close_calls: Arc<AtomicUsize>,
+}
+impl AsyncEventSubscriptionSpi for PendingCleanupDropPanicReceiver {
+    fn receive<'a>(&'a mut self, timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
+        self.inner.receive(timeout)
+    }
+    fn settle<'a>(
+        &'a mut self,
+        token: &SettlementToken,
+        disposition: DeliveryDisposition,
+    ) -> SpiFuture<'a, Result<(), SpiError>> {
+        self.inner.settle(token, disposition)
+    }
+    fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), SpiError>> {
+        if self.pending_close && self.close_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            Box::pin(PendingCleanupDropPanic(self.close_drops.clone(), PhantomData))
+        } else {
+            self.inner.close()
+        }
+    }
+}
+
+fn pending_cleanup_drop_panic_bus(
+    provider_id: &str,
+    clock: &ManualMonotonicClock,
+    pending_shutdown: bool,
+    pending_close: bool,
+) -> (AsyncEventBus, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    let shutdown_drops = Arc::new(AtomicUsize::new(0));
+    let close_drops = Arc::new(AtomicUsize::new(0));
+    let spi = Arc::new(PendingCleanupDropPanicSpi {
+        inner: FakeAsyncEventBusSpi::new(),
+        pending_shutdown,
+        pending_close,
+        shutdown_drops: shutdown_drops.clone(),
+        shutdown_calls: Arc::new(AtomicUsize::new(0)),
+        close_drops: close_drops.clone(),
+        close_calls: Arc::new(AtomicUsize::new(0)),
+    });
+    let bus = AsyncEventBus::with_timer(
+        ProviderId::new(provider_id).expect("provider ID"),
+        spi,
+        clock.new_timer(),
+    )
+    .expect("facade");
+    (bus, shutdown_drops, close_drops)
+}
+
+#[test]
+fn test_pending_async_spi_cleanup_drop_panic_preserves_shutdown_progress() {
+    let _hook = PanicHookGuard::suppress();
+    let waker = std::task::Waker::noop();
+
+    let clock = ManualMonotonicClock::new();
+    let (bus, _, close_drops) = pending_cleanup_drop_panic_bus("close-timeout-drop-panic", &clock, false, true);
+    let topic = Topic::<u32>::new("close-timeout-drop-panic").expect("topic");
+    let _subscription = block_on(bus.subscribe(SubscribeRequest::new("close-timeout-drop-panic", topic).unwrap()));
+    let timeout = Duration::from_nanos(19);
+    let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Graceful { timeout }));
+    assert!(shutdown.as_mut().poll(&mut Context::from_waker(waker)).is_pending());
+    clock.advance(timeout).expect("advance receiver close timeout");
+    assert!(matches!(
+        shutdown.as_mut().poll(&mut Context::from_waker(waker)),
+        Poll::Ready(Err(ShutdownError::TimedOut { timeout: elapsed })) if elapsed == timeout
+    ));
+    assert_eq!(close_drops.load(Ordering::SeqCst), 1);
+    assert!(bus.shutdown_report().is_none());
+    assert!(block_on(bus.shutdown(ShutdownMode::Immediate)).is_ok());
+    assert!(bus.shutdown_report().is_some());
+
+    let clock = ManualMonotonicClock::new();
+    let (bus, shutdown_drops, _) = pending_cleanup_drop_panic_bus("shutdown-timeout-drop-panic", &clock, true, false);
+    let timeout = Duration::from_nanos(23);
+    let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Graceful { timeout }));
+    assert!(shutdown.as_mut().poll(&mut Context::from_waker(waker)).is_pending());
+    clock.advance(timeout).expect("advance provider shutdown timeout");
+    assert!(matches!(
+        shutdown.as_mut().poll(&mut Context::from_waker(waker)),
+        Poll::Ready(Err(ShutdownError::TimedOut { timeout: elapsed })) if elapsed == timeout
+    ));
+    assert_eq!(shutdown_drops.load(Ordering::SeqCst), 1);
+    assert!(bus.shutdown_report().is_none());
+    assert!(block_on(bus.shutdown(ShutdownMode::Immediate)).is_ok());
+    assert!(bus.shutdown_report().is_some());
+
+    let clock = ManualMonotonicClock::new();
+    let (bus, shutdown_drops, _) = pending_cleanup_drop_panic_bus("shutdown-upgrade-drop-panic", &clock, true, false);
+    let mut graceful = Box::pin(bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(30),
+    }));
+    assert!(graceful.as_mut().poll(&mut Context::from_waker(waker)).is_pending());
+    let mut immediate = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+    assert!(immediate.as_mut().poll(&mut Context::from_waker(waker)).is_pending());
+    let mut graceful_result = None;
+    let mut immediate_result = None;
+    for _ in 0..8 {
+        if graceful_result.is_none()
+            && let Poll::Ready(result) = graceful.as_mut().poll(&mut Context::from_waker(waker))
+        {
+            graceful_result = Some(result);
+        }
+        if immediate_result.is_none()
+            && let Poll::Ready(result) = immediate.as_mut().poll(&mut Context::from_waker(waker))
+        {
+            immediate_result = Some(result);
+        }
+    }
+    assert!(graceful_result.is_some_and(|result| result.is_ok()));
+    assert!(immediate_result.is_some_and(|result| result.is_ok()));
+    assert_eq!(shutdown_drops.load(Ordering::SeqCst), 1);
+    assert!(bus.shutdown_report().is_some());
+
+    let clock = ManualMonotonicClock::new();
+    let (bus, shutdown_drops, _) = pending_cleanup_drop_panic_bus("shutdown-cancel-drop-panic", &clock, true, false);
+    let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(30),
+    }));
+    assert!(shutdown.as_mut().poll(&mut Context::from_waker(waker)).is_pending());
+    let drop_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(shutdown)));
+    assert!(drop_result.is_ok(), "cancelling shutdown must not unwind");
+    assert_eq!(shutdown_drops.load(Ordering::SeqCst), 1);
+    assert!(block_on(bus.shutdown(ShutdownMode::Immediate)).is_ok());
+    assert!(bus.shutdown_report().is_some());
 }
 impl Drop for PendingThenDropPanic {
     fn drop(&mut self) {

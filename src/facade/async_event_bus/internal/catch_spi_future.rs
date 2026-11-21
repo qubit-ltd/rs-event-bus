@@ -30,6 +30,27 @@ pub(in crate::facade::async_event_bus) struct CatchSpiFuture<F: Future> {
     pub(in crate::facade::async_event_bus) future: Pin<Box<F>>,
 }
 
+/// Owns a cleanup SPI future and isolates its destruction on cancellation.
+struct CleanupFutureGuard<'a, T> {
+    future: Option<SpiFuture<'a, Result<T, SpiError>>>,
+}
+
+impl<T> CleanupFutureGuard<'_, T> {
+    /// Destroys the retained future once and returns any destructor panic.
+    fn drop_future(&mut self) -> Result<(), Box<dyn Any + Send>> {
+        let future = self.future.take();
+        catch_unwind(AssertUnwindSafe(|| drop(future)))
+    }
+}
+
+impl<T> Drop for CleanupFutureGuard<'_, T> {
+    fn drop(&mut self) {
+        if let Err(payload) = self.drop_future() {
+            dispose_panic_payload(payload);
+        }
+    }
+}
+
 /// Captures a provider panic while polling its future.
 ///
 /// # Type Parameters
@@ -62,8 +83,8 @@ pub(in crate::facade) async fn catch_spi_future<T, F: Future<Output = Result<T, 
         .map_err(|payload| provider_panic(provider_id.as_str(), operation, resource, payload))?
 }
 
-/// Awaits a cleanup future, then captures a panic from destroying its completed
-/// state.
+/// Awaits a cleanup future and isolates panics from destroying it, both after
+/// completion and when the awaiting operation is cancelled.
 ///
 /// # Type Parameters
 /// - `T`: successful cleanup output.
@@ -77,18 +98,27 @@ pub(in crate::facade) async fn catch_spi_future<T, F: Future<Output = Result<T, 
 ///
 /// # Returns
 /// The provider result, or a structured error for a terminal destructor panic.
+/// On cancellation, a destructor panic is disposed and does not replace the
+/// caller's timeout, shutdown upgrade, or cancellation behavior.
 ///
 /// # Errors
 /// Preserves a provider error over a secondary destructor panic; otherwise
 /// converts that panic to `provider_panicked`.
 pub(in crate::facade) async fn catch_cleanup_spi_future<T>(
-    mut future: SpiFuture<'_, Result<T, SpiError>>,
+    future: SpiFuture<'_, Result<T, SpiError>>,
     provider_id: &ProviderId,
     operation: &'static str,
     resource: Option<&str>,
 ) -> Result<T, SpiError> {
-    let result = catch_spi_future(future.as_mut(), provider_id, operation, resource).await;
-    match catch_unwind(AssertUnwindSafe(|| drop(future))) {
+    let mut guard = CleanupFutureGuard { future: Some(future) };
+    let result = catch_spi_future(
+        guard.future.as_mut().expect("cleanup future is present").as_mut(),
+        provider_id,
+        operation,
+        resource,
+    )
+    .await;
+    match guard.drop_future() {
         Ok(()) => result,
         Err(payload) => match result {
             Err(error) => {
