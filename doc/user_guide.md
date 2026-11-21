@@ -2038,7 +2038,7 @@ An `Ok(ShutdownReport)` means the provider returned a report; inspect it before 
 
 ### Wait for a topic to become idle
 
-When the provider supports `wait_for_idle(&topic, timeout)`, `Idle` reports that the provider observed no queued or unsettled deliveries for that topic. Use `wait_for_received_deliveries` to check work already taken by this facade. A provider that cannot answer returns `IdleWaitUnsupported`; its backlog is then unknown. If both results matter, call each method separately and apply the application's shutdown budget to each wait. Each result describes its own observation time. Neither replaces a check of the database and of failure records.
+When the provider supports `wait_for_idle(&topic, timeout)`, `Idle` reports that the provider's queue and settlement records showed no queued or unsettled deliveries for that topic. With the synchronous local provider, a delivery remains outstanding after receive until a terminal settlement or discard. A retry returns it to the queue. Use `wait_for_received_deliveries` to check work already received by this facade; this is an independent query. A provider that cannot answer returns `IdleWaitUnsupported`; its backlog is then unknown. If both results matter, call each method separately and apply the application's shutdown budget to each wait. Each result describes its own observation time. Neither replaces a check of the database and of failure records.
 
 To give order events still queued inside local a chance to finish before shutdown, not only the ones the bus has already taken, wait for the topic to become idle before driving bounded bus shutdown. Keep the subscription handles for shutdown. The built-in local provider supports this query. For a transport that does not, the `IdleWaitUnsupported` arm falls back to waiting for received deliveries only:
 
@@ -2065,7 +2065,7 @@ if outcome == WaitOutcome::TimedOut {
 }
 ```
 
-When `wait_for_idle` is supported, `Idle` means the provider observed no queued or unsettled delivery for the topic at that time. `wait_for_received_deliveries` separately reports whether work already received by this facade has finished. Neither result is an atomic drain guarantee, and a provider observation does not include work already taken by this facade. The `IdleWaitUnsupported` fallback says that provider backlog is unknown. `TimedOut` only means the wait expired; a handler may still be running. Both methods look at this bus object in this process only. For a transport connected to a message server, they say nothing about consumers in other processes.
+When `wait_for_idle` is supported, `Idle` means the provider's queue and settlement records showed no queued or unsettled delivery for the topic at that time. The synchronous local provider continues to count a received delivery as outstanding until terminal settlement or discard; retry puts it back in the queue. `wait_for_received_deliveries` separately reports whether work already received by this facade has finished. The two observations can overlap, but they are independent and describe their own observation times. Neither result is an atomic drain guarantee. The `IdleWaitUnsupported` fallback says that provider backlog is unknown. `TimedOut` only means the wait expired; a handler may still be running. Both methods look at this bus object in this process only. For a transport connected to a message server, they say nothing about consumers in other processes.
 
 ### Shut down an async bus
 

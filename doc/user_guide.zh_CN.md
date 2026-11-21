@@ -2035,7 +2035,7 @@ match ticket.wait(Some(Duration::from_secs(2))) {
 
 ### 等待某个主题空闲
 
-provider 支持 `wait_for_idle(&topic, timeout)` 时，`Idle` 表示 provider 观察到该主题没有排队或未结算的投递。要检查 facade 已接收的工作，请单独调用 `wait_for_received_deliveries`。provider 不支持这项查询时返回 `IdleWaitUnsupported`，此时 provider 积压未知。若两项结果都重要，应分别调用这两个方法，并按应用的停机预算处理各次等待。每项结果只代表各自的观察时点，不能代替检查数据库和失败记录。
+provider 支持 `wait_for_idle(&topic, timeout)` 时，`Idle` 表示 provider 根据自己的队列和结算记录，观察到该主题没有排队或未结算的投递。同步 local 会把已接收但尚未完成终态结算或丢弃的投递继续计为待完成工作；重试会将投递放回队列。`wait_for_received_deliveries` 则独立查询 facade 已接收的工作。provider 不支持主题空闲查询时返回 `IdleWaitUnsupported`，此时 provider 积压未知。若两项结果都重要，应分别调用这两个方法，并按应用的停机预算处理各次等待。每项结果只代表各自的观察时点，不能代替检查数据库和失败记录。
 
 如果停机前想让 local 队列里排队的订单事件也有机会处理完，而不只是总线已取到的那几条，可以先等待主题空闲，再驱动有界总线停机，并保留订阅句柄交由停机流程清理。内置 local 支持这项查询；换成其他传递实现时，用 `IdleWaitUnsupported` 分支退回到只等待已取到的消息：
 
@@ -2062,7 +2062,7 @@ if outcome == WaitOutcome::TimedOut {
 }
 ```
 
-provider 支持 `wait_for_idle` 时，`Idle` 表示 provider 在该时点观察到主题没有排队或未结算的投递。`wait_for_received_deliveries` 则单独报告 facade 已接收的工作是否结束。两项结果都不提供原子排空保证，provider 的观察也不包含 facade 已经取走的工作。`IdleWaitUnsupported` 回退只表示 provider 积压未知。`TimedOut` 只说明等待期满，处理函数可能还在运行。这两个方法只观察本进程内的这个总线对象；对于连接消息服务器的实现，它们不能说明其他进程的消费者也处理完了。
+provider 支持 `wait_for_idle` 时，`Idle` 表示 provider 根据自己的队列和结算记录，在该时点观察到主题没有排队或未结算的投递。同步 local 会继续把已接收但尚未完成终态结算或丢弃的投递计为待完成工作；重试会将它放回队列。`wait_for_received_deliveries` 则单独报告 facade 已接收的工作是否结束。两项观察可以重叠，但彼此独立，且各自对应不同的观察时点；它们都不提供原子排空保证。`IdleWaitUnsupported` 回退只表示 provider 积压未知。`TimedOut` 只说明等待期满，处理函数可能还在运行。这两个方法只观察本进程内的这个总线对象；对于连接消息服务器的实现，它们不能说明其他进程的消费者也处理完了。
 
 ### 异步总线的停机流程
 
