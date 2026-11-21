@@ -1355,6 +1355,14 @@ close succeeded. If `subscribe` completes when the bus is no longer
 `Running`, the receiver is closed immediately and the call returns
 `SubscribeError::Closed`.
 
+Before polling a non-empty close batch, shutdown signals active runners to stop
+and checks the calling attempt's deadline. If a zero-length budget is already
+exhausted, that call returns `ShutdownError::TimedOut` without starting the
+batch. An application that keeps polling an active runner lets the runner finish
+its receive loop and close its own receiver independently, including after the
+shutdown call times out. An empty close batch still permits later cleanup stages,
+including provider shutdown, to run.
+
 ### 9.6 Finite settlement retries
 
 `SettlementRetryConfig::new(max_attempts, max_elapsed, initial_backoff, max_backoff)` takes `NonZeroU32` and three `Duration`s. Defaults are 5 attempts including the first, 5 seconds, 10 ms initial backoff, and a 1-second cap. Elapsed and initial backoff must be nonzero and max must be at least initial; one attempt is valid.

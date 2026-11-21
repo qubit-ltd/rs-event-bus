@@ -62,7 +62,9 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             commands.append(command)
             if "--list" in command:
                 return "test_sync_spi_conformance: test\n"
-            return ""
+            return ("running 1 test\ntest test_sync_spi_conformance ... ok\n"
+                    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; "
+                    "0 filtered out; finished in 0.00s\n")
 
         with patch("scripts.check_downstream_compatibility.run", side_effect=fake_run):
             verify_test(Path("/redis"), "test_sync_spi_conformance",
@@ -71,6 +73,42 @@ class DownstreamCompatibilityTests(unittest.TestCase):
 
         self.assertEqual(len(commands), 2)
         self.assertTrue(all("--locked" in command for command in commands))
+        self.assertIn("--format", commands[1])
+        self.assertIn("pretty", commands[1])
+        self.assertIn("--color", commands[1])
+        self.assertIn("never", commands[1])
+
+    def test_test_execution_requires_one_successful_target_result(self):
+        valid = ("running 1 test\ntest test_sync_spi_conformance ... ok\n"
+                 "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; "
+                 "2 filtered out; finished in 0.00s\n")
+        cases = (
+            ("ignored", "test test_sync_spi_conformance ... ignored\n"
+             "test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out\n"),
+            ("zero execution", "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out\n"),
+            ("another test passed", "test unrelated ... ok\n"
+             "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"),
+            ("duplicate target", valid.replace("test result:",
+             "test test_sync_spi_conformance ... ok\ntest result:")),
+            ("missing summary", "test test_sync_spi_conformance ... ok\n"),
+            ("ambiguous summaries", valid + valid.split("test result:", 1)[1].join(["test result:", ""])),
+            ("extra malformed summary", valid + "test result: ok. 0 passed\n"),
+            ("extra execution", valid.replace("1 passed; 0 failed", "2 passed; 0 failed")),
+        )
+        for label, output in (("valid", valid), *cases):
+            with self.subTest(output=label):
+                results = iter(("test_sync_spi_conformance: test\n", output))
+                with patch("scripts.check_downstream_compatibility.run",
+                           side_effect=lambda *_args, **_kwargs: next(results)):
+                    if label == "valid":
+                        verify_test(Path("/redis"), "test_sync_spi_conformance",
+                                    ["--test", "sync_standalone_tests",
+                                     "test_sync_spi_conformance"], Path("/core"), None, {})
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "test_sync_spi_conformance"):
+                            verify_test(Path("/redis"), "test_sync_spi_conformance",
+                                        ["--test", "sync_standalone_tests",
+                                         "test_sync_spi_conformance"], Path("/core"), None, {})
 
     def test_metadata_updates_snapshot_then_validates_locked_graph(self):
         commands = []

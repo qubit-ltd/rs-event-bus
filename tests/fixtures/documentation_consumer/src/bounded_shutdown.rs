@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::EventBus;
+use qubit_event_bus::EventBusShutdown;
 use qubit_event_bus::ShutdownReport;
 use qubit_event_bus::error::ShutdownError;
 use qubit_event_bus::spi::ShutdownMode;
@@ -87,6 +88,25 @@ where
         Ok(report) => Ok(report),
         Err(ShutdownError::TimedOut { .. }) => shutdown(retry_timeout).await,
         Err(error) => Err(error),
+    }
+}
+
+/// Observes an IoC-managed shutdown ticket and preserves wait errors.
+pub async fn observe_shutdown_ticket(
+    bus: &EventBus,
+    ticket: &EventBusShutdown,
+) -> Result<ShutdownReport, ShutdownError> {
+    match ticket.wait_async().await {
+        Ok(report) => Ok(report),
+        Err(error) => {
+            if let Some(report) = bus.shutdown_report() {
+                eprintln!(
+                    "provider outcome={:?}, known abandoned={}, provider uncertainty={}: {report:?}",
+                    report.outcome, report.known_abandoned_deliveries, report.provider_may_have_abandoned_deliveries,
+                );
+            }
+            Err(error)
+        }
     }
 }
 

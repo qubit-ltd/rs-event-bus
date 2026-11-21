@@ -1991,6 +1991,51 @@ fn test_zero_budget_shutdown_does_not_start_receiver_close() {
 }
 
 #[test]
+fn test_zero_budget_shutdown_allows_active_runner_to_close() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let clock = ManualMonotonicClock::new_shared();
+    let bus = AsyncEventBus::with_timer(ProviderId::new("fake").unwrap(), spi.clone(), clock.new_timer())
+        .expect("valid provider capabilities");
+
+    block_on(async {
+        let subscription = bus
+            .subscribe(SubscribeRequest::new("active-zero-budget-close", topic()).expect("valid subscription"))
+            .await
+            .expect("subscription");
+        let mut runner = Box::pin(subscription.run(|_| async { Ok(()) }));
+        let mut context = Context::from_waker(Waker::noop());
+
+        assert!(runner.as_mut().poll(&mut context).is_pending());
+        assert!(
+            spi.operation_log().contains(&"receive"),
+            "runner must reach its receive wait before shutdown"
+        );
+        assert_eq!(0, spi.close_call_count());
+
+        assert!(matches!(
+            bus.shutdown(ShutdownMode::Graceful {
+                timeout: Duration::ZERO
+            })
+            .await,
+            Err(ShutdownError::TimedOut {
+                timeout: Duration::ZERO
+            })
+        ));
+        assert_eq!(0, spi.close_call_count(), "shutdown did not start receiver close");
+
+        assert!(matches!(runner.as_mut().poll(&mut context), Poll::Ready(Ok(()))));
+        assert_eq!(1, spi.close_call_count(), "the active runner closes its receiver");
+
+        let report = bus
+            .shutdown(ShutdownMode::Immediate)
+            .await
+            .expect("retry completes bus shutdown");
+        assert_eq!(ShutdownOutcome::Complete, report.outcome);
+        assert_eq!(1, spi.close_call_count(), "successful runner close is not repeated");
+    });
+}
+
+#[test]
 fn test_receiver_close_batch_stops_after_deadline_expires_during_first_close() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let clock = ManualMonotonicClock::new_shared();

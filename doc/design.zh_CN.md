@@ -1265,6 +1265,12 @@ shutdown 清理。provider shutdown 成功返回后，仍剩余的 control 会�
 释放 facade 所有的资源，但不表示 receiver close 已成功。若 `subscribe`
 完成时 bus 已不是 `Running`，接收器会被立即关闭并返回 `SubscribeError::Closed`。
 
+轮询非空关闭批次前，shutdown 会向活动 runner 发出停止信号，并检查当前
+调用的 deadline。若零长度预算此时已耗尽，该调用会返回
+`ShutdownError::TimedOut`，且不会启动批次。应用继续轮询活动 runner 时，runner
+可结束接收并独立关闭自己的 receiver，即使 shutdown 调用已经超时。关闭批次为空时，
+后续清理阶段（包括 provider shutdown）仍可继续执行。
+
 ### 9.6 有限结算重试
 
 `SettlementRetryConfig::new(max_attempts, max_elapsed, initial_backoff, max_backoff)` 接收 `NonZeroU32` 和三个 `Duration`；默认 5 次（含首次）、5 秒、10 ms、1 秒。elapsed 与 initial 必须非零，max_backoff 不得小于 initial；允许一次尝试。

@@ -1890,6 +1890,7 @@ use std::time::Duration;
 
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::EventBus;
+use qubit_event_bus::EventBusShutdown;
 use qubit_event_bus::ShutdownReport;
 use qubit_event_bus::error::ShutdownError;
 use qubit_event_bus::spi::ShutdownMode;
@@ -1965,6 +1966,25 @@ where
         Err(error) => Err(error),
     }
 }
+
+/// Observes an IoC-managed shutdown ticket and preserves wait errors.
+pub async fn observe_shutdown_ticket(
+    bus: &EventBus,
+    ticket: &EventBusShutdown,
+) -> Result<ShutdownReport, ShutdownError> {
+    match ticket.wait_async().await {
+        Ok(report) => Ok(report),
+        Err(error) => {
+            if let Some(report) = bus.shutdown_report() {
+                eprintln!(
+                    "provider outcome={:?}, known abandoned={}, provider uncertainty={}: {report:?}",
+                    report.outcome, report.known_abandoned_deliveries, report.provider_may_have_abandoned_deliveries,
+                );
+            }
+            Err(error)
+        }
+    }
+}
 ```
 
 检查返回的完整报告，再决定清理是否完成。`ShutdownOutcome::TimedOut` 是 provider 返回的终态报告；`ShutdownError::TimedOut` 表示调用方第二次观察期限到期。应记录 `bus.delivery_metrics()`、各订阅 `terminal_failure()` 与快照，由外部监督器决定进程如何处置。`ShutdownReport` 中 `known_abandoned_deliveries` 统计已知放弃量，`provider_may_have_abandoned_deliveries` 提醒 provider 还有无法精确计数的损失可能；local 是临时实现。
@@ -2004,7 +2024,7 @@ match ticket.wait(Some(Duration::from_secs(2))) {
 }
 ```
 
-如果 IoC 容器把“停止”和“等待”分成两个回调，可在 stop 回调中调用 `request_shutdown`，并把返回的 ticket 保存在共享状态里；wait 回调再执行 `ticket.wait_async().await`。容器取消 wait future 时，保留同一个 `EventBusShutdown` 并再次轮询 `wait_async` 即可：取消只移除 waker 注册，不会取消停机。如果等待返回错误，先读取 `bus.shutdown_report()`，再传播原始错误；`None` 表示当前还未发布报告，读取不会驱动清理。例如先保存 `let result = ticket.wait_async().await;`，记录可用报告中的 outcome、已知放弃数和 provider 不确定性，然后原样返回其中的 `error`。execution-services 的 [IoC fixture](https://github.com/qubit-ltd/rs-execution-services/blob/main/tests/fixtures/ioc_application_consumer/src/managed_event_bus.rs) 展示了这一适配方式。等待期间应让共享状态继续持有 ticket；它可重复观察，但没有实现 `Clone`。
+如果 IoC 容器把“停止”和“等待”分成两个回调，可在 stop 回调中调用 `request_shutdown`，并把返回的 ticket 保存在共享状态里；wait 回调再执行 `ticket.wait_async().await`。容器取消 wait future 时，保留同一个 `EventBusShutdown` 并再次轮询 `wait_async` 即可：取消只移除 waker 注册，不会取消停机。如果等待返回错误，先读取 `bus.shutdown_report()`，再传播原始错误；`None` 表示当前还未发布报告，读取不会驱动清理。例如先保存 `let result = ticket.wait_async().await;`，记录可用报告中的 outcome、已知放弃数和 provider 不确定性，然后原样返回其中的 `error`。execution-services 的 [IoC fixture](https://github.com/qubit-ltd/rs-execution-services/blob/main/tests/fixtures/ioc_application_consumer/src/managed_event_bus.rs) 用于展示 stop/wait 回调分离、共享状态保留 ticket 和取消后的继续观察。本指南中已编译的 `observe_shutdown_ticket` 示例给出了完整的等待错误分支，包括读取报告并返回原始错误。等待期间应让共享状态继续持有 ticket；它可重复观察，但没有实现 `Clone`。
 
 `shutdown_report()` 是 `v0.21.4` 发布 tag 之后加入的源码 API（本 checkout 中的提交为 `4eb5b65`）。`Some(report)` 表示 provider shutdown 已完成并发布结果，即使 receiver 清理同时返回关闭错误也是如此。`None` 仅表示读取时尚未发布报告；它不是停机结果，读取也不会开始或推进清理。使用发行版的调用方应依赖包含这项源码变更的版本。
 
@@ -2043,13 +2063,11 @@ if outcome == WaitOutcome::TimedOut {
 
 ### 异步总线的停机流程
 
-这里说明的零预算 receiver 关闭规则来自 `v0.21.4` 之后的源码变更，适用于包含该变更的源码 checkout，以及后续包含它的发行版。Graceful 模式下，仍有已登记 receiver 时零超时不会启动 receiver close；receiver 批次为空时则可继续执行 provider shutdown。详见[迁移说明](migration.zh_CN.md#core-0214-之后的异步零预算停机)。
+这里说明的零预算 receiver 关闭规则来自 `v0.21.4` 之后的源码变更，适用于包含该变更的源码 checkout，以及后续包含它的发行版。Graceful 停机会先关闭新接纳并通知活动 runner 停止，再于轮询非空 receiver 关闭批次前检查当前调用的 deadline。零超时会返回 `ShutdownError::TimedOut`，且不会启动该批次。应用继续轮询活动 runner 时，runner 可在 shutdown 调用返回后结束接收并关闭自己的 receiver。receiver 批次为空时仍可进入 runner 和 provider 清理阶段；这些阶段需要等待时也可能超时。空批次不会跳过 provider shutdown。详见[迁移说明](migration.zh_CN.md#core-0214-之后的异步零预算停机)。
 
 异步发布回调（包括发布拦截器和终结发布错误处理器）在发布总线的 poll 作用域中运行。在回调中直接等待同一总线的 `shutdown` 或调用 `wait_for_received_deliveries`，会返回 `LifecycleError::WouldDeadlock`；即使当前没有已接收投递，等待检查也采用保守保护。回调返回后，由应用生命周期任务驱动停机。操作另一条总线不会触发该保护。此 poll 作用域检查不检测独立 spawn 任务之间任意的依赖环。
 
 应用运行期间要持续驱动异步 `run`。收到停止信号后，结束该 `run` future，直接驱动有界总线停机。不要在停机 helper 前无期限等待 `close().await`：总线停机会接管保留的 session，并应用 Graceful deadline。下面的 `handler` 与 `shutdown_signal` 由应用提供，流程放在后台任务中：
-
-Graceful 停机一开始就会关闭新接纳。若仍有已登记的 receiver，零超时会返回 `ShutdownError::TimedOut`，且不会开始关闭 receiver。若 receiver 批次为空，停机仍可在零超时下进入 runner 和 provider 阶段；需要等待的阶段仍可能超时。因此，空 receiver 批次不等于跳过 provider shutdown。
 
 ```rust
 use std::time::Duration;

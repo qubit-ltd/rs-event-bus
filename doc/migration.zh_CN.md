@@ -47,9 +47,12 @@ ephemeral，close/drop 可能丢失排队或未结算消息。
 
 ## Core 0.21.4 之后的异步零预算停机
 
-当前开发源码记录了异步 facade 回归测试覆盖的零预算边界：停机首先关闭新接纳。
-若仍有已登记的 receiver，零预算到期时不会开始关闭它们；若 receiver 批次为空，
-清理可以继续进入 provider shutdown，但需要等待时仍可能超时。该源码晚于
+当前开发源码记录了异步 facade 回归测试覆盖的零预算边界：停机先关闭新接纳并通知
+活动 runner 停止。轮询非空 receiver 关闭批次前，会检查当前调用的 deadline。若仍有
+已登记 receiver 且零预算已耗尽，该调用会返回 `ShutdownError::TimedOut`，不会启动
+receiver close。应用继续轮询活动 runner 时，runner 可在 shutdown 调用返回后结束接收并
+关闭自己的 receiver。若 receiver 批次为空，清理可继续进入 provider shutdown，但需要
+等待时仍可能超时。该源码晚于
 `v0.21.4`，目前没有更晚的发行标签可将其标记为已发布版本。使用包含此行为的发行版时
 再应用这条说明；不要仅凭当前源码树推断已发布版本。
 

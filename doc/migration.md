@@ -62,10 +62,14 @@ lifecycle.
 ## Async zero-budget shutdown after core 0.21.4
 
 The current development source documents the zero-budget boundary exercised by
-the async facade regressions. Shutdown stops admission first. If registered
-receivers remain, an expired zero budget does not start their close operations;
-with an empty receiver batch, cleanup may proceed to provider shutdown, which
-can still time out if it must wait. This source is newer than `v0.21.4`, and
+the async facade regressions. Shutdown stops admission and signals active runners to stop first. Before
+polling a non-empty receiver-close batch, it checks the call's deadline. If
+registered receivers remain and a zero budget is already exhausted, that call
+returns `ShutdownError::TimedOut` without starting their close operations. An
+active runner that the application continues to poll can finish its receive loop
+and close its own receiver after the shutdown call returns. With an empty receiver
+batch, cleanup may proceed to provider shutdown, which can still time out if it
+must wait. This source is newer than `v0.21.4`, and
 there is no later release tag to assign it a published version. Apply this
 guidance when using a release that contains the behavior; do not infer a
 published version from the current source tree.

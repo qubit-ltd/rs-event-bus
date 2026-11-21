@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -128,8 +129,32 @@ def verify_test(root, name, arguments, core, redis, env):
     if len(matches) != 1:
         raise RuntimeError(f"expected exactly one test listing for {name!r}, got {len(matches)}")
     command = ["cargo", "test", "--locked", "--manifest-path", str(manifest), *config,
-               *arguments, "--", "--exact", "--test-threads=1"]
-    run(command, cwd=root, env=env, label=f"test:{root.name}:{name}")
+               *arguments, "--", "--exact", "--test-threads=1", "--format", "pretty",
+               "--color", "never"]
+    output = run(command, cwd=root, env=env, label=f"test:{root.name}:{name}")
+    target_line = f"test {name} ... ok"
+    target_runs = [line.strip() for line in output.splitlines() if line.strip() == target_line]
+    if len(target_runs) != 1:
+        raise RuntimeError(
+            f"expected exactly one passing execution of {name!r}, got {len(target_runs)}"
+        )
+    summaries = [line.strip() for line in output.splitlines()
+                 if line.strip().startswith("test result:")]
+    if len(summaries) != 1:
+        raise RuntimeError(f"expected exactly one successful test summary for {name!r}")
+    summary = re.fullmatch(
+        r"test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; "
+        r"(\d+) measured; (\d+) filtered out(?:; finished in .+)?",
+        summaries[0],
+    )
+    if summary is None:
+        raise RuntimeError(f"expected exactly one successful test summary for {name!r}")
+    passed, failed, ignored, measured, _filtered = map(int, summary.groups())
+    if (passed, failed, ignored, measured) != (1, 0, 0, 0):
+        raise RuntimeError(
+            f"expected {name!r} to be the only executed test (1 passed, 0 failed/ignored/measured), "
+            f"got {passed} passed, {failed} failed, {ignored} ignored, {measured} measured"
+        )
 
 
 def git_revision_and_tracked_changes(root):

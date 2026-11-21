@@ -152,12 +152,15 @@ impl AsyncEventBus {
     /// # Parameters
     /// - `mode`: Shutdown policy and, for graceful mode, its deadline.
     ///
-    /// Graceful shutdown first stops admission, then closes registered
-    /// receivers. If receivers remain when a zero-length budget is exhausted,
-    /// their close operations are not started. An empty receiver batch can
-    /// proceed to later cleanup stages, including provider shutdown, even
-    /// with a zero-length budget; those stages can still time out if they need
-    /// to wait.
+    /// Graceful shutdown first stops admission and signals active runners to
+    /// stop, then checks the deadline before starting the registered receiver
+    /// close batch. If receivers remain when a zero-length budget is exhausted,
+    /// this call returns [`ShutdownError::TimedOut`] without starting those
+    /// close operations. An active runner that the application continues to
+    /// poll can independently finish receiving and close its own receiver
+    /// after this call returns. An empty receiver batch can proceed to later
+    /// cleanup stages, including provider shutdown, even with a zero-length
+    /// budget; those stages can still time out if they need to wait.
     ///
     /// # Returns
     /// The cached provider outcome, the cumulative number of facade-held
