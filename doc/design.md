@@ -2332,3 +2332,29 @@ Run repository scripts from the root of a full Git checkout. `./scripts/project-
 The synchronous and asynchronous local facades expose `LocalCapacityMonitor` through `local_with_config_and_monitor(local_config, facade_config)`. Their existing `local_with_monitor` entry points delegate with `EventBusFacadeConfig::default()`. The new entry points combine local queue and outstanding limits with facade middleware, codec, and delivery settings while retaining normal facade validation; construction errors use `ProviderError::Creation` with the provider or facade error as their source. Registry construction and the opaque Redis provider do not expose this capability. Snapshots copy the existing outstanding budget and saturated rejection counters under the budget mutex. Lock order remains queue then budget on admission; snapshot acquires only the budget lock. The handle owns only an `Arc` to accounting state and immutable queue capacity, so it does not retain queues or payloads.
 
 Snapshot count measures accepted delivery copies until terminal release, including pending and in-flight. Declared weight is application accounting, not RSS; a missing weight limit means disabled and reports zero usage. Rejection counters count destination attempts, including each fanout target and each retry attempt. The observation is internally consistent at its lock point but does not synchronize with queue reads or guarantee a later publish will be admitted. `DestinationAdmission::new` continues to create unclassified rejections (`None`); local rejections carry a category. The added private field is visible through derived `Debug` and `Eq`, so an old unclassified rejection may differ from an otherwise identical categorized local rejection.
+
+## Receiver close batch measurement (2026-11-21)
+
+Measured with `cargo +1.94.0 test --locked --release --test async_facade_tests -- --ignored --exact test_measure_receiver_close_batch --nocapture` on Linux x86_64. Twenty-five samples per size used the manual fake SPI; provider waiting was excluded. A two-second application shutdown budget was used as the representative scenario, with a 10% (200 ms) maximum acceptable facade cost for 256 receivers.
+
+| Receivers | Scenario | Polls P50/P95 | Facade time P50/P95 |
+| ---: | --- | ---: | ---: |
+| 1 | all ready | 1 / 1 | 6 / 7 µs |
+| 1 | one-by-one wakeups | 2 / 2 | 3 / 3 µs |
+| 64 | all ready | 64 / 64 | 164 / 184 µs |
+| 64 | one-by-one wakeups | 2,144 / 2,144 | 370 / 392 µs |
+| 256 | all ready | 256 / 256 | 526 / 536 µs |
+| 256 | one-by-one wakeups | 33,152 / 33,152 | 4,172 / 4,584 µs |
+
+The sparse-wakeup case does show quadratic polling, but its measured P95 is 4.584 ms at 256 receivers, below the 200 ms decision threshold. These isolated measurements do not demonstrate a deployment-level need for a more complex wake-driven scheduler, so the existing close iteration remains unchanged.
+
+## Validate the current core against downstream consumers
+
+For a release review or a change to the SPI, accepted-delivery semantics, or lifecycle contract, check the current core against the selected Redis and rs-task source revisions:
+
+```sh
+python3 -B scripts/check_downstream_compatibility.py \
+  --redis-root ../rs-event-bus-redis --task-root ../rs-task
+```
+
+The command reports all three Git revisions, resolves each downstream graph with Cargo `patch.crates-io` overrides, verifies that exactly one reachable `qubit-event-bus` package comes from this checkout, confirms each exact test is present, and runs Redis sync/async SPI conformance plus the rs-task durable outbox cancellation regression. Redis conformance requires the existing testcontainers-compatible Redis runtime. The script uses isolated Cargo target directories and restores the input worktrees' original lockfile bytes. This check is release-focused; ordinary pull request CI remains independent of downstream branches and Redis services.

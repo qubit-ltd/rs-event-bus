@@ -1971,6 +1971,11 @@ fn test_zero_budget_shutdown_does_not_start_receiver_close() {
             })
         ));
         assert_eq!(
+            None,
+            bus.shutdown_report(),
+            "caller timeout must not publish a provider report"
+        );
+        assert_eq!(
             0,
             spi.close_call_count(),
             "an expired budget must not start a receiver close"
@@ -2084,6 +2089,91 @@ fn test_empty_receiver_batch_proceeds_to_provider_with_zero_budget() {
     .expect("empty close batch proceeds to existing shutdown stages");
     assert_eq!(ShutdownOutcome::Complete, report.outcome);
     assert_eq!(0, spi.close_call_count());
+}
+
+/// Measures facade polling overhead for a ready receiver batch and sparse close
+/// wakes.
+///
+/// The decision threshold is 10% of a representative two-second application
+/// shutdown budget (200 ms for 256 receivers). The fake provider isolates
+/// facade traversal from real provider wait time.
+#[test]
+#[ignore = "release-only receiver close polling measurement"]
+fn test_measure_receiver_close_batch() {
+    fn percentile<T: Copy>(sorted: &[T], percentile: usize) -> T {
+        let index = (sorted.len() - 1) * percentile / 100;
+        sorted[index]
+    }
+
+    fn run_sample(count: usize, sparse_wakes: bool) -> (Duration, usize) {
+        let spi = Arc::new(FakeAsyncEventBusSpi::new());
+        if sparse_wakes {
+            spi.pause_close();
+        }
+        let bus = AsyncEventBus::from_spi(ProviderId::new("close-measurement").unwrap(), spi.clone())
+            .expect("valid provider capabilities");
+        let subscriptions = block_on(async {
+            let mut subscriptions = Vec::with_capacity(count);
+            for index in 0..count {
+                let subscriber_id = format!("measure-{index}");
+                subscriptions.push(
+                    bus.subscribe(SubscribeRequest::new(&subscriber_id, topic()).expect("valid subscription"))
+                        .await
+                        .expect("subscription starts"),
+                );
+            }
+            subscriptions
+        });
+        let before_polls = spi.close_poll_count();
+        let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+        let mut context = Context::from_waker(Waker::noop());
+        let started = Instant::now();
+        if sparse_wakes {
+            assert!(shutdown.as_mut().poll(&mut context).is_pending());
+            for index in 0..count {
+                assert!(spi.release_one_close(), "receiver {index} has a pending close");
+                let result = shutdown.as_mut().poll(&mut context);
+                if index + 1 == count {
+                    assert!(result.is_ready(), "last close completes shutdown");
+                } else {
+                    assert!(result.is_pending(), "remaining receivers keep shutdown pending");
+                }
+            }
+        } else {
+            assert!(shutdown.as_mut().poll(&mut context).is_ready());
+        }
+        let elapsed = started.elapsed();
+        let polls = spi.close_poll_count() - before_polls;
+        drop(subscriptions);
+        (elapsed, polls)
+    }
+
+    println!(
+        "receiver_close_measurement os={} arch={} rustc={} samples=25 budget=2s threshold=200ms",
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        option_env!("CARGO_PKG_RUST_VERSION").unwrap_or("unspecified")
+    );
+    for count in [1, 64, 256] {
+        for (scenario, sparse_wakes) in [("ready_batch", false), ("one_by_one_wakes", true)] {
+            let mut nanos = Vec::with_capacity(25);
+            let mut polls = Vec::with_capacity(25);
+            for _ in 0..25 {
+                let (elapsed, poll_count) = run_sample(count, sparse_wakes);
+                nanos.push(elapsed.as_nanos());
+                polls.push(poll_count);
+            }
+            nanos.sort_unstable();
+            polls.sort_unstable();
+            println!(
+                "receiver_close_measurement receivers={count} scenario={scenario} polls_p50={} polls_p95={} elapsed_us_p50={} elapsed_us_p95={}",
+                percentile(&polls, 50),
+                percentile(&polls, 95),
+                percentile(&nanos, 50) / 1_000,
+                percentile(&nanos, 95) / 1_000
+            );
+        }
+    }
 }
 
 #[test]
@@ -4274,6 +4364,11 @@ fn test_async_spi_operation_call_panics_are_returned_as_structured_errors() {
     spi.panic_on_shutdown_call();
     let shutdown_error = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap_err();
     assert!(matches!(shutdown_error, ShutdownError::Spi(error) if error.kind() == "provider_panicked"));
+    assert_eq!(
+        None,
+        bus.shutdown_report(),
+        "failed provider shutdown must not publish a report"
+    );
 }
 
 #[test]

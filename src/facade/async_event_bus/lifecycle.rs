@@ -44,6 +44,22 @@ type ReceiverCloseFuture<'a> =
     Pin<Box<dyn Future<Output = (Id, Result<(), Arc<crate::error::SubscriptionCloseFailure>>)> + Send + 'a>>;
 
 impl AsyncEventBus {
+    /// Returns the cached provider shutdown report, if one has been published.
+    ///
+    /// The report becomes available after provider shutdown completes, even
+    /// when receiver cleanup also produced an error. A caller timeout, failed
+    /// SPI shutdown, or cancelled shutdown future does not publish a report
+    /// unless cleanup later completes. This method only reads the cached
+    /// snapshot and never starts cleanup. It may briefly wait for the internal
+    /// shutdown-report mutex.
+    pub fn shutdown_report(&self) -> Option<ShutdownReport> {
+        *self
+            .inner
+            .shutdown_report
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Waits until this facade has no delivery it has already received for the
     /// selected topic.
     ///
@@ -107,6 +123,9 @@ impl AsyncEventBus {
     /// current attempt; to continue cleanup, the caller must call `shutdown`
     /// again and keep polling the returned future. The async bus does not
     /// continue shutdown in a background task.
+    /// If shutdown returns a receiver-close error after provider cleanup has
+    /// completed, [`Self::shutdown_report`] still exposes the final provider
+    /// outcome and facade abandonment count.
     ///
     /// Directly awaiting shutdown from a handler, middleware, or publisher
     /// callback running on this bus returns [`LifecycleError::WouldDeadlock`].
@@ -142,7 +161,9 @@ impl AsyncEventBus {
     /// lifecycle error such as attempting to wait from a callback running on
     /// this bus. An error does not mean that cleanup will continue in the
     /// background; the caller must keep polling this future or make another
-    /// call to drive it.
+    /// call to drive it. A cancelled future publishes no report unless a later
+    /// attempt completes provider cleanup; use [`Self::shutdown_report`] to
+    /// inspect the cached result without starting another attempt.
     ///
     /// # Panics
     /// An internal invariant violation while handling a graceful deadline

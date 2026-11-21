@@ -45,6 +45,20 @@ class CargoTestExecutableTests(unittest.TestCase):
                 self.artifact("/unused", kind=["bin"]), "conformance_watchdog_tests"
             )
 
+    def test_selects_example_without_matching_same_named_test_target(self):
+        with tempfile.NamedTemporaryFile() as executable:
+            os.chmod(executable.name, 0o700)
+            messages = self.artifact("/unused", target="sample", kind=["test"])
+            messages += "\n" + self.artifact(executable.name, target="sample", kind=["example"])
+            self.assertEqual(select_executable(messages, "sample", "example"), executable.name)
+
+    def test_rejects_ambiguous_example_target(self):
+        with tempfile.NamedTemporaryFile() as first, tempfile.NamedTemporaryFile() as second:
+            messages = self.artifact(first.name, target="sample", kind=["example"])
+            messages += "\n" + self.artifact(second.name, target="sample", kind=["example"])
+            with self.assertRaisesRegex(ValueError, "2 executables"):
+                select_executable(messages, "sample", "example")
+
     def test_rejects_missing_executable(self):
         with self.assertRaisesRegex(ValueError, "does not exist"):
             select_executable(self.artifact("/missing/test-binary"), "conformance_watchdog_tests")

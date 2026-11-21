@@ -55,6 +55,32 @@ def main():
     print(f"event-bus graph gate: passed {manifest}", flush=True)
 
 
+def validate_graph_for_downstream(graph, *, expected_core, expected_redis=None):
+    """Validate the selected local core in a downstream workspace graph."""
+    validate_graph(graph, require_bus=True, expected_core=expected_core)
+    if expected_redis is not None:
+        resolve = graph.get("resolve")
+        if resolve is None:
+            raise ValueError("cargo metadata must include the resolved dependency graph")
+        edges = {node["id"]: node["dependencies"] for node in resolve["nodes"]}
+        reachable = set()
+        pending = list(graph["workspace_members"])
+        while pending:
+            identity = pending.pop()
+            if identity not in reachable:
+                reachable.add(identity)
+                pending.extend(edges[identity])
+        packages = [package for package in graph["packages"]
+                    if package["id"] in reachable and package["name"] == "qubit-event-bus-redis"]
+        if len(packages) != 1:
+            raise ValueError(f"expected exactly one reachable qubit-event-bus-redis package, got {len(packages)}")
+        package = packages[0]
+        expected = (expected_redis / "Cargo.toml").resolve()
+        actual = Path(package["manifest_path"]).resolve()
+        if package["source"] is not None or actual != expected:
+            raise ValueError(f"expected local Redis provider {expected}, got {package['id']} at {actual}")
+
+
 if __name__ == "__main__":
     try:
         main()

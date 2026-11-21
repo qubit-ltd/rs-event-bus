@@ -2029,6 +2029,8 @@ if outcome == WaitOutcome::TimedOut {
 
 ### 异步总线的停机流程
 
+这里说明的零预算 receiver 关闭规则来自 `v0.21.4` 之后的源码变更，适用于包含该变更的源码 checkout，以及后续包含它的发行版。Graceful 模式下，仍有已登记 receiver 时零超时不会启动 receiver close；receiver 批次为空时则可继续执行 provider shutdown。详见[迁移说明](migration.zh_CN.md#core-0214-之后的异步零预算停机)。
+
 异步发布回调（包括发布拦截器和终结发布错误处理器）在发布总线的 poll 作用域中运行。在回调中直接等待同一总线的 `shutdown` 或调用 `wait_for_received_deliveries`，会返回 `LifecycleError::WouldDeadlock`；即使当前没有已接收投递，等待检查也采用保守保护。回调返回后，由应用生命周期任务驱动停机。操作另一条总线不会触发该保护。此 poll 作用域检查不检测独立 spawn 任务之间任意的依赖环。
 
 应用运行期间要持续驱动异步 `run`。收到停止信号后，结束该 `run` future，直接驱动有界总线停机。不要在停机 helper 前无期限等待 `close().await`：总线停机会接管保留的 session，并应用 Graceful deadline。下面的 `handler` 与 `shutdown_signal` 由应用提供，流程放在后台任务中：
@@ -2069,9 +2071,13 @@ if !cleanup_errors.is_empty() {
 
 ```sh
 cd "$(git rev-parse --show-toplevel)"
-cargo build --locked --manifest-path examples/operation_lifecycle/Cargo.toml --example async_shutdown --example notification_close
-python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label async-shutdown-example -- examples/operation_lifecycle/target/debug/examples/async_shutdown
-python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label notification-close-example -- examples/operation_lifecycle/target/debug/examples/notification_close
+cargo_json=$(mktemp)
+trap 'rm -f "$cargo_json"' EXIT
+cargo build --locked --message-format=json --manifest-path examples/operation_lifecycle/Cargo.toml --example async_shutdown --example notification_close > "$cargo_json"
+async_shutdown_binary=$(python3 scripts/cargo_test_executable.py async_shutdown --kind example < "$cargo_json")
+notification_close_binary=$(python3 scripts/cargo_test_executable.py notification_close --kind example < "$cargo_json")
+python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label async-shutdown-example -- "$async_shutdown_binary"
+python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label notification-close-example -- "$notification_close_binary"
 ```
 
 ## 错误、诊断与排障

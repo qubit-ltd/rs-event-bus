@@ -9,6 +9,7 @@
 
 use std::any::TypeId;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::future::pending;
@@ -661,8 +662,10 @@ pub(crate) struct FakeAsyncEventBusSpi {
     subscribe_wakers: Arc<Mutex<Vec<Waker>>>,
     close_paused: Arc<AtomicBool>,
     pause_first_close_call: Arc<AtomicBool>,
-    close_wakers: Arc<Mutex<Vec<Waker>>>,
+    close_wakers: Arc<Mutex<HashMap<Id, Waker>>>,
+    close_released: Arc<Mutex<HashSet<Id>>>,
     close_calls: Arc<AtomicUsize>,
+    close_polls: Arc<AtomicUsize>,
     completed_close_calls: Arc<AtomicUsize>,
     active_close_calls: Arc<AtomicUsize>,
     max_concurrent_close_calls: Arc<AtomicUsize>,
@@ -701,7 +704,9 @@ impl FakeAsyncEventBusSpi {
             close_paused: Arc::default(),
             pause_first_close_call: Arc::default(),
             close_wakers: Arc::default(),
+            close_released: Arc::default(),
             close_calls: Arc::default(),
+            close_polls: Arc::default(),
             completed_close_calls: Arc::default(),
             active_close_calls: Arc::default(),
             max_concurrent_close_calls: Arc::default(),
@@ -727,6 +732,10 @@ impl FakeAsyncEventBusSpi {
     #[must_use]
     pub(crate) fn close_call_count(&self) -> usize {
         self.close_calls.load(Ordering::Acquire)
+    }
+    #[must_use]
+    pub(crate) fn close_poll_count(&self) -> usize {
+        self.close_polls.load(Ordering::Acquire)
     }
     #[must_use]
     pub(crate) fn completed_close_call_count(&self) -> usize {
@@ -865,9 +874,22 @@ impl FakeAsyncEventBusSpi {
     }
     pub(crate) fn release_close(&self) {
         self.close_paused.store(false, Ordering::Release);
-        for waker in take(&mut *self.close_wakers.lock().unwrap()) {
+        for (_, waker) in take(&mut *self.close_wakers.lock().unwrap()) {
             waker.wake();
         }
+    }
+    pub(crate) fn release_one_close(&self) -> bool {
+        let next = {
+            let mut waiters = self.close_wakers.lock().unwrap();
+            let Some(id) = waiters.keys().next().copied() else {
+                return false;
+            };
+            let waker = waiters.remove(&id).expect("selected close waker");
+            self.close_released.lock().unwrap().insert(id);
+            (id, waker)
+        };
+        next.1.wake();
+        true
     }
     /// Makes provider shutdown remain pending after recording its state change.
     pub(crate) fn pause_shutdown(&self) {
@@ -979,7 +1001,9 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
                 close_paused: self.close_paused.clone(),
                 pause_first_close_call: self.pause_first_close_call.clone(),
                 close_wakers: self.close_wakers.clone(),
+                close_released: self.close_released.clone(),
                 close_calls: self.close_calls.clone(),
+                close_polls: self.close_polls.clone(),
                 completed_close_calls: self.completed_close_calls.clone(),
                 active_close_calls: self.active_close_calls.clone(),
                 max_concurrent_close_calls: self.max_concurrent_close_calls.clone(),
@@ -1028,8 +1052,10 @@ struct FakeAsyncEventSubscriptionSpi {
     calls: Arc<Mutex<Vec<&'static str>>>,
     close_paused: Arc<AtomicBool>,
     pause_first_close_call: Arc<AtomicBool>,
-    close_wakers: Arc<Mutex<Vec<Waker>>>,
+    close_wakers: Arc<Mutex<HashMap<Id, Waker>>>,
+    close_released: Arc<Mutex<HashSet<Id>>>,
     close_calls: Arc<AtomicUsize>,
+    close_polls: Arc<AtomicUsize>,
     completed_close_calls: Arc<AtomicUsize>,
     active_close_calls: Arc<AtomicUsize>,
     max_concurrent_close_calls: Arc<AtomicUsize>,
@@ -1173,9 +1199,12 @@ impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
             panic!("fake async close call panic");
         }
         let queue = self.queue.clone();
+        let id = self.id;
         let paused = self.close_paused.clone();
         let pause_first = self.pause_first_close_call.swap(false, Ordering::AcqRel);
         let wakers = self.close_wakers.clone();
+        let released = self.close_released.clone();
+        let close_polls = self.close_polls.clone();
         let completed_close_calls = self.completed_close_calls.clone();
         let active_close_calls = self.active_close_calls.clone();
         let max_concurrent_close_calls = self.max_concurrent_close_calls.clone();
@@ -1196,13 +1225,12 @@ impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
                 state.closed = true;
             }
             poll_fn(|context| {
-                if !pause_first && !paused.load(Ordering::Acquire) {
+                close_polls.fetch_add(1, Ordering::AcqRel);
+                if !pause_first && (!paused.load(Ordering::Acquire) || released.lock().unwrap().contains(&id)) {
                     return Poll::Ready(());
                 }
                 let mut waiters = wakers.lock().unwrap();
-                if !waiters.iter().any(|waker| waker.will_wake(context.waker())) {
-                    waiters.push(context.waker().clone());
-                }
+                waiters.entry(id).or_insert_with(|| context.waker().clone());
                 Poll::Pending
             })
             .await;

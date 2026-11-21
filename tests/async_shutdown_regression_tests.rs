@@ -218,6 +218,11 @@ fn test_immediate_shutdown_provider_error_reaches_both_waiters() {
             source.downcast_ref::<Error>().expect("source is IO error").kind()
         );
     }
+    assert_eq!(
+        None,
+        bus.shutdown_report(),
+        "SPI shutdown failure must not publish a report"
+    );
     let calls = provider.calls.lock().expect("calls lock");
     assert_eq!(
         &[

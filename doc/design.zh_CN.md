@@ -2127,3 +2127,29 @@ pub fn settle_without_borrowing_token<'a>(
 同步与异步 local facade 通过 `local_with_config_and_monitor(local_config, facade_config)` 提供 `LocalCapacityMonitor`。现有 `local_with_monitor` 入口使用 `EventBusFacadeConfig::default()` 委托给新入口。新入口组合 local 队列及 outstanding 上限与 facade middleware、codec、delivery 配置，并继续执行常规 facade 校验；构造错误统一为 `ProviderError::Creation`，并保留 provider 或 facade 错误源。registry 构造和返回 opaque acknowledgement 的 Redis provider 不提供此能力。快照在预算互斥锁内复制现有 outstanding 预算和饱和拒绝计数。接纳路径的锁顺序仍为 queue 后 budget；快照只获取 budget 锁。句柄仅持有 accounting 状态的 `Arc` 和不可变队列容量，不保留队列或 payload。
 
 快照条数统计接纳后直到终态释放的投递副本，包括 pending 和 in-flight。声明权重是应用记账值，不是 RSS；未设置权重上限表示禁用，报告占用为零。拒绝计数按目标尝试累计，包括扇出的每个目标和每次 retry。快照在锁定时点内部一致，但不与队列读取同步，也不保证后续发布会被接纳。`DestinationAdmission::new` 仍创建未分类拒绝（`None`）；local 拒绝带有类别。新增私有字段会反映在派生的 `Debug` 和 `Eq` 中，因此旧的未分类拒绝可能不等于其余内容相同但带类别的 local 拒绝。
+
+## Receiver close 批次测量（2026-11-21）
+
+使用 `cargo +1.94.0 test --locked --release --test async_facade_tests -- --ignored --exact test_measure_receiver_close_batch --nocapture`，在 Linux x86_64 上测量。每种规模 25 个样本，使用手动 fake SPI，不包含 provider 等待。以应用 2 秒停机预算作为代表场景，并将 256 个 receiver 下 10%（200 ms）作为可接受的 facade 开销上限。
+
+| Receiver 数 | 场景 | Poll 数 P50/P95 | Facade 耗时 P50/P95 |
+| ---: | --- | ---: | ---: |
+| 1 | 全部立即就绪 | 1 / 1 | 6 / 7 µs |
+| 1 | 逐个唤醒 | 2 / 2 | 3 / 3 µs |
+| 64 | 全部立即就绪 | 64 / 64 | 164 / 184 µs |
+| 64 | 逐个唤醒 | 2,144 / 2,144 | 370 / 392 µs |
+| 256 | 全部立即就绪 | 256 / 256 | 526 / 536 µs |
+| 256 | 逐个唤醒 | 33,152 / 33,152 | 4,172 / 4,584 µs |
+
+稀疏唤醒场景确实表现出二次方 poll 增长，但 256 个 receiver 的 P95 为 4.584 ms，低于 200 ms 判定阈值。这组隔离测量没有证明线上部署需要更复杂的就绪驱动调度，因此保留现有关闭迭代方式。
+
+## 使用下游消费者验证当前 core
+
+发版评审，或修改 SPI、接纳语义、生命周期契约时，使用指定的 Redis 和 rs-task 源码版本验证当前 core：
+
+```sh
+python3 -B scripts/check_downstream_compatibility.py \
+  --redis-root ../rs-event-bus-redis --task-root ../rs-task
+```
+
+命令会输出三个 Git revision，通过 Cargo `patch.crates-io` 覆盖分别解析下游依赖图，确认可达的 `qubit-event-bus` 恰好一个且来自当前 checkout，确认指定测试精确匹配，再运行 Redis 同步/异步 SPI conformance 与 rs-task durable outbox 取消回归。Redis conformance 需要现有 testcontainers 兼容的 Redis 运行环境。脚本使用隔离的 Cargo target 目录，并恢复输入 worktree 的原始 lockfile 字节。该检查用于发版验证；常规 PR CI 不依赖下游活动分支或 Redis 服务。

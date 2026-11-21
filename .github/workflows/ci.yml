@@ -67,8 +67,12 @@ jobs:
         cargo +1.94.0 test --locked --features conformance --test spi_conformance_tests
         cargo +1.94.0 run --locked --manifest-path tests/fixtures/documentation_consumer/Cargo.toml --bin async_local
         cargo +1.94.0 run --locked --manifest-path tests/fixtures/discovery_consumer/Cargo.toml
-        cargo +1.94.0 build --locked --manifest-path examples/operation_lifecycle/Cargo.toml --example async_shutdown --example notification_close
-        test -x examples/operation_lifecycle/target/debug/examples/async_shutdown
-        python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label async-shutdown-example -- examples/operation_lifecycle/target/debug/examples/async_shutdown
-        test -x examples/operation_lifecycle/target/debug/examples/notification_close
-        python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label notification-close-example -- examples/operation_lifecycle/target/debug/examples/notification_close
+        examples_json=$(mktemp)
+        trap 'rm -f "$cargo_json" "$examples_json"' EXIT
+        cargo +1.94.0 build --locked --message-format=json --manifest-path examples/operation_lifecycle/Cargo.toml --example async_shutdown --example notification_close > "$examples_json"
+        async_shutdown_binary=$(python3 scripts/cargo_test_executable.py async_shutdown --kind example < "$examples_json")
+        notification_close_binary=$(python3 scripts/cargo_test_executable.py notification_close --kind example < "$examples_json")
+        test -x "$async_shutdown_binary"
+        python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label async-shutdown-example -- "$async_shutdown_binary"
+        test -x "$notification_close_binary"
+        python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label notification-close-example -- "$notification_close_binary"

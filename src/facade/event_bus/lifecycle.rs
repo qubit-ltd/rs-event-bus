@@ -31,6 +31,21 @@ use crate::spi::TopicAddress;
 use crate::spi::panic_boundary::catch_spi_call;
 
 impl EventBus {
+    /// Returns the cached provider shutdown report, if one has been published.
+    ///
+    /// The report becomes available after provider shutdown completes, even
+    /// when receiver cleanup also produced an error. A caller timeout, failed
+    /// SPI shutdown, or coordinator start failure does not publish a report.
+    /// This method only reads the cached snapshot and never starts cleanup. It
+    /// may briefly wait for the internal shutdown-state mutex.
+    pub fn shutdown_report(&self) -> Option<ShutdownReport> {
+        self.inner
+            .shutdown_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .report
+    }
+
     /// Waits until the provider reports that `topic` has no queued or unsettled
     /// messages.
     ///

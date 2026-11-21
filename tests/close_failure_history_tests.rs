@@ -40,7 +40,9 @@ use qubit_event_bus::spi::SpiSubscriptionRequest;
 
 const FAILURE_COUNT: usize = 300;
 
-struct SyncCloseFailingBus;
+struct SyncCloseFailingBus {
+    shutdown_calls: Arc<AtomicUsize>,
+}
 
 impl EventBusSpi for SyncCloseFailingBus {
     fn capabilities(&self) -> EventBusCapabilities {
@@ -61,7 +63,8 @@ impl EventBusSpi for SyncCloseFailingBus {
     }
 
     fn shutdown(&self, _: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
-        Ok(ShutdownOutcome::Complete)
+        self.shutdown_calls.fetch_add(1, Ordering::AcqRel);
+        Ok(ShutdownOutcome::TimedOut)
     }
 }
 
@@ -83,7 +86,9 @@ impl EventSubscriptionSpi for SyncCloseFailingReceiver {
     }
 }
 
-struct AsyncCloseFailingBus;
+struct AsyncCloseFailingBus {
+    shutdown_calls: Arc<AtomicUsize>,
+}
 
 impl AsyncEventBusSpi for AsyncCloseFailingBus {
     fn capabilities(&self) -> EventBusCapabilities {
@@ -113,7 +118,8 @@ impl AsyncEventBusSpi for AsyncCloseFailingBus {
     }
 
     fn shutdown<'a>(&'a self, _: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
-        Box::pin(async { Ok(ShutdownOutcome::Complete) })
+        self.shutdown_calls.fetch_add(1, Ordering::AcqRel);
+        Box::pin(async { Ok(ShutdownOutcome::TimedOut) })
     }
 }
 
@@ -161,12 +167,16 @@ fn topic() -> Topic<String> {
 
 #[test]
 fn test_sync_close_failure_history_is_bounded_and_counted() {
+    let shutdown_calls = Arc::new(AtomicUsize::new(0));
     let bus = EventBus::from_spi(
         ProviderId::new("close-history").expect("valid provider ID"),
-        Arc::new(SyncCloseFailingBus),
+        Arc::new(SyncCloseFailingBus {
+            shutdown_calls: shutdown_calls.clone(),
+        }),
     )
     .expect("valid provider capabilities");
     let topic = topic();
+    assert_eq!(bus.shutdown_report(), None);
 
     for index in 0..FAILURE_COUNT {
         let subscriber_id = format!("sync-{index}");
@@ -195,17 +205,35 @@ fn test_sync_close_failure_history_is_bounded_and_counted() {
         "sync-0"
     );
     assert!(std::error::Error::source(&errors).is_some());
+    let report = bus.shutdown_report().expect("provider report survives close failure");
+    assert_eq!(report.outcome, ShutdownOutcome::TimedOut);
+    assert_eq!(report.known_abandoned_deliveries, 0);
+    assert_eq!(bus.shutdown_report(), Some(report));
+    assert_eq!(shutdown_calls.load(Ordering::Acquire), 1);
+    assert!(matches!(
+        bus.shutdown(ShutdownMode::Immediate),
+        Err(ShutdownError::SubscriptionClose(_))
+    ));
+    assert_eq!(
+        shutdown_calls.load(Ordering::Acquire),
+        1,
+        "reading or repeating shutdown must not call SPI again"
+    );
 }
 
 #[test]
 fn test_async_close_failure_history_is_bounded_and_counted() {
     support::manual_async::block_on(async {
+        let shutdown_calls = Arc::new(AtomicUsize::new(0));
         let bus = AsyncEventBus::from_spi(
             ProviderId::new("close-history").expect("valid provider ID"),
-            Arc::new(AsyncCloseFailingBus),
+            Arc::new(AsyncCloseFailingBus {
+                shutdown_calls: shutdown_calls.clone(),
+            }),
         )
         .expect("valid provider capabilities");
         let topic = topic();
+        assert_eq!(bus.shutdown_report(), None);
 
         for index in 0..FAILURE_COUNT {
             let subscriber_id = format!("async-{index}");
@@ -234,5 +262,19 @@ fn test_async_close_failure_history_is_bounded_and_counted() {
             "async-0"
         );
         assert!(std::error::Error::source(&errors).is_some());
+        let report = bus.shutdown_report().expect("provider report survives close failure");
+        assert_eq!(report.outcome, ShutdownOutcome::TimedOut);
+        assert_eq!(report.known_abandoned_deliveries, 0);
+        assert_eq!(bus.shutdown_report(), Some(report));
+        assert_eq!(shutdown_calls.load(Ordering::Acquire), 1);
+        assert!(matches!(
+            bus.shutdown(ShutdownMode::Immediate).await,
+            Err(ShutdownError::SubscriptionClose(_))
+        ));
+        assert_eq!(
+            shutdown_calls.load(Ordering::Acquire),
+            1,
+            "reading or repeating shutdown must not call SPI again"
+        );
     });
 }

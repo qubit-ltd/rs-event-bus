@@ -2031,6 +2031,12 @@ When `wait_for_idle` is supported, `Idle` means the provider reported no queued 
 
 ### Shut down an async bus
 
+The zero-budget receiver-close rule described here comes from source changes
+after `v0.21.4`; it applies to source checkouts containing that change and to
+later releases that include it. In Graceful mode, a zero timeout does not
+start receiver close when receivers are registered, while an empty receiver
+batch can proceed to provider shutdown. See the [migration note](migration.md#async-zero-budget-shutdown-after-core-0214).
+
 Async publish callbacks, including publisher interceptors and terminal publish error handlers, run inside the publishing bus's poll scope. Directly awaiting `shutdown` or calling `wait_for_received_deliveries` for that same bus returns `LifecycleError::WouldDeadlock`; the wait check is conservative even when no received delivery is active. Return from the callback and have an application lifecycle task drive shutdown. Another bus is unaffected. This poll-scoped guard does not detect arbitrary dependency cycles between independently spawned tasks.
 
 The async runner must be driven while the application receives events. On a stop signal, end that `run` future, then directly drive bounded bus shutdown. Do not put an unbounded `close().await` before the shutdown helper: shutdown takes ownership of retained sessions and applies its graceful deadlines. Here `handler` and `shutdown_signal` come from the application; run this lifecycle in its background task:
@@ -2073,9 +2079,13 @@ From the root of a full Git checkout (the directory containing the repository's 
 
 ```sh
 cd "$(git rev-parse --show-toplevel)"
-cargo build --locked --manifest-path examples/operation_lifecycle/Cargo.toml --example async_shutdown --example notification_close
-python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label async-shutdown-example -- examples/operation_lifecycle/target/debug/examples/async_shutdown
-python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label notification-close-example -- examples/operation_lifecycle/target/debug/examples/notification_close
+cargo_json=$(mktemp)
+trap 'rm -f "$cargo_json"' EXIT
+cargo build --locked --message-format=json --manifest-path examples/operation_lifecycle/Cargo.toml --example async_shutdown --example notification_close > "$cargo_json"
+async_shutdown_binary=$(python3 scripts/cargo_test_executable.py async_shutdown --kind example < "$cargo_json")
+notification_close_binary=$(python3 scripts/cargo_test_executable.py notification_close --kind example < "$cargo_json")
+python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label async-shutdown-example -- "$async_shutdown_binary"
+python3 scripts/run_conformance_watchdog.py --timeout-seconds 30 --label notification-close-example -- "$notification_close_binary"
 ```
 
 ## Errors, diagnostics, and troubleshooting

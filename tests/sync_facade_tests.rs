@@ -1622,6 +1622,7 @@ fn test_graceful_shutdown_deadline_includes_provider_shutdown() {
         first_result,
         Some(Err(ShutdownError::TimedOut { timeout })) if timeout == grace
     );
+    assert_eq!(None, bus.shutdown_report(), "caller timeout must not publish a report");
     release_shutdown.send(()).expect("release provider shutdown");
     if first_result.is_none() {
         let _ = shutdown_rx.recv_timeout(Duration::from_secs(2));
@@ -1635,6 +1636,10 @@ fn test_graceful_shutdown_deadline_includes_provider_shutdown() {
         "the caller deadline must include provider shutdown"
     );
     assert_eq!(1, backend.shutdown_calls());
+    assert!(
+        bus.shutdown_report().is_some(),
+        "completed retry publishes the provider report"
+    );
 }
 
 #[test]
