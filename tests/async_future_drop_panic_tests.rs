@@ -32,6 +32,7 @@ use qubit_event_bus::SpiError;
 use qubit_event_bus::error::PublishError;
 use qubit_event_bus::error::ReceiveError;
 use qubit_event_bus::error::ShutdownError;
+use qubit_event_bus::error::SubscribeError;
 use qubit_event_bus::facade::DeliverySchedulingConfig;
 use qubit_event_bus::facade::EventBusFacadeConfig;
 use qubit_event_bus::model::Delivery;
@@ -176,6 +177,62 @@ impl Drop for ReadySubscribeDropPanic<'_> {
     }
 }
 
+struct ReadySubscribeErrorDropPanic {
+    drops: Arc<AtomicUsize>,
+}
+
+impl Future for ReadySubscribeErrorDropPanic {
+    type Output = Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>;
+
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        Poll::Ready(Err(SpiError::Operation {
+            provider_id: "subscribe-ready-error-drop".into(),
+            operation: "subscribe",
+            resource: Some("broken".into()),
+            kind: "original_subscribe_error",
+            retryable: Some(false),
+            source: Box::new(std::io::Error::other("original subscribe source")),
+        }))
+    }
+}
+
+impl Drop for ReadySubscribeErrorDropPanic {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::SeqCst);
+        panic!("ready error subscribe future destructor panic");
+    }
+}
+
+struct ReadyErrorDropSubscribeSpi {
+    inner: FakeAsyncEventBusSpi,
+    calls: AtomicUsize,
+    drops: Arc<AtomicUsize>,
+}
+
+impl AsyncEventBusSpi for ReadyErrorDropSubscribeSpi {
+    fn capabilities(&self) -> qubit_event_bus::spi::EventBusCapabilities {
+        self.inner.capabilities()
+    }
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        self.inner.publish(message)
+    }
+    fn subscribe<'a>(
+        &'a self,
+        request: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            Box::pin(ReadySubscribeErrorDropPanic {
+                drops: self.drops.clone(),
+            })
+        } else {
+            self.inner.subscribe(request)
+        }
+    }
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        self.inner.shutdown(mode)
+    }
+}
+
 struct ReadyDropSubscribeSpi {
     inner: FakeAsyncEventBusSpi,
     drops: Arc<AtomicUsize>,
@@ -297,6 +354,50 @@ fn test_async_subscribe_ready_result_survives_future_drop_panic() {
     let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown closes admitted receiver");
     assert_eq!(close_calls.load(Ordering::SeqCst), 1);
     drop(subscription);
+}
+
+#[test]
+fn test_async_subscribe_ready_error_survives_future_drop_panic() {
+    let drops = Arc::new(AtomicUsize::new(0));
+    let spi = Arc::new(ReadyErrorDropSubscribeSpi {
+        inner: FakeAsyncEventBusSpi::new(),
+        calls: AtomicUsize::new(0),
+        drops: drops.clone(),
+    });
+    let one = NonZeroUsize::new(1).unwrap();
+    let config = EventBusFacadeConfig::new()
+        .with_delivery_scheduling(DeliverySchedulingConfig::new(one, one, one, one).unwrap());
+    let bus = AsyncEventBus::with_config(ProviderId::new("subscribe-ready-error-drop").unwrap(), spi, config).unwrap();
+    let error = match block_on(
+        bus.subscribe(SubscribeRequest::new("broken", Topic::<u32>::new("subscribe-broken").unwrap()).unwrap()),
+    ) {
+        Ok(_) => panic!("provider error remains the subscribe outcome"),
+        Err(error) => error,
+    };
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    let SubscribeError::Spi(error) = error else {
+        panic!("expected original SPI error");
+    };
+    assert!(matches!(
+        &error,
+        SpiError::Operation {
+            operation: "subscribe",
+            kind: "original_subscribe_error",
+            ..
+        }
+    ));
+    assert_eq!(
+        std::error::Error::source(&error).unwrap().to_string(),
+        "original subscribe source"
+    );
+
+    let replacement =
+        block_on(bus.subscribe(
+            SubscribeRequest::new("replacement", Topic::<u32>::new("subscribe-replacement").unwrap()).unwrap(),
+        ))
+        .expect("failed registration and subscription capacity are released");
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("replacement closes normally");
+    drop(replacement);
 }
 
 struct AcceptThenDropPanic(Arc<AtomicUsize>);
