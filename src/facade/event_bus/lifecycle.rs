@@ -36,8 +36,14 @@ impl EventBus {
     /// The report becomes available after provider shutdown completes, even
     /// when receiver cleanup also produced an error. A caller timeout, failed
     /// SPI shutdown, or coordinator start failure does not publish a report.
-    /// This method only reads the cached snapshot and never starts cleanup. It
-    /// may briefly wait for the internal shutdown-state mutex.
+    /// This method only reads the cached snapshot and never starts or advances
+    /// cleanup. It may briefly wait for the internal shutdown-state mutex.
+    ///
+    /// # Returns
+    /// `Some(report)` after provider shutdown publishes its outcome, including
+    /// when receiver cleanup also returned a close error. `None` means no
+    /// report has been published at the time of this read; it is not itself a
+    /// shutdown result.
     pub fn shutdown_report(&self) -> Option<ShutdownReport> {
         self.inner
             .shutdown_gate

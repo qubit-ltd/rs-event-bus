@@ -1990,11 +1990,26 @@ match ticket.wait(Some(Duration::from_secs(2))) {
     Err(qubit_event_bus::ShutdownError::TimedOut { .. }) => {
         // Keep or drop the ticket; the shutdown attempt continues either way.
     }
+    Err(error @ qubit_event_bus::ShutdownError::SubscriptionClose(_)) => {
+        // Keep the original close error and inspect the final provider report
+        // through this same bus; the report can exist even though wait errored.
+        if let Some(report) = bus.shutdown_report() {
+            eprintln!(
+                "provider outcome={:?}, known abandoned={}, provider uncertainty={}: {report:?}",
+                report.outcome,
+                report.known_abandoned_deliveries,
+                report.provider_may_have_abandoned_deliveries,
+            );
+        }
+        return Err(error.into());
+    }
     Err(error) => return Err(error.into()),
 }
 ```
 
-When an IoC container separates stopping from waiting, have its stop callback call `request_shutdown` and retain the returned ticket in shared managed state. The wait callback can call `ticket.wait_async().await`. If the container cancels that wait future, keep the same `EventBusShutdown` value and poll `wait_async` again; cancellation removes only the waker registration and does not cancel shutdown. The execution-services [IoC fixture](https://github.com/qubit-ltd/rs-execution-services/blob/main/tests/fixtures/ioc_application_consumer/src/managed_event_bus.rs) demonstrates this adapter. Keep the ticket in shared state while the wait future is active; `EventBusShutdown` is reusable but is not `Clone`.
+When an IoC container separates stopping from waiting, have its stop callback call `request_shutdown` and retain the returned ticket in shared managed state. The wait callback can call `ticket.wait_async().await`. If the container cancels that wait future, keep the same `EventBusShutdown` value and poll `wait_async` again; cancellation removes only the waker registration and does not cancel shutdown. If waiting returns an error, inspect `bus.shutdown_report()` before propagating the original error; `None` means no report has been published yet and the read does not drive cleanup. For example, retain the original result with `let result = ticket.wait_async().await;`, record any available report's outcome, known-abandonment count, and provider uncertainty, then return that same `error` unchanged. The execution-services [IoC fixture](https://github.com/qubit-ltd/rs-execution-services/blob/main/tests/fixtures/ioc_application_consumer/src/managed_event_bus.rs) demonstrates this adapter. Keep the ticket in shared state while the wait future is active; `EventBusShutdown` is reusable but is not `Clone`.
+
+`shutdown_report()` is source API added after the `v0.21.4` release tag (in this checkout at commit `4eb5b65`). `Some(report)` means provider shutdown completed and published its outcome, including when receiver cleanup returned a close error. `None` means no report was published at the instant of the read; it is not a shutdown result, and reading it never starts or advances cleanup. A release consumer must use a package version that includes this source change.
 
 An `Ok(ShutdownReport)` means the provider returned a report; inspect it before treating cleanup as successful. This fixture accepts only `ShutdownOutcome::Complete` with `known_abandoned_deliveries == 0`. A provider `ShutdownOutcome::TimedOut` or any known abandoned delivery becomes an IoC cleanup diagnostic that includes the full report. This is distinct from `ShutdownError::TimedOut`, which means the caller's observation deadline elapsed. `provider_may_have_abandoned_deliveries` records uncertainty and does not by itself prove loss or fail this policy. The fixture writes the report to stderr; an application can replace that with structured logging and choose its own tolerance for known loss.
 
@@ -2064,6 +2079,17 @@ match shutdown_result {
         }
     }
     Ok(report) => cleanup_errors.push(format!("shutdown report: {report:?}")),
+    Err(error @ qubit_event_bus::ShutdownError::SubscriptionClose(_)) => {
+        if let Some(report) = bus.shutdown_report() {
+            eprintln!(
+                "subscription close error: {error}; provider outcome={:?}, known abandoned={}, provider uncertainty={}: {report:?}",
+                report.outcome,
+                report.known_abandoned_deliveries,
+                report.provider_may_have_abandoned_deliveries,
+            );
+        }
+        cleanup_errors.push(error.to_string());
+    }
     Err(error) => cleanup_errors.push(error.to_string()),
 }
 if !cleanup_errors.is_empty() {
@@ -2071,7 +2097,7 @@ if !cleanup_errors.is_empty() {
 }
 ```
 
-The example retains the runner result and shutdown report or error for reporting. `try_shutdown_async` retries once only when the first caller deadline expires, using a second bounded Graceful attempt. It returns the full report from the first call that returns one, including a provider-reported `TimedOut` outcome; a second caller timeout is returned as `ShutdownError::TimedOut`. The example reports a non-`Complete` or nonzero-known-abandonment report alongside runner errors and continues other application cleanup. The known-abandonment count is cumulative for the bus and cannot show whether a handler already produced business side effects. Provider-reported possible abandonment is uncertainty: this example logs it but does not treat it as proof of loss. Do not await the runner’s JoinHandle without a deadline; hand snapshots and process policy to the external supervisor. If the bus is still `Running` and the application needs to observe a provider receiver close error separately, it may call `close().await` within its own deadline. Once shutdown has started, `close().await` may return `LifecycleError::Closed`; continue driving shutdown to observe its cleanup result. Dropping the shutdown future stops its current driving. To continue cleanup, the application must call `AsyncEventBus::shutdown` again and keep polling that future; async shutdown has no background coordinator. The library does not implicitly spawn work outside the caller’s runtime.
+The example retains the runner result and shutdown report or error for reporting. `try_shutdown_async` retries once only when the first caller deadline expires, using a second bounded Graceful attempt. It returns the full report from the first call that returns one, including a provider-reported `TimedOut` outcome; a second caller timeout is returned as `ShutdownError::TimedOut`. If it returns `ShutdownError::SubscriptionClose`, keep that original error and read `bus.shutdown_report()` from the same bus: when provider cleanup completed, the cached report contains the final outcome, known-abandonment count, and provider uncertainty even though receiver close failed. `None` only means no report has been published yet; the read does not advance cleanup. The example reports a non-`Complete` or nonzero-known-abandonment report alongside runner errors and continues other application cleanup. The known-abandonment count is cumulative for the bus and cannot show whether a handler already produced business side effects. Provider-reported possible abandonment is uncertainty: this example logs it but does not treat it as proof of loss. Do not await the runner’s JoinHandle without a deadline; hand snapshots and process policy to the external supervisor. If the bus is still `Running` and the application needs to observe a provider receiver close error separately, it may call `close().await` within its own deadline. Once shutdown has started, `close().await` may return `LifecycleError::Closed`; continue driving shutdown to observe its cleanup result. Dropping the shutdown future stops its current driving. To continue cleanup, the application must call `AsyncEventBus::shutdown` again and keep polling that future; async shutdown has no background coordinator. The library does not implicitly spawn work outside the caller’s runtime.
 
 The async bus has no `wait_for_idle`; `wait_for_received_deliveries` counts only facade-received work. Async local discards remaining provider backlog on close; durable providers retain nonterminal work according to their recovery protocol.
 

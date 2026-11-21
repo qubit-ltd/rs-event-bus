@@ -50,8 +50,14 @@ impl AsyncEventBus {
     /// when receiver cleanup also produced an error. A caller timeout, failed
     /// SPI shutdown, or cancelled shutdown future does not publish a report
     /// unless cleanup later completes. This method only reads the cached
-    /// snapshot and never starts cleanup. It may briefly wait for the internal
-    /// shutdown-report mutex.
+    /// snapshot and never starts or advances cleanup. It may briefly wait for
+    /// the internal shutdown-report mutex.
+    ///
+    /// # Returns
+    /// `Some(report)` after provider shutdown publishes its outcome, including
+    /// when receiver cleanup also returned a close error. `None` means no
+    /// report had been published at the time of this read; it is not itself a
+    /// shutdown result. A later cleanup attempt can publish a report.
     pub fn shutdown_report(&self) -> Option<ShutdownReport> {
         *self
             .inner
@@ -127,6 +133,15 @@ impl AsyncEventBus {
     /// completed, [`Self::shutdown_report`] still exposes the final provider
     /// outcome and facade abandonment count.
     ///
+    /// A pending future must keep being polled to drive this attempt. Dropping
+    /// it cancels that attempt, and a later call can retry cleanup that has
+    /// not completed. Once this call returns, its future is complete; it cannot
+    /// be polled again to resume work. Another still-pending shutdown call can
+    /// become the next cleanup driver; otherwise, start and poll a new call to
+    /// retry incomplete cleanup. A returned receiver-close error can accompany
+    /// completed provider cleanup, in which case the cached report is
+    /// available through [`Self::shutdown_report`].
+    ///
     /// Directly awaiting shutdown from a handler, middleware, or publisher
     /// callback running on this bus returns [`LifecycleError::WouldDeadlock`].
     /// This detection is scoped to each poll of caller-driven runner and
@@ -137,6 +152,13 @@ impl AsyncEventBus {
     /// # Parameters
     /// - `mode`: Shutdown policy and, for graceful mode, its deadline.
     ///
+    /// Graceful shutdown first stops admission, then closes registered
+    /// receivers. If receivers remain when a zero-length budget is exhausted,
+    /// their close operations are not started. An empty receiver batch can
+    /// proceed to later cleanup stages, including provider shutdown, even
+    /// with a zero-length budget; those stages can still time out if they need
+    /// to wait.
+    ///
     /// # Returns
     /// The cached provider outcome, the cumulative number of facade-held
     /// unresolved ephemeral deliveries that the facade can verify were
@@ -146,12 +168,6 @@ impl AsyncEventBus {
     /// include abandonment recorded before this shutdown call. It cannot
     /// establish whether a handler produced a business side effect. The
     /// facade cannot count provider-owned queued deliveries.
-    /// Graceful shutdown first stops admission, then closes registered
-    /// receivers. If receivers remain when a zero-length budget is exhausted,
-    /// their close operations are not started. An empty receiver batch can
-    /// proceed to later cleanup stages, including provider shutdown, even
-    /// with a zero-length budget; those stages can still time out if they need
-    /// to wait.
     ///
     /// # Errors
     /// Returns [`ShutdownError::TimedOut`] when this graceful call's timeout
@@ -160,8 +176,9 @@ impl AsyncEventBus {
     /// provider shutdown failure, subscription receiver close failure, or a
     /// lifecycle error such as attempting to wait from a callback running on
     /// this bus. An error does not mean that cleanup will continue in the
-    /// background; the caller must keep polling this future or make another
-    /// call to drive it. A cancelled future publishes no report unless a later
+    /// background. While this future is pending, keep polling it to drive
+    /// cleanup. After it returns, a later call can retry cleanup that remains
+    /// incomplete. A cancelled future publishes no report unless a later
     /// attempt completes provider cleanup; use [`Self::shutdown_report`] to
     /// inspect the cached result without starting another attempt.
     ///
