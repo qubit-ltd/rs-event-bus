@@ -19,6 +19,8 @@ struct WaitProbe {
     gate: Option<Receiver<()>>,
 }
 
+type GatedProbe = (Receiver<()>, Sender<()>);
+
 static PROBE: OnceLock<Mutex<Vec<WaitProbe>>> = OnceLock::new();
 
 /// Installs a one-shot signal for the named wait site.
@@ -64,10 +66,7 @@ pub(crate) fn install_gated(
 }
 
 /// Installs two independently controlled gates for one deterministic race.
-pub(crate) fn install_two_gated(
-    first_site: &'static str,
-    second_site: &'static str,
-) -> ((Receiver<()>, Sender<()>), (Receiver<()>, Sender<()>)) {
+pub(crate) fn install_two_gated(first_site: &'static str, second_site: &'static str) -> (GatedProbe, GatedProbe) {
     let (first_seen_tx, first_seen_rx) = mpsc::channel();
     let (first_release_tx, first_release_rx) = mpsc::channel();
     let (second_seen_tx, second_seen_rx) = mpsc::channel();
