@@ -390,7 +390,8 @@ impl EventBusSpi for LocalEventBusSpi {
     ///
     /// # Parameters
     /// - `mode`: immediate close, or a bounded wait for queued and unsettled
-    ///   work.
+    ///   work. An immediate request upgrades a graceful shutdown already in
+    ///   progress and wakes its wait; all callers then reuse the cached result.
     ///
     /// # Returns
     /// `Ok(Complete)` after draining or immediate close, or `Ok(TimedOut)`
@@ -400,6 +401,18 @@ impl EventBusSpi for LocalEventBusSpi {
     /// # Errors
     /// This implementation does not return an SPI error.
     fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
+        if mode == ShutdownMode::Immediate {
+            let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(outcome) = state.shutdown_outcome {
+                return Ok(outcome);
+            }
+            if !state.shutdown_immediate_requested {
+                state.shutdown_immediate_requested = true;
+                state.change_version = state.change_version.wrapping_add(1);
+                drop(state);
+                self.shared.changed.notify_all();
+            }
+        }
         let shutdown_gate = self.shared.shutdown_gate.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(outcome) = self
             .shared
@@ -418,12 +431,16 @@ impl EventBusSpi for LocalEventBusSpi {
             ShutdownMode::Graceful { timeout } => {
                 let budget = FiniteWait::new(timeout);
                 loop {
-                    let (version, queues) = {
+                    let (version, immediate_requested, queues) = {
                         let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
                         let version = state.change_version;
+                        let immediate_requested = state.shutdown_immediate_requested;
                         let queues = state.live_queues();
-                        (version, queues)
+                        (version, immediate_requested, queues)
                     };
+                    if immediate_requested {
+                        break ShutdownOutcome::Complete;
+                    }
                     let busy = queues.iter().any(|queue| {
                         let state = queue.lock();
                         !state.is_pending_empty() || !state.in_flight.is_empty()
@@ -435,6 +452,9 @@ impl EventBusSpi for LocalEventBusSpi {
                         break ShutdownOutcome::TimedOut;
                     };
                     let state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+                    if state.shutdown_immediate_requested {
+                        break ShutdownOutcome::Complete;
+                    }
                     if state.change_version != version {
                         continue;
                     }

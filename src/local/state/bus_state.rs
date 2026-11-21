@@ -29,6 +29,8 @@ pub(in crate::local) struct BusState {
     pub(in crate::local) closed: bool,
     /// Stable outcome returned by all later shutdown calls.
     pub(in crate::local) shutdown_outcome: Option<ShutdownOutcome>,
+    /// Records an immediate request that must upgrade an active graceful drain.
+    pub(in crate::local) shutdown_immediate_requested: bool,
     /// Change counter that prevents missed graceful-shutdown notifications.
     pub(in crate::local) change_version: u64,
 }
