@@ -486,6 +486,72 @@ fn test_local_immediate_escalates_waiting_graceful_shutdown() {
 }
 
 #[test]
+fn test_local_immediate_escalates_graceful_timeout_before_cleanup_decision() {
+    isolated(
+        "test_local_immediate_escalates_graceful_timeout_before_cleanup_decision",
+        "immediate-escalates-graceful-timeout",
+        || {
+            let topic = "probe.shutdown.timeout-escalation";
+            let spi = Arc::new(LocalEventBusSpi::new(&LocalEventBusConfig::default()).unwrap());
+            let mut receiver = spi.subscribe(subscription(92, topic)).unwrap();
+            publish(&*spi, topic, "shutdown-timeout-escalation");
+            let ReceiveOutcome::Message(message) = receiver.receive(Duration::ZERO).unwrap() else {
+                panic!("published message is received");
+            };
+
+            let (decision_gate, immediate_registered, release_decision) =
+                test_wait_probe::install_gated("graceful_shutdown_decision", "shutdown_immediate_registered");
+            let graceful_spi = Arc::clone(&spi);
+            let (graceful_tx, graceful_rx) = mpsc::channel();
+            let graceful = thread::spawn(move || {
+                graceful_tx
+                    .send(graceful_spi.shutdown(ShutdownMode::Graceful {
+                        timeout: Duration::ZERO,
+                    }))
+                    .unwrap();
+            });
+            decision_gate
+                .recv_timeout(Duration::from_secs(2))
+                .expect("graceful call reached the final decision before cleanup");
+
+            let immediate_spi = Arc::clone(&spi);
+            let (immediate_tx, immediate_rx) = mpsc::channel();
+            let immediate = thread::spawn(move || {
+                immediate_tx
+                    .send(immediate_spi.shutdown(ShutdownMode::Immediate))
+                    .unwrap();
+            });
+            immediate_registered
+                .recv_timeout(Duration::from_secs(2))
+                .expect("immediate request registered before final decision");
+            release_decision.send(()).unwrap();
+
+            assert_eq!(
+                ShutdownOutcome::Complete,
+                graceful_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("graceful call observes immediate upgrade")
+                    .unwrap()
+            );
+            assert_eq!(
+                ShutdownOutcome::Complete,
+                immediate_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("immediate call reuses completed result")
+                    .unwrap()
+            );
+            assert!(matches!(
+                receiver.receive(Duration::ZERO).unwrap(),
+                ReceiveOutcome::Closed
+            ));
+            drop(message);
+            immediate.join().unwrap();
+            graceful.join().unwrap();
+        },
+    );
+}
+
+#[test]
 fn test_large_timeout_probe_notification_close() {
     isolated(
         "test_large_timeout_probe_notification_close",
