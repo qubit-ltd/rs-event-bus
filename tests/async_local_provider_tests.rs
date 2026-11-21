@@ -22,7 +22,10 @@ use std::thread;
 use std::time::Duration;
 use std::time::SystemTime;
 
+use qubit_clock::ManualMonotonicClock;
+use qubit_clock::ManualTimer;
 use qubit_clock::StdTimer;
+use qubit_clock::Timer;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::AsyncEventBusRegistry;
 use qubit_event_bus::EventBusConfig;
@@ -682,6 +685,123 @@ fn test_async_local_with_timer_rejects_zero_limits() {
             Ok(_) => panic!("zero capacities must be rejected at construction"),
         }
     }
+}
+
+#[test]
+fn test_manual_clock_controls_finite_receive_deadline() {
+    let clock = ManualMonotonicClock::new();
+    let timer: Arc<dyn Timer> = Arc::new(ManualTimer::from_clock(&clock));
+    let spi = AsyncLocalEventBusSpi::with_timer(&LocalEventBusConfig::new(), timer)
+        .expect("manual timer provider must be created");
+    let mut receiver = block_on(spi.subscribe(spi_request_with_type(
+        81,
+        "manual-clock",
+        "async.local.manual-clock-timeout",
+        TypeId::of::<u32>(),
+    )))
+    .expect("subscription must be created");
+    let mut receive = Box::pin(receiver.receive(Duration::from_secs(3_600)));
+    assert!(poll_once(receive.as_mut()).is_pending());
+    clock.advance(Duration::from_secs(3_599)).expect("clock advances");
+    assert!(poll_once(receive.as_mut()).is_pending());
+    clock
+        .advance(Duration::from_secs(1))
+        .expect("clock advances to deadline");
+    assert!(matches!(
+        poll_once(receive.as_mut()),
+        Poll::Ready(Ok(ReceiveOutcome::TimedOut))
+    ));
+}
+
+#[test]
+fn test_manual_clock_controls_delayed_async_local_delivery() {
+    let clock = ManualMonotonicClock::new();
+    let timer: Arc<dyn Timer> = Arc::new(ManualTimer::from_clock(&clock));
+    let spi = AsyncLocalEventBusSpi::with_timer(&LocalEventBusConfig::new(), timer)
+        .expect("manual timer provider must be created");
+    let mut receiver = block_on(spi.subscribe(spi_request_with_type(
+        82,
+        "manual-delay",
+        "async.local.manual-clock-delay",
+        TypeId::of::<u32>(),
+    )))
+    .expect("subscription must be created");
+    let topic = TopicAddress::new("async.local.manual-clock-delay").expect("topic");
+    let message = OutboundMessage::new(
+        topic,
+        EventId::new("manual-delay-event").expect("event ID"),
+        SystemTime::UNIX_EPOCH,
+        Headers::default(),
+        None,
+        Some(Duration::from_secs(7_200)),
+        TransportPayload::Native(Arc::new(42_u32)),
+    );
+    let _ = block_on(spi.publish(message)).expect("delayed message is admitted");
+    assert!(matches!(
+        block_on(receiver.receive(Duration::ZERO)).expect("poll"),
+        ReceiveOutcome::TimedOut
+    ));
+    let mut finite = Box::pin(receiver.receive(Duration::from_secs(3_600)));
+    assert!(poll_once(finite.as_mut()).is_pending());
+    clock
+        .advance(Duration::from_secs(3_600))
+        .expect("clock advances to receive deadline");
+    assert!(matches!(
+        poll_once(finite.as_mut()),
+        Poll::Ready(Ok(ReceiveOutcome::TimedOut))
+    ));
+    drop(finite);
+    let mut receive = Box::pin(receiver.receive(Duration::MAX));
+    assert!(poll_once(receive.as_mut()).is_pending());
+    clock
+        .advance(Duration::from_secs(3_600))
+        .expect("clock advances to delivery time");
+    let Poll::Ready(Ok(ReceiveOutcome::Message(message))) = poll_once(receive.as_mut()) else {
+        panic!("event is delivered at its injected-clock deadline");
+    };
+    assert!(
+        matches!(message.payload(), TransportPayload::Native(payload) if payload.downcast_ref::<u32>() == Some(&42))
+    );
+}
+
+#[test]
+fn test_manual_clock_controls_finite_graceful_shutdown() {
+    let clock = ManualMonotonicClock::new();
+    let timer: Arc<dyn Timer> = Arc::new(ManualTimer::from_clock(&clock));
+    let spi = AsyncLocalEventBusSpi::with_timer(&LocalEventBusConfig::new(), timer)
+        .expect("manual timer provider must be created");
+    let _receiver = block_on(spi.subscribe(spi_request_with_type(
+        83,
+        "manual-shutdown",
+        "async.local.manual-clock-shutdown",
+        TypeId::of::<u32>(),
+    )))
+    .expect("subscription must be created");
+    let message = OutboundMessage::new(
+        TopicAddress::new("async.local.manual-clock-shutdown").expect("topic"),
+        EventId::new("manual-shutdown-event").expect("event ID"),
+        SystemTime::UNIX_EPOCH,
+        Headers::default(),
+        None,
+        None,
+        TransportPayload::Native(Arc::new(7_u32)),
+    );
+    let _ = block_on(spi.publish(message)).expect("message is admitted");
+    let mut shutdown = Box::pin(spi.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(3_600),
+    }));
+    assert!(poll_once(shutdown.as_mut()).is_pending());
+    clock
+        .advance(Duration::from_secs(3_600))
+        .expect("clock advances to shutdown deadline");
+    assert!(matches!(
+        poll_once(shutdown.as_mut()),
+        Poll::Ready(Ok(ShutdownOutcome::TimedOut))
+    ));
+    assert_eq!(
+        ShutdownOutcome::TimedOut,
+        block_on(spi.shutdown(ShutdownMode::Immediate)).expect("cached result is returned")
+    );
 }
 
 #[test]

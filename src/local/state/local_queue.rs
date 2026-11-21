@@ -20,7 +20,10 @@ use crate::model::SubscriberId;
 use crate::spi::TopicAddress;
 
 /// One bounded FIFO queue and receiver lifecycle for a logical subscriber.
-pub(in crate::local) struct LocalQueue {
+///
+/// # Type Parameters
+/// - `D`: deadline representation used by this subscriber's provider.
+pub(in crate::local) struct LocalQueue<D = std::time::Instant> {
     /// Bus-local identifier used to bind settlement tokens.
     pub(in crate::local) id: Id,
     /// Topic this queue receives.
@@ -30,21 +33,21 @@ pub(in crate::local) struct LocalQueue {
     /// Maximum number of queued and unsettled events for this subscription.
     pub(in crate::local) capacity: usize,
     /// Queue state shared by publisher and its single receiver.
-    pub(in crate::local) state: Mutex<LocalQueueState>,
+    pub(in crate::local) state: Mutex<LocalQueueState<D>>,
     /// Wakes synchronous receives after publish, close, or shutdown.
     pub(in crate::local) ready: Condvar,
     /// Wakes asynchronous receives after provider state changes.
     pub(in crate::local) async_ready: AsyncSignal,
 }
 
-impl LocalQueue {
+impl<D: super::queue_time::QueueTime> LocalQueue<D> {
     /// Locks queue state while recovering from a poisoned standard mutex.
     ///
     /// # Returns
     /// The queue state guard, recovering the inner state if the mutex was
     /// poisoned.
     #[must_use = "Use the guard to access the queue state while locked."]
-    pub(in crate::local) fn lock(&self) -> MutexGuard<'_, LocalQueueState> {
+    pub(in crate::local) fn lock(&self) -> MutexGuard<'_, LocalQueueState<D>> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }

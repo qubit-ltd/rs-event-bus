@@ -14,6 +14,7 @@ mod local_queue;
 mod local_queue_state;
 mod local_shared_state;
 mod queue_lane;
+mod queue_time;
 mod topic_subscriptions;
 
 pub(super) use event::LocalEvent;

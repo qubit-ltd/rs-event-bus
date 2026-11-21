@@ -14,5 +14,5 @@ use super::super::state::LocalQueue;
 /// Queue shared by the provider registry and one subscription receiver.
 pub(in crate::local) struct AsyncMailbox {
     /// Queue and wake signals for this subscription.
-    pub(in crate::local) queue: Arc<LocalQueue>,
+    pub(in crate::local) queue: Arc<LocalQueue<std::time::Duration>>,
 }

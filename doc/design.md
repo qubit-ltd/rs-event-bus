@@ -1560,10 +1560,15 @@ The structure matches the synchronous provider. The waiting primitive and the in
 
 - Waiting uses a `Waker` instead of a condition variable. A `receive` future registers
   a waker when the queue is empty, and publish or settle wakes it. A delayed message
-  becoming due is a sleep future on the injected `Timer`.
+  becoming due is a deadline on the injected `Timer`. Async receive timeouts,
+  delayed delivery, and finite graceful shutdown all use that timer's monotonic
+  clock domain; synchronous local queues continue using `std::time::Instant`.
+  Event `SystemTime` timestamps remain business metadata and do not control deadlines.
 - Routing uses a primary `HashMap<MailboxKey { subscription_id }, Arc<AsyncMailbox>>`
   and a secondary `HashMap<TopicAddress, BTreeSet<subscription_id>>`. Publish snapshots
-  only the target topic's mailboxes, ordered by subscription ID. Both indexes are
+  only the target topic's mailboxes. The per-topic rotation cursor selects the first
+  destination, then attempts continue in circular order; receipts are sorted by
+  subscription ID before return (§10.2). Both indexes are
   updated under the bus-state lock; close removes only the matching mailbox instance,
   so reusing an ID cannot let an old handle remove a newer mailbox.
 - Different subscription instances may share a `(topic, subscriber_id)` and each

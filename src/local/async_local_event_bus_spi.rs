@@ -15,7 +15,6 @@ use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::task::Poll;
 use std::time::Duration;
-use std::time::Instant;
 
 use qubit_clock::StdTimer;
 use qubit_clock::Timer;
@@ -117,7 +116,8 @@ impl AsyncLocalEventBusSpi {
     ///
     /// # Parameters
     /// - `config`: local provider queue limits.
-    /// - `timer`: runtime-neutral timer used for graceful shutdown.
+    /// - `timer`: runtime-neutral timer whose clock domain drives async receive
+    ///   timeouts, delayed delivery, and graceful shutdown deadlines.
     ///
     /// # Returns
     /// An async local SPI using the supplied timer.
@@ -180,7 +180,8 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                     "unsupported_payload_mode",
                 ));
             }
-            let mut event = LocalEvent::transport(topic.clone(), &message)
+            let now = self.shared.timer.clock().now().elapsed_since_origin();
+            let mut event = LocalEvent::<Duration>::transport_at(topic.clone(), &message, now)
                 .ok_or_else(|| pre_admission_publish_error(Some(topic.as_str()), "delay_deadline_overflow"))?;
             let payload_type = match message.payload() {
                 TransportPayload::Native(payload) => payload.as_ref().type_id(),
@@ -233,7 +234,7 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 let status = if let Some((_, reason)) = rejection {
                     AdmissionStatus::Rejected(reason.into())
                 } else {
-                    queue.enqueue_back(event.clone());
+                    queue.enqueue_back_at(event.clone(), now);
                     AdmissionStatus::Accepted
                 };
                 drop(queue);
@@ -300,12 +301,12 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 ));
             }
             let id = request.subscription_id();
-            let queue = Arc::new(LocalQueue {
+            let queue = Arc::new(LocalQueue::<Duration> {
                 id,
                 topic: topic.clone(),
                 subscriber_id: request.subscriber_id().clone(),
                 capacity: self.shared.capacity(),
-                state: Mutex::new(LocalQueueState::default()),
+                state: Mutex::new(LocalQueueState::<Duration>::default()),
                 ready: Default::default(),
                 async_ready: Default::default(),
             });
@@ -347,7 +348,7 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
             let result = match mode {
                 ShutdownMode::Immediate => ShutdownOutcome::Complete,
                 ShutdownMode::Graceful { timeout } => {
-                    let started = Instant::now();
+                    let started = self.shared.timer.clock().now();
                     let mut wait_registration = None;
                     let mut timer_future = None;
                     poll_fn(|cx| {
@@ -364,10 +365,15 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                         if !busy {
                             return Poll::Ready(Ok(ShutdownOutcome::Complete));
                         }
+                        let now = self.shared.timer.clock().now();
+                        let elapsed = now.duration_since(started);
                         let remaining = if timeout == Duration::MAX {
                             None
                         } else {
-                            let Some(remaining) = timeout.checked_sub(started.elapsed()) else {
+                            let Ok(elapsed) = elapsed else {
+                                return Poll::Ready(Err(operation_error("shutdown", None, "clock_error")));
+                            };
+                            let Some(remaining) = timeout.checked_sub(elapsed) else {
                                 return Poll::Ready(Ok(ShutdownOutcome::TimedOut));
                             };
                             if remaining.is_zero() {
@@ -377,8 +383,17 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                         };
                         if let (None, Some(remaining)) = (timer_future.as_ref(), remaining) {
                             let timer = Arc::clone(&self.shared.timer);
+                            let deadline = now.checked_add(remaining);
                             timer_future = Some(Box::pin(async move {
-                                let timer = timer.after(remaining).map_err(|error| SpiError::Operation {
+                                let deadline = deadline.map_err(|error| SpiError::Operation {
+                                    provider_id: "local".into(),
+                                    operation: "shutdown",
+                                    resource: None,
+                                    kind: "timer_error",
+                                    retryable: Some(false),
+                                    source: Box::new(error),
+                                })?;
+                                let timer = timer.at(deadline).map_err(|error| SpiError::Operation {
                                     provider_id: "local".into(),
                                     operation: "shutdown",
                                     resource: None,

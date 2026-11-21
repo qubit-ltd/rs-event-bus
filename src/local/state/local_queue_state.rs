@@ -19,18 +19,21 @@ use super::delayed_queue_head::QueueKey;
 use super::event::LocalEvent;
 use super::event::LocalInFlight;
 use super::queue_lane::QueueLane;
+use super::queue_time::QueueTime;
 
 /// Mutable state owned by one subscription receiver.
-#[derive(Default)]
-pub(in crate::local) struct LocalQueueState {
+///
+/// # Type Parameters
+/// - `D`: deadline representation used by the provider queue.
+pub(in crate::local) struct LocalQueueState<D = Instant> {
     /// FIFO lanes keyed by ordering key, including the unkeyed lane.
-    pub(in crate::local) lanes: HashMap<QueueKey, QueueLane>,
+    pub(in crate::local) lanes: HashMap<QueueKey, QueueLane<D>>,
     /// Number of pending events across all lanes.
     pub(in crate::local) pending_count: usize,
     /// Ready lane heads in round-robin order, with their generations.
     pub(in crate::local) ready_lanes: VecDeque<(QueueKey, u64)>,
     /// Delayed lane heads ordered by deadline with lazy stale-entry removal.
-    pub(in crate::local) delayed_lanes: BinaryHeap<Reverse<DelayedQueueHead>>,
+    pub(in crate::local) delayed_lanes: BinaryHeap<Reverse<DelayedQueueHead<D>>>,
     /// Stable tie breaker for delayed heads.
     pub(in crate::local) next_delay_sequence: u64,
     /// Number of delayed heap entries matching current lane heads.
@@ -38,21 +41,39 @@ pub(in crate::local) struct LocalQueueState {
     /// Number of delayed heap entries known to be stale.
     pub(in crate::local) delayed_stale_count: usize,
     /// Received but not yet terminally settled delivery attempts.
-    pub(in crate::local) in_flight: HashMap<Box<str>, LocalInFlight>,
+    pub(in crate::local) in_flight: HashMap<Box<str>, LocalInFlight<D>>,
     /// Whether receive calls should stop and return `Closed`.
     pub(in crate::local) closed: bool,
     /// Monotonic token component that distinguishes redelivery attempts.
     pub(in crate::local) next_delivery_token: u64,
 }
 
-impl LocalQueueState {
+impl<D> Default for LocalQueueState<D> {
+    /// Creates an empty queue state with no pending or in-flight work.
+    fn default() -> Self {
+        Self {
+            lanes: HashMap::new(),
+            pending_count: 0,
+            ready_lanes: VecDeque::new(),
+            delayed_lanes: BinaryHeap::new(),
+            next_delay_sequence: 0,
+            delayed_live_count: 0,
+            delayed_stale_count: 0,
+            in_flight: HashMap::new(),
+            closed: false,
+            next_delivery_token: 0,
+        }
+    }
+}
+
+impl<D: QueueTime> LocalQueueState<D> {
     /// Adds an event to its lane tail and schedules a head when the lane was
     /// empty.
     ///
     /// # Parameters
     /// - `event`: event appended behind the current lane contents.
-    pub(in crate::local) fn enqueue_back(&mut self, event: LocalEvent) {
-        self.enqueue_back_at(event, Instant::now());
+    pub(in crate::local) fn enqueue_back(&mut self, event: LocalEvent<D>) {
+        self.enqueue_back_at(event, D::now());
     }
 
     /// Adds an event to its lane tail using the supplied monotonic time to
@@ -61,7 +82,7 @@ impl LocalQueueState {
     /// # Parameters
     /// - `event`: event appended behind the current lane contents.
     /// - `now`: monotonic time used when scheduling an empty lane.
-    fn enqueue_back_at(&mut self, event: LocalEvent, now: Instant) {
+    pub(in crate::local) fn enqueue_back_at(&mut self, event: LocalEvent<D>, now: D) {
         let key = event.ordering_key.clone();
         let lane = self.lanes.entry(key.clone()).or_default();
         let was_empty = lane.events.is_empty();
@@ -77,8 +98,8 @@ impl LocalQueueState {
     ///
     /// # Parameters
     /// - `event`: event restored ahead of its same-key successors.
-    pub(in crate::local) fn enqueue_front(&mut self, event: LocalEvent) {
-        self.enqueue_front_at(event, Instant::now());
+    pub(in crate::local) fn enqueue_front(&mut self, event: LocalEvent<D>) {
+        self.enqueue_front_at(event, D::now());
     }
 
     /// Restores an event at its lane front using the supplied monotonic time
@@ -87,7 +108,7 @@ impl LocalQueueState {
     /// # Parameters
     /// - `event`: event restored ahead of its same-key successors.
     /// - `now`: monotonic time used when scheduling the lane head.
-    fn enqueue_front_at(&mut self, event: LocalEvent, now: Instant) {
+    pub(in crate::local) fn enqueue_front_at(&mut self, event: LocalEvent<D>, now: D) {
         let key = event.ordering_key.clone();
         self.lanes.entry(key.clone()).or_default().events.push_front(event);
         self.pending_count += 1;
@@ -119,7 +140,7 @@ impl LocalQueueState {
     /// # Returns
     /// Events whose payload references must be released outside the queue lock.
     #[must_use = "Drop discarded event payloads after releasing the queue lock."]
-    pub(in crate::local) fn clear_pending(&mut self) -> Vec<LocalEvent> {
+    pub(in crate::local) fn clear_pending(&mut self) -> Vec<LocalEvent<D>> {
         let mut discarded = self.lanes.drain().flat_map(|(_, lane)| lane.events).collect::<Vec<_>>();
         discarded.extend(self.in_flight.drain().map(|(_, flight)| flight.event));
         self.ready_lanes.clear();
@@ -141,7 +162,7 @@ impl LocalQueueState {
     ///
     /// # Panics
     /// Panics if a ready-lane or heap entry violates its queue-state invariant.
-    pub(in crate::local) fn pop_ready(&mut self, now: Instant) -> Option<LocalEvent> {
+    pub(in crate::local) fn pop_ready(&mut self, now: D) -> Option<LocalEvent<D>> {
         self.promote_due_heads(now);
         while let Some((key, version)) = self.ready_lanes.pop_front() {
             let Some(lane) = self.lanes.get_mut(&key) else {
@@ -177,11 +198,9 @@ impl LocalQueueState {
     /// # Returns
     /// `Some` with the time until the next delayed event, or `None` when no
     /// delayed head exists.
-    pub(in crate::local) fn next_ready_delay(&mut self, now: Instant) -> Option<Duration> {
+    pub(in crate::local) fn next_ready_delay(&mut self, now: D) -> Option<Duration> {
         self.discard_stale_delayed_heads();
-        self.delayed_lanes
-            .peek()
-            .map(|Reverse(head)| head.deadline.saturating_duration_since(now))
+        self.delayed_lanes.peek().map(|Reverse(head)| head.deadline.until(now))
     }
 
     /// Increments a lane generation and schedules its current ready or delayed
@@ -194,7 +213,7 @@ impl LocalQueueState {
     /// Panics if scheduling loses the lane before its delayed entry is stored.
     #[allow(dead_code)]
     pub(in crate::local) fn schedule_lane_head(&mut self, key: QueueKey) {
-        self.schedule_lane_head_at(key, Instant::now());
+        self.schedule_lane_head_at(key, D::now());
     }
 
     /// Registers a lane head as ready or delayed using an explicit monotonic
@@ -212,7 +231,7 @@ impl LocalQueueState {
     /// # Panics
     /// Panics if internal delayed-head accounting underflows or a scheduled
     /// lane disappears before its delayed generation is stored.
-    fn schedule_lane_head_at(&mut self, key: QueueKey, now: Instant) {
+    fn schedule_lane_head_at(&mut self, key: QueueKey, now: D) {
         let Some((version, deadline, invalidated_delayed_head)) = (|| {
             let lane = self.lanes.get_mut(&key)?;
             let invalidated_delayed_head = lane.delayed_version.take().is_some();
@@ -258,7 +277,7 @@ impl LocalQueueState {
     /// Panics if the delayed heap changes between checking and removing its
     /// head, which would violate the queue's internal synchronization
     /// invariant.
-    pub(in crate::local) fn promote_due_heads(&mut self, now: Instant) {
+    pub(in crate::local) fn promote_due_heads(&mut self, now: D) {
         self.discard_stale_delayed_heads();
         while self
             .delayed_lanes

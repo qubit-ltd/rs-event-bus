@@ -1439,9 +1439,12 @@ LocalQueueState
 结构与同步版基本对称，差异在于阻塞原语与索引方式：
 
 - 等待用 `Waker` 而非条件变量：`receive` future 在无消息时登记 waker，publish/settle
-  后唤醒；延迟消息到期用注入的 `Timer` 建立 sleep future。
+  后唤醒；延迟消息到期通过注入的 `Timer` 注册 deadline。异步 receive 超时、延迟投递和有限
+  graceful shutdown 共用该 timer 的单调时钟域；同步 local 队列仍使用 `std::time::Instant`。
+  事件的 `SystemTime` 时间戳仍是业务元数据，不参与期限计算。
 - 路由使用按 `subscription_id` 保存 mailbox 的主索引，以及按 topic 保存有序订阅 ID 集合的辅助索引。
-  发布只读取目标 topic 的订阅，并按 `subscription_id` 升序分配 provider 总预算；
+  发布只快照目标 topic 的订阅，由该 topic 的轮换游标选择首个目标，再按环形顺序尝试；
+  返回前回执按 `subscription_id` 升序排列（§10.2）；
   关闭时在同一 bus-state 锁内同步维护两个索引，并校验 mailbox 实例身份，避免旧 handle
   删除复用 ID 后的新 mailbox。相同 `(topic, subscriber_id)` 的不同订阅实例各有独立
   mailbox，也会各自收到广播消息，与同步 local 语义一致。

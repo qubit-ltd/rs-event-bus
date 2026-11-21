@@ -26,9 +26,12 @@ pub(in crate::local) type QueueKey = Option<OrderingKey>;
 /// across different lanes do not imply insertion-order delivery. `key` and
 /// `version` identify a lane entry but do not participate in heap ordering or
 /// equality.
-pub(in crate::local) struct DelayedQueueHead {
+///
+/// # Type Parameters
+/// - `D`: ordered deadline representation used by the owning queue.
+pub(in crate::local) struct DelayedQueueHead<D = Instant> {
     /// Earliest instant at which the lane head is eligible to be received.
-    pub(in crate::local) deadline: Instant,
+    pub(in crate::local) deadline: D,
     /// Insertion sequence used to break ties within the current heap.
     pub(in crate::local) sequence: u64,
     /// Optional ordering key identifying the lane whose head is delayed.
@@ -38,7 +41,7 @@ pub(in crate::local) struct DelayedQueueHead {
     pub(in crate::local) version: u64,
 }
 
-impl PartialEq for DelayedQueueHead {
+impl<D: PartialEq> PartialEq for DelayedQueueHead<D> {
     /// Compares heap identity by deadline and insertion sequence.
     ///
     /// # Parameters
@@ -53,9 +56,9 @@ impl PartialEq for DelayedQueueHead {
     }
 }
 
-impl Eq for DelayedQueueHead {}
+impl<D: Eq> Eq for DelayedQueueHead<D> {}
 
-impl PartialOrd for DelayedQueueHead {
+impl<D: Ord> PartialOrd for DelayedQueueHead<D> {
     /// Orders delayed heads by deadline, then by insertion sequence.
     ///
     /// # Parameters
@@ -69,7 +72,7 @@ impl PartialOrd for DelayedQueueHead {
     }
 }
 
-impl Ord for DelayedQueueHead {
+impl<D: Ord> Ord for DelayedQueueHead<D> {
     /// Orders delayed heads by deadline, then by insertion sequence.
     ///
     /// # Parameters

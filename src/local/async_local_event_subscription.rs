@@ -15,8 +15,8 @@ use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::task::Poll;
 use std::time::Duration;
-use std::time::Instant;
 
+use qubit_clock::MonotonicInstant;
 use qubit_clock::TimeError;
 use qubit_id::Id;
 
@@ -90,25 +90,37 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
         let timer = Arc::clone(&self.shared.timer);
         Box::pin(async move {
             if timeout.is_zero() {
+                let now = timer.clock().now().elapsed_since_origin();
                 let mut state = queue.lock();
                 if state.closed {
                     return Ok(ReceiveOutcome::Closed);
                 }
-                return Ok(pop_message(&mut state, subscription_id)?.unwrap_or(ReceiveOutcome::TimedOut));
+                return Ok(pop_message(&mut state, subscription_id, now)?.unwrap_or(ReceiveOutcome::TimedOut));
             }
-            let started = Instant::now();
+            let first_now = timer.clock().now();
+            let receive_deadline = if timeout == Duration::MAX {
+                None
+            } else {
+                Some(
+                    first_now
+                        .checked_add(timeout)
+                        .map_err(|_| operation_error("receive", Some(queue.topic.as_str()), "timer_error"))?,
+                )
+            };
             let mut waiter = None;
             let mut timer_future: Option<ReceiveTimer> = None;
             let mut timer_wait = None;
             poll_fn(|cx| {
                 queue.async_ready.register_or_update(&mut waiter, cx.waker());
+                let now = timer.clock().now();
+                let now_elapsed = now.elapsed_since_origin();
                 let mut state = queue.lock();
                 if state.closed {
                     drop(state);
                     drop(waiter.take());
                     return Poll::Ready(Ok(ReceiveOutcome::Closed));
                 }
-                match pop_message(&mut state, subscription_id) {
+                match pop_message(&mut state, subscription_id, now_elapsed) {
                     Ok(Some(message)) => {
                         drop(state);
                         drop(waiter.take());
@@ -121,38 +133,28 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
                     }
                     Ok(None) => {}
                 }
-                let remaining = if timeout == Duration::MAX {
-                    None
-                } else {
-                    let Some(remaining) = timeout.checked_sub(started.elapsed()) else {
-                        drop(state);
-                        drop(waiter.take());
-                        return Poll::Ready(Ok(ReceiveOutcome::TimedOut));
-                    };
-                    if remaining.is_zero() {
-                        drop(state);
-                        drop(waiter.take());
-                        return Poll::Ready(Ok(ReceiveOutcome::TimedOut));
-                    }
-                    Some(remaining)
-                };
-                let now = Instant::now();
-                let delay = state.next_ready_delay(now);
-                let wait_for = match (delay, remaining) {
-                    (Some(delay), Some(remaining)) => Some(delay.min(remaining)),
-                    (Some(delay), None) => Some(delay),
-                    (None, Some(remaining)) => Some(remaining),
+                if receive_deadline.is_some_and(|deadline| now >= deadline) {
+                    drop(state);
+                    drop(waiter.take());
+                    return Poll::Ready(Ok(ReceiveOutcome::TimedOut));
+                }
+                let delayed = state
+                    .next_ready_delay(now_elapsed)
+                    .and_then(|delay| now_elapsed.checked_add(delay));
+                let wait_deadline = match (delayed, receive_deadline) {
+                    (Some(delayed), Some(receive)) => Some(delayed.min(receive.elapsed_since_origin())),
+                    (Some(delayed), None) => Some(delayed),
+                    (None, Some(receive)) => Some(receive.elapsed_since_origin()),
                     (None, None) => None,
                 };
                 let mut retired_timer_future = None;
-                if let Some(wait_for) = wait_for {
-                    let deadline = now.checked_add(wait_for);
-                    if timer_wait.is_none_or(|previous| deadline.is_some_and(|current| current < previous)) {
-                        timer_wait = deadline;
+                if let Some(deadline) = wait_deadline {
+                    if timer_wait != Some(deadline) {
+                        timer_wait = Some(deadline);
                         retired_timer_future = timer_future.take();
                         let timer = Arc::clone(&timer);
                         timer_future = Some(Box::pin(async move {
-                            let timer = timer.after(wait_for)?;
+                            let timer = timer.at(MonotonicInstant::new(now.domain(), deadline))?;
                             timer.await
                         }));
                     }
@@ -217,6 +219,7 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
             }
             let settlement =
                 settlement.ok_or_else(|| invalid_token_error(Some(queue.topic.as_str()), "unknown_token"))?;
+            let now = self.shared.timer.clock().now().elapsed_since_origin();
             let mut state = queue.lock();
             let mut token_state = settlement.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(previous) = token_state.disposition {
@@ -240,7 +243,7 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
                 .remove(token_state.token_id.as_ref())
                 .expect("validated in-flight delivery");
             if disposition == DeliveryDisposition::Retry {
-                state.enqueue_front(delivery.event);
+                state.enqueue_front_at(delivery.event, now);
             } else {
                 self.shared.outstanding.release(1, delivery.event.weight_bytes);
             }
@@ -293,13 +296,17 @@ impl Drop for AsyncLocalEventSubscription {
 /// # Errors
 /// Returns `settlement_token_exhausted` if no new token can be issued, keeping
 /// the event queued with its existing capacity reservation.
-fn pop_message(state: &mut LocalQueueState, subscription_id: Id) -> Result<Option<ReceiveOutcome>, SpiError> {
-    let Some(mut event) = state.pop_ready(Instant::now()) else {
+fn pop_message(
+    state: &mut LocalQueueState<Duration>,
+    subscription_id: Id,
+    now: Duration,
+) -> Result<Option<ReceiveOutcome>, SpiError> {
+    let Some(mut event) = state.pop_ready(now) else {
         return Ok(None);
     };
     let Some(next) = state.next_delivery_token.checked_add(1) else {
         let error = operation_error("receive", Some(event.topic.as_str()), "settlement_token_exhausted");
-        state.enqueue_front(event);
+        state.enqueue_front_at(event, now);
         return Err(error);
     };
     state.next_delivery_token = next;

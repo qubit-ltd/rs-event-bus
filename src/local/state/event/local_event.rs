@@ -25,8 +25,11 @@ use crate::spi::SettlementToken;
 use crate::spi::TopicAddress;
 
 /// Queue-ready event data shared by each matching local subscription.
+///
+/// # Type Parameters
+/// - `D`: deadline representation for the owning provider's clock domain.
 #[derive(Clone)]
-pub(in crate::local) struct LocalEvent {
+pub(in crate::local) struct LocalEvent<D = Instant> {
     /// Destination selected during publication.
     pub(in crate::local) topic: TopicAddress,
     /// Stable event identity copied from the outbound message.
@@ -43,13 +46,13 @@ pub(in crate::local) struct LocalEvent {
     /// Shared native payload; local queues do not serialize it.
     pub(in crate::local) payload: SharedPayload,
     /// Earliest monotonic instant at which this event may be received.
-    pub(in crate::local) not_before: Option<Instant>,
+    pub(in crate::local) not_before: Option<D>,
     /// Number of successful receives for this subscription's event copy.
     /// `None` means the exact count overflowed and is no longer representable.
     delivery_attempts: Option<u32>,
 }
 
-impl LocalEvent {
+impl LocalEvent<Instant> {
     /// Copies outbound metadata and shares its native payload into queue form.
     ///
     /// # Parameters
@@ -75,7 +78,42 @@ impl LocalEvent {
             delivery_attempts: Some(0),
         })
     }
+}
 
+impl LocalEvent<std::time::Duration> {
+    /// Builds an event using an injected monotonic clock's elapsed-time domain.
+    ///
+    /// # Parameters
+    /// - `topic`: validated local destination.
+    /// - `message`: outbound event and metadata.
+    /// - `now`: elapsed time sampled from the injected clock.
+    ///
+    /// # Returns
+    /// `Some` when the delay deadline is representable, otherwise `None`.
+    pub(in crate::local) fn transport_at(
+        topic: TopicAddress,
+        message: &OutboundMessage,
+        now: std::time::Duration,
+    ) -> Option<Self> {
+        let not_before = match message.delay() {
+            Some(delay) => Some(now.checked_add(delay)?),
+            None => None,
+        };
+        Some(Self {
+            topic,
+            id: message.id().clone(),
+            timestamp: message.timestamp(),
+            headers: message.headers().clone(),
+            ordering_key: message.ordering_key().cloned(),
+            payload: SharedPayload::from_transport(message.payload()),
+            weight_bytes: message.native_payload_weight_bytes().map_or(0, NonZeroUsize::get),
+            not_before,
+            delivery_attempts: Some(0),
+        })
+    }
+}
+
+impl<D> LocalEvent<D> {
     /// Records one successful receive for this event copy.
     ///
     /// Once the counter overflows, it remains unknown rather than wrapping
