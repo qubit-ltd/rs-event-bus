@@ -95,6 +95,7 @@ impl NotificationStats {
             AdmissionOutcome::NoneAccepted(_) => &self.admission_none_accepted,
             AdmissionOutcome::NoDestinations => &self.admission_no_destinations,
             AdmissionOutcome::OpaqueAccepted => &self.admission_opaque_accepted,
+            AdmissionOutcome::SentUnconfirmed => return,
             AdmissionOutcome::Dropped => &self.admission_dropped,
         };
         Self::increment(counter);
@@ -132,6 +133,7 @@ mod tests {
         stats.record_admission(AdmissionOutcome::NoneAccepted(AdmissionSummary::default()));
         stats.record_admission(AdmissionOutcome::NoDestinations);
         stats.record_admission(AdmissionOutcome::OpaqueAccepted);
+        stats.record_admission(AdmissionOutcome::SentUnconfirmed);
         stats.record_admission(AdmissionOutcome::Dropped);
         let snapshot = stats.snapshot();
         assert_eq!(1, snapshot.admission_accepted());

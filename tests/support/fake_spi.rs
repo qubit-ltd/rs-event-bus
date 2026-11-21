@@ -654,6 +654,7 @@ pub(crate) struct FakeAsyncEventBusSpi {
     shutdown_transitions: Arc<Mutex<usize>>,
     calls: Arc<Mutex<Vec<&'static str>>>,
     fail_next_publish: Arc<Mutex<bool>>,
+    unconfirmed_next_publish: Arc<Mutex<bool>>,
     conformance_tamper: Arc<Mutex<Option<ConformanceTamper>>>,
     foreign_settlement_behavior: ForeignSettlementBehavior,
     foreign_settlement_attempted: Arc<AtomicBool>,
@@ -695,6 +696,7 @@ impl FakeAsyncEventBusSpi {
             shutdown_transitions: Arc::default(),
             calls: Arc::default(),
             fail_next_publish: Arc::default(),
+            unconfirmed_next_publish: Arc::default(),
             conformance_tamper: Arc::default(),
             foreign_settlement_behavior: ForeignSettlementBehavior::default(),
             foreign_settlement_attempted: Arc::default(),
@@ -802,6 +804,9 @@ impl FakeAsyncEventBusSpi {
     }
     pub(crate) fn fail_next_publish(&self) {
         *self.fail_next_publish.lock().unwrap() = true;
+    }
+    pub(crate) fn unconfirm_next_publish(&self) {
+        *self.unconfirmed_next_publish.lock().unwrap() = true;
     }
     pub(crate) fn tamper_conformance_message(&self, tamper: ConformanceTamper) {
         *self.conformance_tamper.lock().unwrap() = Some(tamper);
@@ -937,6 +942,7 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
         if take(&mut *self.fail_next_publish.lock().unwrap()) {
             return Box::pin(async { Err(spi_error("publish")) });
         }
+        let unconfirmed = take(&mut *self.unconfirmed_next_publish.lock().unwrap());
         for (subscription_id, queue) in self.queues.lock().unwrap().clone() {
             let mut state = queue.lock().unwrap();
             if state.topic.as_ref() != Some(message.topic()) {
@@ -952,11 +958,15 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
                 waker.wake();
             }
         }
-        Box::pin(async {
-            Ok(PublishAcknowledgement::Accepted {
-                provider_message_id: None,
-                metadata: Default::default(),
-            })
+        Box::pin(async move {
+            if unconfirmed {
+                Ok(PublishAcknowledgement::SentUnconfirmed)
+            } else {
+                Ok(PublishAcknowledgement::Accepted {
+                    provider_message_id: None,
+                    metadata: Default::default(),
+                })
+            }
         })
     }
     fn subscribe<'a>(

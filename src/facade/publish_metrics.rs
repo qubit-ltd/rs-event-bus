@@ -66,6 +66,7 @@ impl PublishMetrics {
         match receipt.acknowledgement() {
             PublishAcknowledgement::DroppedByInterceptor => Self::increment(&self.dropped, 1),
             PublishAcknowledgement::Accepted { .. } => Self::increment(&self.opaque_accepted, 1),
+            PublishAcknowledgement::SentUnconfirmed => {}
             PublishAcknowledgement::DestinationAdmissions(_) => {
                 if let Some(summary) = receipt.admission_summary() {
                     if summary.accepted == 0 && summary.filtered == 0 && summary.rejected == 0 {

@@ -271,16 +271,18 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     ///
     /// # Returns
     /// `Ok(())` after receiver cleanup completes. Calling `close` again while
-    /// the bus is still running also returns `Ok(())` without closing the
-    /// provider receiver a second time.
+    /// the bus is still running returns `Ok(())` without closing the provider
+    /// receiver a second time, but only after a prior close succeeded. A failed
+    /// provider close retains the receiver so a later call can retry it.
     ///
     /// # Errors
     /// Returns `LifecycleError::Closed` when the bus has begun shutdown. This
     /// error does not indicate that cleanup is complete; continue driving
     /// `AsyncEventBus::shutdown` and inspect its result. Other lifecycle errors
-    /// report provider receiver close failures. A repeated close while the bus
-    /// remains running is idempotent and succeeds without another provider
-    /// close call.
+    /// report provider receiver close failures. A repeated close is idempotent
+    /// only after success. A failed close may be retried while the bus remains
+    /// running; historical errors can still be included in the bus shutdown
+    /// result.
     ///
     /// # Panics
     /// Panics if the session lease invariant is violated internally.

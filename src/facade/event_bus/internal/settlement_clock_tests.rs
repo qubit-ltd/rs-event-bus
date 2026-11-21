@@ -519,6 +519,18 @@ fn test_sync_metrics_clock_failure_preserves_live_subscriptions_without_diagnost
         callback_count.fetch_add(1, Ordering::SeqCst);
     });
 
+    // Capture the idle subscription's reserved receive under the original
+    // clock domain before switching domains. Otherwise its first start sample
+    // can race with the switch and legitimately compare equal to later samples.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while idle_subscription.delivery_metrics().metrics.oldest_owned_age.is_none() && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert_eq!(
+        idle_subscription.delivery_metrics().metrics.oldest_owned_age,
+        Some(Duration::ZERO)
+    );
+
     clock.switched.store(true, Ordering::SeqCst);
     let snapshot = bus.delivery_metrics();
     assert_eq!(snapshot.running_handlers, 1);

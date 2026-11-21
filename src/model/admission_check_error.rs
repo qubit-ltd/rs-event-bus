@@ -20,8 +20,8 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 #[must_use]
 pub enum AdmissionCheckError {
-    /// The provider accepted the message without reporting individual
-    /// destinations.
+    /// No admission receipt was available, or the provider did not report
+    /// individual destinations required by the admission condition.
     #[error("destination admission visibility is unavailable")]
     VisibilityUnavailable,
     /// A publisher interceptor stopped dispatch before provider admission.

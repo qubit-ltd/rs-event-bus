@@ -1195,6 +1195,67 @@ fn test_publication_acknowledgement_matrix_for_sync_and_async_runners() {
 
 #[cfg(feature = "conformance")]
 #[test]
+fn test_unconfirmed_acknowledgement_matches_only_fire_and_forget_opaque_contract() {
+    for (guarantee, visibility, expected_pass) in [
+        (PublishGuarantee::FireAndForget, PublishVisibility::Opaque, true),
+        (PublishGuarantee::Accepted, PublishVisibility::Opaque, false),
+        (
+            PublishGuarantee::FireAndForget,
+            PublishVisibility::DestinationAdmissions,
+            false,
+        ),
+    ] {
+        let capabilities = EventBusCapabilities::new(
+            PayloadModes::Native,
+            SettlementCapabilities::None,
+            OrderingCapability::None,
+            DelayedDeliveryCapability::None,
+            DurabilityCapability::Ephemeral,
+            SubscriptionModes::EPHEMERAL,
+            false,
+            ReplayCapability::None,
+            guarantee,
+            visibility,
+        );
+        let acknowledgement = PublishAcknowledgement::SentUnconfirmed;
+        let sync = run_sync(
+            || {
+                Arc::new(SubscriptionModeSyncAdapter {
+                    inner: FakeEventBusSpi::with_capabilities(capabilities),
+                    seen: Arc::default(),
+                    reject: None,
+                    acknowledgement: Some(acknowledgement.clone()),
+                })
+            },
+            &ConformanceHooks::default(),
+        );
+        let asynchronous = block_on(run_async(
+            || async {
+                Arc::new(SubscriptionModeAsyncAdapter {
+                    inner: FakeAsyncEventBusSpi::with_capabilities(capabilities),
+                    seen: Arc::default(),
+                    reject: None,
+                    acknowledgement: Some(acknowledgement.clone()),
+                }) as Arc<dyn AsyncEventBusSpi>
+            },
+            &AsyncConformanceHooks::default(),
+        ));
+        for report in [&sync, &asynchronous] {
+            assert_eq!(
+                report.cases().iter().find_map(|case| match case {
+                    ConformanceCase::Passed { case_id } if case_id == "declared-native-publish" => Some(true),
+                    ConformanceCase::Failed { case_id, .. } if case_id == "declared-native-publish" => Some(false),
+                    _ => None,
+                }),
+                Some(expected_pass),
+                "unexpected conformance for {guarantee:?}/{visibility:?}: {report:?}"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "conformance")]
+#[test]
 fn test_pending_close_acknowledgement_matrix_for_sync_and_async_runners() {
     let opaque = || PublishAcknowledgement::Accepted {
         provider_message_id: None,

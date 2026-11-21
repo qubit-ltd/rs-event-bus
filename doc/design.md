@@ -945,7 +945,7 @@ Only ordinary `CodecError::Decode` takes the existing bad-message `Reject` path.
 `NativeTypeMismatch` stop reception without any settlement. The first
 `Arc<SubscriptionStopReason>` is retained and exposed by `terminal_failure()`;
 async `run` returns `ReceiveError::Stopped`, including on later runs of the same
-handle. Already-started handlers finish; close errors remain independent.
+handle. The public `Stopped` snapshot means no new `run()` can start; an active graceful runner may still finish work it owns, settle it, and close the receiver. Observe that runner result and the explicit close or bus shutdown result for cleanup boundaries. Already-started handlers finish; close errors remain independent.
 Durable work remains recoverable by a new subscription after the configuration
 or codec is repaired. Ephemeral receiver cleanup may discard work, and known
 abandonment is counted once. Healthy subscriptions remain active.

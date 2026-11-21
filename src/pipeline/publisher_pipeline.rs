@@ -388,6 +388,12 @@ impl PublisherPipeline {
         duplicate_possible: bool,
         observers: &[Arc<DiagnosticObserver>],
     ) -> PublishReceipt {
+        let acknowledgement = match (self.capabilities.publish_guarantee(), acknowledgement) {
+            (crate::spi::PublishGuarantee::FireAndForget, PublishAcknowledgement::Accepted { .. }) => {
+                PublishAcknowledgement::SentUnconfirmed
+            }
+            (_, acknowledgement) => acknowledgement,
+        };
         self.emit_rejections(
             &acknowledgement,
             &prepared.outbound.event_id,

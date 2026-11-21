@@ -207,6 +207,12 @@ fn test_graceful_retries_failed_settlement() {
         timeout: Duration::from_secs(5),
     }));
     assert!(poll_once(shutdown.as_mut()).is_pending());
+    assert_eq!(
+        qubit_event_bus::AsyncSubscriptionRunState::Stopped,
+        sub.run_state(),
+        "Stopped prevents another run but the active runner still owns settlement work"
+    );
+    assert!(poll_once(run.as_mut()).is_pending());
     let mut run_result = Poll::Pending;
     for _ in 0..16 {
         run_result = poll_once(run.as_mut());

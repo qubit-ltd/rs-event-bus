@@ -1331,7 +1331,7 @@ Replace `provider_crate` and `your-provider-id` with the real crate name and the
 After creating a bus, compare its declared capabilities with `RequiredCapabilities::missing_from(bus.capabilities())`. An empty list means the declarations meet the requirements. This is a local value comparison: it does not call the provider, change metrics, trigger registry fallback, or prove that the backend is healthy. The application decides how to report a non-empty list.
 
 
-`PublishGuarantee` levels are cumulative. `FireAndForget` promises only that the provider completed its send/commit attempt. `Accepted` adds admission at the provider's declared boundary (possibly an in-memory queue); `Confirmed` adds an explicit positive confirmation observed from the receiving transport; `DurablyStored` adds storage at the documented durable boundary and failure model. None implies handler completion or exactly-once delivery. Both built-in local and Redis providers currently declare `Accepted`; Redis `XADD` success does not by itself justify `Confirmed` or `DurablyStored`.
+`PublishGuarantee` levels are cumulative. `FireAndForget` promises only that the provider completed its send/commit attempt. `Accepted` adds admission at the provider's declared boundary (possibly an in-memory queue); `Confirmed` adds an explicit positive confirmation observed from the receiving transport; `DurablyStored` adds storage at the documented durable boundary and failure model. None implies handler completion or exactly-once delivery. Both built-in local and Redis providers currently declare `Accepted`; Redis `XADD` success does not by itself justify `Confirmed` or `DurablyStored`. A `FireAndForget` provider may return `PublishAcknowledgement::SentUnconfirmed`; legacy `Accepted` acknowledgements from that guarantee are normalized to the same result by the facade. This receipt means the send attempt completed, but does not confirm admission. It retains the event and provider IDs, has no admission summary, and fails every `check_admission` requirement with `VisibilityUnavailable`; a checked publish returns the full receipt in `CheckedPublishError::Admission`. Per-destination results remain intact. Batch and notification admission counters do not classify an unconfirmed send as accepted, rejected, dropped, or failed, even though ordinary publish returns successfully. A send may already have caused an external side effect, so do not automatically resend it.
 
 ### Compare local and Redis capabilities
 
@@ -1663,7 +1663,7 @@ pub fn monitor_run_state(
 }
 ```
 
-`Running` does not mean business processing succeeded, and `Stopped` does not mean the provider queue is empty. The state is a momentary snapshot; correlate it with subscription diagnostics and delivery metrics.
+`Running` does not mean business processing succeeded, and `Stopped` means only that this handle cannot start another `run()`. An already active graceful runner may still finish work it owns, settle it, and close the receiver. Observe that runner future's result, and use explicit `close()` or the bus shutdown result when the application needs a cleanup boundary. The state is a momentary snapshot; correlate it with subscription diagnostics and delivery metrics.
 
 ### Recover a stopped encoded subscription
 

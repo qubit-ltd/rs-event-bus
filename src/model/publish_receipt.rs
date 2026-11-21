@@ -166,7 +166,7 @@ impl PublishReceipt {
             | AdmissionOutcome::PartiallyAccepted(summary)
             | AdmissionOutcome::NoneAccepted(summary) => Some(summary),
             AdmissionOutcome::NoDestinations => Some(AdmissionSummary::default()),
-            AdmissionOutcome::OpaqueAccepted | AdmissionOutcome::Dropped => None,
+            AdmissionOutcome::SentUnconfirmed | AdmissionOutcome::OpaqueAccepted | AdmissionOutcome::Dropped => None,
         }
     }
 
@@ -201,7 +201,8 @@ impl PublishReceipt {
     ///
     /// # Returns
     /// `Ok(())` when the admission result satisfies `requirement`. Provider
-    /// acknowledgement alone satisfies `ProviderOrDestinationAccepted`.
+    /// A confirmed provider acknowledgement or reported destination admission
+    /// satisfies `ProviderOrDestinationAccepted`.
     ///
     /// # Errors
     /// Returns [`AdmissionCheckError::Dropped`] if interception stopped
@@ -219,6 +220,7 @@ impl PublishReceipt {
                     Err(AdmissionCheckError::VisibilityUnavailable)
                 }
             }
+            AdmissionOutcome::SentUnconfirmed => Err(AdmissionCheckError::VisibilityUnavailable),
             AdmissionOutcome::Dropped => Err(AdmissionCheckError::Dropped),
             AdmissionOutcome::NoDestinations | AdmissionOutcome::NoneAccepted(_) => {
                 Err(AdmissionCheckError::NoAcceptedDestination)

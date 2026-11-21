@@ -388,6 +388,7 @@ struct TestBackend {
     publish_calls: AtomicUsize,
     fail_publish_call: AtomicUsize,
     partial_publish_call: AtomicUsize,
+    unconfirmed_publish_call: AtomicUsize,
     settlement_capability: AtomicUsize,
     payload_mode: AtomicUsize,
     ordering_capability: AtomicUsize,
@@ -422,6 +423,7 @@ impl TestBackend {
             publish_calls: AtomicUsize::new(0),
             fail_publish_call: AtomicUsize::new(0),
             partial_publish_call: AtomicUsize::new(0),
+            unconfirmed_publish_call: AtomicUsize::new(0),
             settlement_capability: AtomicUsize::new(2),
             payload_mode: AtomicUsize::new(0),
             ordering_capability: AtomicUsize::new(3),
@@ -491,6 +493,10 @@ impl TestBackend {
 
     fn partial_publish_call(&self, call: usize) {
         self.partial_publish_call.store(call, Ordering::Release);
+    }
+
+    fn unconfirmed_publish_call(&self, call: usize) {
+        self.unconfirmed_publish_call.store(call, Ordering::Release);
     }
 
     fn set_settlement_capability(&self, capability: SettlementCapabilities) {
@@ -790,7 +796,9 @@ impl EventBusSpi for TestBackend {
             lock.lock().expect("queue lock").messages.push_back(inbound);
             ready.notify_one();
         }
-        if self.partial_publish_call.load(Ordering::Acquire) == call {
+        if self.unconfirmed_publish_call.load(Ordering::Acquire) == call {
+            Ok(PublishAcknowledgement::SentUnconfirmed)
+        } else if self.partial_publish_call.load(Ordering::Acquire) == call {
             Ok(PublishAcknowledgement::DestinationAdmissions(vec![
                 DestinationAdmission::new(
                     Id::new(1),
@@ -4548,6 +4556,45 @@ fn test_partial_dead_letter_admission_is_not_republished() {
     assert_eq!(ids.len(), 2);
     assert_ne!(ids[0], ids[1]);
     assert!(backend.settlement_dispositions().contains(&DeliveryDisposition::Reject));
+    subscription.cancel().expect("cancel");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+}
+
+#[test]
+fn test_unconfirmed_dead_letter_send_is_not_republished_or_settled() {
+    let (bus, backend) = create_bus();
+    backend.unconfirmed_publish_call(2);
+    let options = SubscribeOptions::builder()
+        .retry_policy(
+            RetryPolicy::builder()
+                .max_attempts(3)
+                .build()
+                .expect("valid retry policy"),
+        )
+        .error_handler(|_, _| FailureDirective::DeadLetter)
+        .dead_letter(DeadLetterPolicy::with_topic_name("dead-letters").expect("valid dead-letter topic"))
+        .build();
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new("unconfirmed-dead-letter", topic())
+                .expect("valid ID")
+                .with_options(options),
+            |_| {
+                Err(DeliveryError::Handler {
+                    source: Box::new(IoError::other("handler failed")),
+                })
+            },
+        )
+        .expect("subscription starts");
+    let _ = bus
+        .publish(request("unconfirmed-dead-letter-source".into()))
+        .expect("original publish succeeds");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while backend.publish_calls() < 2 && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert_eq!(backend.publish_calls(), 2, "uncertain DLQ send is not retried");
+    assert!(backend.settlement_dispositions().is_empty(), "source remains unsettled");
     subscription.cancel().expect("cancel");
     let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }

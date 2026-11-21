@@ -76,6 +76,15 @@ fn test_dead_letter_acceptance_distinguishes_empty_and_dropped() {
 }
 
 #[test]
+fn test_dead_letter_does_not_treat_unconfirmed_send_as_admitted() {
+    assert!(!was_accepted(
+        &receipt(PublishAcknowledgement::SentUnconfirmed),
+        capabilities(PublishGuarantee::FireAndForget),
+        DeadLetterAdmissionPolicy::TransportAccepted
+    ));
+}
+
+#[test]
 fn test_dead_letter_acceptance_accepts_partial_and_guaranteed_opaque() {
     let partial = PublishAcknowledgement::DestinationAdmissions(vec![
         DestinationAdmission::new(

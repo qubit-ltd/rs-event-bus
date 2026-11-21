@@ -357,7 +357,12 @@ async fn record_async_retry_reject_settlement<F, Fut>(
                 ))
                 .await
                 .map_err(|e| format!("{name} publish: {e}"))?;
-            validate_probe_acknowledgement(&ack, spi.capabilities().publish_visibility(), Id::new(7))?;
+            validate_probe_acknowledgement(
+                &ack,
+                spi.capabilities().publish_guarantee(),
+                spi.capabilities().publish_visibility(),
+                Id::new(7),
+            )?;
             emit_async_progress(observer, first_id, payload_case_id, durability, "receive");
             let mut message = match subscription
                 .as_mut()
@@ -549,7 +554,12 @@ async fn record_foreign_settlement<F, Fut>(
             .publish(probe_message(probe_payload(case_id), capabilities, &owner_scope))
             .await
             .map_err(|e| format!("publish: {e}"))?;
-        validate_probe_acknowledgement(&ack, capabilities.publish_visibility(), Id::new(1))?;
+        validate_probe_acknowledgement(
+            &ack,
+            capabilities.publish_guarantee(),
+            capabilities.publish_visibility(),
+            Id::new(1),
+        )?;
         emit_async_progress(observer, "settlement-foreign-token", case_id, durability, "receive");
         let mut message = match owner
             .as_mut()
@@ -751,9 +761,12 @@ async fn record_pending_close<F, Fut>(
         .publish(probe_message(probe_payload(case_id), capabilities, &scope))
         .await;
     let setup = match publish {
-        Ok(acknowledgement) => {
-            validate_probe_acknowledgement(&acknowledgement, capabilities.publish_visibility(), Id::new(1))
-        }
+        Ok(acknowledgement) => validate_probe_acknowledgement(
+            &acknowledgement,
+            capabilities.publish_guarantee(),
+            capabilities.publish_visibility(),
+            Id::new(1),
+        ),
         Err(error) => Err(error.to_string()),
     };
     if let Err(error) = setup {
@@ -1070,6 +1083,7 @@ async fn record_async_publish_receive(
         probe.case_id,
         result,
         "async",
+        probe.capabilities.publish_guarantee(),
         probe.capabilities.publish_visibility(),
         qubit_id::Id::new(1),
         probe.durability,

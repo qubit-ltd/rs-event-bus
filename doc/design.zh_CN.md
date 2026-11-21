@@ -328,6 +328,7 @@ pub struct PublishReceipt {
 }
 
 pub enum PublishAcknowledgement {
+    SentUnconfirmed, // 发送／提交尝试已完成，但接纳未确认
     Accepted { provider_message_id: Option<String>, metadata: ProviderMessageMetadata }, // 不透明接受
     DestinationAdmissions(Vec<DestinationAdmission>),   // 逐目的地：Accepted / Filtered / Rejected
     DroppedByInterceptor,
@@ -337,9 +338,9 @@ pub enum PublishAcknowledgement {
 - provider SPI 的 `publish` 只返回 `PublishAcknowledgement`；facade 在其上补充事件 ID
   与 provider ID 生成 `PublishReceipt`。
 - `admission_outcome()` 把 `PublishAcknowledgement` 归一为 `AdmissionOutcome`：
-  `OpaqueAccepted`（provider 不报告目的地）、`Accepted`/`PartiallyAccepted`/
+  `SentUnconfirmed`（尝试已完成但未确认接纳）、`OpaqueAccepted`（provider 报告接纳但不提供目的地明细）、`Accepted`/`PartiallyAccepted`/
   `NoneAccepted(AdmissionSummary)`、`NoDestinations`（provider 报告了空目的地列表）、
-  `Dropped`（被拦截器丢弃）。`Filtered` 目的地（订阅 filter 拒绝）与 `Rejected`
+  `Dropped`（被拦截器丢弃）。`SentUnconfirmed` 没有接纳摘要，checked 接纳以 `VisibilityUnavailable` 失败，并保留完整回执。`FireAndForget` provider 的旧版 `Accepted` 会被归一为 `SentUnconfirmed`，逐目标结果保持原样。未确认发送可能已产生外部副作用，不会自动重试。`Filtered` 目的地（订阅 filter 拒绝）与 `Rejected`
   目的地（容量/准入拒绝）在 `AdmissionSummary` 中分别计数。
 - `check_admission(AdmissionRequirement)` 让调用方声明"我要求至少一个/全部目的地接纳"，
   返回 `Result<(), AdmissionCheckError>`（`VisibilityUnavailable`、`Dropped`、
@@ -892,7 +893,7 @@ capabilities，并在后续校验中使用不可变快照。查询失败或 pani
 `MetadataMismatch`、接收 `PayloadTooLarge`、codec `Panicked` 和
 `NativeTypeMismatch` 会停止接收，不执行任何 settlement。首个
 `Arc<SubscriptionStopReason>` 保留在 `terminal_failure()` 中；异步 `run`
-返回 `ReceiveError::Stopped`，同一 handle 再次运行也返回同一原因。
+返回 `ReceiveError::Stopped`，同一 handle 再次运行也返回同一原因。公开 `Stopped` 快照表示不能再启动新的 `run()`；活动 graceful runner 仍可能完成已接管工作、结算并关闭 receiver。应用应观察 runner 结果，以及显式 close 或总线停机结果以确认清理边界。
 已启动的 handler 继续完成，关闭错误单独保留。修复配置或 codec 后，创建新订阅
 恢复持久消息；临时 receiver 清理可能丢弃消息，已知损失只计数一次。
 其他健康订阅不受影响。
@@ -1224,6 +1225,9 @@ shutdown(mode)                         → request_shutdown(mode) + ticket.wait(
 ---
 
 ## 9. 异步 Facade：`AsyncEventBus` 与 `AsyncSubscription`
+
+`AsyncSubscription::close()` 在 receiver 成功关闭后幂等：总线运行期间再次调用不会重复调用 provider。关闭失败会保留 receiver，后续可以重试；首个 close 错误仍可能出现在总线停机结果中。总线停机开始后，`close()` 返回 `LifecycleError::Closed`，调用方必须继续驱动 shutdown。
+
 
 ### 9.1 运行时中立的实现手段
 

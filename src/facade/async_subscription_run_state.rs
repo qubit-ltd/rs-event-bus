@@ -31,7 +31,9 @@ pub enum AsyncSubscriptionRunState {
     Running = 1,
     /// A previously started `run` future was dropped and can be resumed.
     Paused = 2,
-    /// The subscription has ended and cannot process more messages.
+    /// The subscription cannot start another `run()` call. An active graceful
+    /// runner may still finish work it already owns, settle it, and close its
+    /// receiver. Observe that runner's result to know when it has finished.
     Stopped = 3,
 }
 

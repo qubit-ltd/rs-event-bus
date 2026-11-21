@@ -70,7 +70,9 @@ pub trait AsyncEventBusSpi: Send + Sync + 'static {
     /// - `message`: validated outbound message to send.
     ///
     /// # Returns
-    /// A future resolving to the provider's admission acknowledgement.
+    /// A future resolving to the provider's publication result. Return
+    /// `SentUnconfirmed` for a `FireAndForget` send attempt; the facade
+    /// normalizes legacy `Accepted` acknowledgements from that guarantee.
     ///
     /// # Errors
     /// The future resolves with a structured provider operation failure.

@@ -73,6 +73,7 @@ impl BatchPublishResult {
             .filter(|item| match item {
                 Ok(receipt) => match receipt.acknowledgement() {
                     PublishAcknowledgement::Accepted { .. } => true,
+                    PublishAcknowledgement::SentUnconfirmed => false,
                     PublishAcknowledgement::DestinationAdmissions(destinations) => destinations
                         .iter()
                         .any(|destination| matches!(destination.status(), AdmissionStatus::Accepted)),

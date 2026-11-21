@@ -1331,7 +1331,7 @@ let bus = registry.create(&EventBusConfig::default())?;
 总线创建后，可用 `RequiredCapabilities::missing_from(bus.capabilities())` 比较已声明的能力。空列表表示声明满足要求。这只是本地值比较：不会调用 provider、改变 metrics 或触发注册表 fallback，也不能证明后端当前健康。非空结果如何报告由应用决定。
 
 
-`PublishGuarantee` 按强度累积。`FireAndForget` 只承诺 provider 完成发送／提交尝试；`Accepted` 增加 provider 声明边界上的接纳（可能只是内存队列）；`Confirmed` 增加接收传输端返回且 provider 已观察到的明确正向确认；`DurablyStored` 增加进入已说明故障模型的持久存储边界。任何等级都不表示 handler 已完成或恰好一次投递。内置 local 与 Redis 当前均声明 `Accepted`；Redis 的 `XADD` 成功本身不足以升级为 `Confirmed` 或 `DurablyStored`。
+`PublishGuarantee` 按强度累积。`FireAndForget` 只承诺 provider 完成发送／提交尝试；`Accepted` 增加 provider 声明边界上的接纳（可能只是内存队列）；`Confirmed` 增加接收传输端返回且 provider 已观察到的明确正向确认；`DurablyStored` 增加进入已说明故障模型的持久存储边界。任何等级都不表示 handler 已完成或恰好一次投递。内置 local 与 Redis 当前均声明 `Accepted`；Redis 的 `XADD` 成功本身不足以升级为 `Confirmed` 或 `DurablyStored`。 声明 `FireAndForget` 的 provider 可以返回 `PublishAcknowledgement::SentUnconfirmed`；facade 也会把该保证等级下旧版 `Accepted` 回执归一为此结果。该回执只表示发送尝试已完成，不确认接纳；它保留事件 ID 和 provider ID，没有接纳摘要，所有 `check_admission` 条件都会以 `VisibilityUnavailable` 失败，checked publish 会在 `CheckedPublishError::Admission` 中返回完整回执。逐目标结果保持原样。批次和通知接纳计数不会把未确认发送归类为已接纳、拒绝、丢弃或失败，普通发布仍会成功返回。发送可能已经产生外部副作用，因此不要自动重发。
 
 ### 对照 local 与 Redis 的实际能力
 

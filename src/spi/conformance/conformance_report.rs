@@ -36,6 +36,7 @@ use crate::model::SubscriptionDurability;
 use crate::spi::EventBusCapabilities;
 use crate::spi::InboundMessage;
 use crate::spi::OrderingKey;
+use crate::spi::PublishGuarantee;
 use crate::spi::PublishVisibility;
 use crate::spi::SpiSubscriptionRequest;
 
@@ -413,11 +414,20 @@ pub(super) fn settlement_case(
 /// admits the probe subscription; otherwise an explanation of the mismatch.
 pub(super) fn validate_probe_acknowledgement(
     acknowledgement: &PublishAcknowledgement,
+    guarantee: PublishGuarantee,
     visibility: PublishVisibility,
     subscription_id: Id,
 ) -> Result<(), String> {
     match acknowledgement {
         PublishAcknowledgement::DroppedByInterceptor => Err("publication was dropped by an interceptor".into()),
+        PublishAcknowledgement::SentUnconfirmed
+            if guarantee == PublishGuarantee::FireAndForget && visibility == PublishVisibility::Opaque =>
+        {
+            Ok(())
+        }
+        PublishAcknowledgement::SentUnconfirmed => {
+            Err("provider declared confirmed admission but returned an unconfirmed send".into())
+        }
         PublishAcknowledgement::Accepted { .. } if visibility == PublishVisibility::Opaque => Ok(()),
         PublishAcknowledgement::Accepted { .. } => {
             Err("provider declared destination admissions but returned opaque acceptance".into())
@@ -455,20 +465,23 @@ pub(super) fn publish_case(
     case_id: &str,
     result: Result<PublishAcknowledgement, SpiError>,
     model: &str,
+    guarantee: PublishGuarantee,
     visibility: PublishVisibility,
     subscription_id: Id,
     durability: SubscriptionDurability,
 ) -> ConformanceCase {
     match result {
-        Ok(acknowledgement) => match validate_probe_acknowledgement(&acknowledgement, visibility, subscription_id) {
-            Ok(()) => ConformanceCase::Passed {
-                case_id: case_id.into(),
-            },
-            Err(reason) => ConformanceCase::Failed {
-                case_id: case_id.into(),
-                detail: format!("{model} publish acknowledgement failed for {durability:?} mode: {reason}"),
-            },
-        },
+        Ok(acknowledgement) => {
+            match validate_probe_acknowledgement(&acknowledgement, guarantee, visibility, subscription_id) {
+                Ok(()) => ConformanceCase::Passed {
+                    case_id: case_id.into(),
+                },
+                Err(reason) => ConformanceCase::Failed {
+                    case_id: case_id.into(),
+                    detail: format!("{model} publish acknowledgement failed for {durability:?} mode: {reason}"),
+                },
+            }
+        }
         Err(error) => ConformanceCase::Failed {
             case_id: case_id.into(),
             detail: format!("{model} publish rejected a declared payload for {durability:?} mode: {error}"),

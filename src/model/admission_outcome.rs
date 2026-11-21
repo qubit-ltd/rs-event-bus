@@ -29,6 +29,9 @@ use super::AdmissionSummary;
 #[non_exhaustive]
 #[must_use]
 pub enum AdmissionOutcome {
+    /// The provider completed its send or commit attempt without confirming
+    /// admission.
+    SentUnconfirmed,
     /// The provider accepted the message without reporting destination details.
     OpaqueAccepted,
     /// At least one destination accepted and none rejected admission.

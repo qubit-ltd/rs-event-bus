@@ -5,6 +5,10 @@
 本文是核心库迁移说明的稳定入口，概述部分历史 API 变更并链接当前升级指南；
 不表示较早发布的 provider 与当前 core 兼容。
 
+## 未确认的发布回执（core 0.21.5 及以后）
+
+`PublishAcknowledgement` 和 `AdmissionOutcome` 新增 `SentUnconfirmed`。声明 `FireAndForget` 的 provider 应返回该变体，而不是旧版 `Accepted`；facade 也会归一化这类旧回执。普通发布仍返回回执，但所有 checked 接纳条件都会以 `VisibilityUnavailable` 失败，并保留完整回执供检查。不要把发送解释为已拒绝，也不要自动重试：外部副作用可能已经发生。声明 `Accepted` 或更强保证的 provider，以及返回逐目标接纳结果的 provider，行为保持不变。
+
 ## Codec 注册（core 0.18 到 0.19）
 
 从 core 0.19 起，`CodecRegistry::register` 返回

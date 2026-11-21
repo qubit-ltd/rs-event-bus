@@ -150,7 +150,10 @@ pub trait EventBusSpi: Send + Sync + 'static {
     /// - `message`: validated outbound message to send.
     ///
     /// # Returns
-    /// The provider's admission acknowledgement.
+    /// The provider's publication result. Return `SentUnconfirmed` when the
+    /// provider declares `FireAndForget`; `Accepted` represents a positive
+    /// admission acknowledgement. Facades normalize legacy `Accepted` values
+    /// from `FireAndForget` providers to `SentUnconfirmed`.
     ///
     /// # Errors
     /// Returns a structured provider operation failure.

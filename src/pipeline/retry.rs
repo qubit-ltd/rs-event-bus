@@ -360,7 +360,10 @@ where
 fn acknowledges_admission(acknowledgement: &PublishAcknowledgement) -> bool {
     matches!(
         acknowledgement.admission_outcome(),
-        AdmissionOutcome::OpaqueAccepted | AdmissionOutcome::Accepted(_) | AdmissionOutcome::PartiallyAccepted(_)
+        AdmissionOutcome::SentUnconfirmed
+            | AdmissionOutcome::OpaqueAccepted
+            | AdmissionOutcome::Accepted(_)
+            | AdmissionOutcome::PartiallyAccepted(_)
     )
 }
 
@@ -375,6 +378,13 @@ mod tests {
     use std::task::Context;
     use std::task::Poll;
     use std::task::Waker;
+
+    use super::acknowledges_admission;
+
+    #[test]
+    fn test_unconfirmed_send_retains_admission_evidence() {
+        assert!(acknowledges_admission(&PublishAcknowledgement::SentUnconfirmed));
+    }
     use std::time::Duration;
 
     use qubit_clock::ManualMonotonicClock;
@@ -390,6 +400,7 @@ mod tests {
     use super::retry_config;
     use crate::error::PublishAttemptError;
     use crate::model::DuplicateRiskPolicy;
+    use crate::model::PublishAcknowledgement;
 
     /// Drives the real publish attempt boundary through a configured hard
     /// timeout.

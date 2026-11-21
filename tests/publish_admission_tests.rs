@@ -69,6 +69,7 @@ use qubit_retry::RetryPolicy;
 struct AdmissionProvider {
     acknowledgements: Mutex<VecDeque<PublishAcknowledgement>>,
     visibility: PublishVisibility,
+    publish_guarantee: PublishGuarantee,
     payload_modes: PayloadModes,
     publish_calls: AtomicUsize,
     event_ids: Mutex<Vec<String>>,
@@ -86,7 +87,7 @@ impl EventBusSpi for AdmissionProvider {
             SubscriptionModes::EPHEMERAL,
             false,
             ReplayCapability::None,
-            PublishGuarantee::Accepted,
+            self.publish_guarantee,
             self.visibility,
         )
     }
@@ -184,6 +185,7 @@ fn checked_provider(acknowledgements: Vec<PublishAcknowledgement>, retry_first: 
     Arc::new(AdmissionProvider {
         acknowledgements: Mutex::new(VecDeque::from(acknowledgements)),
         visibility: PublishVisibility::DestinationAdmissions,
+        publish_guarantee: PublishGuarantee::Accepted,
         payload_modes: PayloadModes::Native,
         publish_calls: AtomicUsize::new(0),
         event_ids: Mutex::new(Vec::new()),
@@ -215,6 +217,7 @@ fn publish(acknowledgement: PublishAcknowledgement) -> PublishAcknowledgement {
     let provider = Arc::new(AdmissionProvider {
         acknowledgements: Mutex::new(VecDeque::from([acknowledgement])),
         visibility: PublishVisibility::DestinationAdmissions,
+        publish_guarantee: PublishGuarantee::Accepted,
         payload_modes: PayloadModes::Native,
         publish_calls: AtomicUsize::new(0),
         event_ids: Mutex::new(Vec::new()),
@@ -228,6 +231,88 @@ fn publish(acknowledgement: PublishAcknowledgement) -> PublishAcknowledgement {
         .publish(request)
         .expect("admission is a successful publication receipt");
     receipt.acknowledgement().clone()
+}
+
+fn fire_and_forget_provider(acknowledgement: PublishAcknowledgement) -> Arc<AdmissionProvider> {
+    Arc::new(AdmissionProvider {
+        acknowledgements: Mutex::new(VecDeque::from([acknowledgement])),
+        visibility: PublishVisibility::Opaque,
+        publish_guarantee: PublishGuarantee::FireAndForget,
+        payload_modes: PayloadModes::Native,
+        publish_calls: AtomicUsize::new(0),
+        event_ids: Mutex::new(Vec::new()),
+        retry_first_not_accepted: AtomicBool::new(false),
+    })
+}
+
+#[test]
+fn test_fire_and_forget_legacy_accepted_ack_is_normalized_and_checked_receipt_is_preserved() {
+    let provider = fire_and_forget_provider(PublishAcknowledgement::Accepted {
+        provider_message_id: Some("sent-id".into()),
+        metadata: Default::default(),
+    });
+    let bus = EventBus::from_spi(ProviderId::new("admission-test").unwrap(), provider.clone()).unwrap();
+    let receipt = bus
+        .publish(PublishRequest::new(Topic::new("orders.created").unwrap(), "order".to_owned()).unwrap())
+        .unwrap();
+    assert_eq!(receipt.admission_outcome(), AdmissionOutcome::SentUnconfirmed);
+    assert!(receipt.admission_summary().is_none());
+    assert!(matches!(
+        receipt.acknowledgement(),
+        PublishAcknowledgement::SentUnconfirmed
+    ));
+    assert_eq!(1, provider.publish_calls.load(Ordering::Acquire));
+    let metrics = bus.publish_metrics();
+    assert_eq!(0, metrics.opaque_accepted);
+    assert_eq!(0, metrics.accepted_destinations);
+    assert_eq!(0, metrics.rejected_destinations);
+    assert_eq!(0, metrics.dropped);
+    assert_eq!(0, metrics.errors);
+
+    let provider = fire_and_forget_provider(PublishAcknowledgement::Accepted {
+        provider_message_id: Some("checked-id".into()),
+        metadata: Default::default(),
+    });
+    let bus = EventBus::from_spi(ProviderId::new("admission-test").unwrap(), provider.clone()).unwrap();
+    let error = bus
+        .publish_checked(
+            PublishRequest::new(Topic::new("orders.checked").unwrap(), "order".to_owned()).unwrap(),
+            AdmissionRequirement::ProviderOrDestinationAccepted,
+        )
+        .expect_err("unconfirmed send does not satisfy checked admission");
+    match error {
+        CheckedPublishError::Admission { receipt, reason } => {
+            assert_eq!(AdmissionOutcome::SentUnconfirmed, receipt.admission_outcome());
+            assert_eq!(AdmissionCheckError::VisibilityUnavailable, reason);
+            assert!(matches!(
+                receipt.acknowledgement(),
+                PublishAcknowledgement::SentUnconfirmed
+            ));
+        }
+        other => panic!("expected admission error, got {other:?}"),
+    }
+    assert_eq!(1, provider.publish_calls.load(Ordering::Acquire));
+}
+
+#[test]
+fn test_fire_and_forget_legacy_accepted_ack_is_normalized_for_async_publish() {
+    let provider = fire_and_forget_provider(PublishAcknowledgement::Accepted {
+        provider_message_id: Some("async-id".into()),
+        metadata: Default::default(),
+    });
+    let bus = AsyncEventBus::from_spi(ProviderId::new("admission-test").unwrap(), provider.clone()).unwrap();
+    let receipt = support::manual_async::block_on(
+        bus.publish(PublishRequest::new(Topic::new("orders.created").unwrap(), "order".to_owned()).unwrap()),
+    )
+    .unwrap();
+    assert_eq!(AdmissionOutcome::SentUnconfirmed, receipt.admission_outcome());
+    assert_eq!(1, provider.publish_calls.load(Ordering::Acquire));
+    let metrics = bus.publish_metrics();
+    assert_eq!(0, metrics.opaque_accepted);
+    assert_eq!(0, metrics.accepted_destinations);
+    assert_eq!(0, metrics.rejected_destinations);
+    assert_eq!(0, metrics.dropped);
+    assert_eq!(0, metrics.errors);
 }
 
 /// Builds a receipt whose admission result can be checked without a provider.
@@ -366,6 +451,7 @@ fn test_checked_publish_returns_the_receipt_when_admission_fails() {
     let provider = Arc::new(AdmissionProvider {
         acknowledgements: Mutex::new(VecDeque::from([PublishAcknowledgement::DestinationAdmissions(vec![])])),
         visibility: PublishVisibility::DestinationAdmissions,
+        publish_guarantee: PublishGuarantee::Accepted,
         payload_modes: PayloadModes::Native,
         publish_calls: AtomicUsize::new(0),
         event_ids: Mutex::new(Vec::new()),
@@ -525,6 +611,7 @@ fn test_checked_publish_opaque_preflight_has_no_side_effects() {
             metadata: Default::default(),
         }])),
         visibility: PublishVisibility::Opaque,
+        publish_guarantee: PublishGuarantee::Accepted,
         payload_modes: PayloadModes::Encoded,
         publish_calls: AtomicUsize::new(0),
         event_ids: Mutex::new(Vec::new()),
@@ -589,6 +676,7 @@ fn test_checked_publish_opaque_preflight_has_no_side_effects() {
     let visible_provider = Arc::new(AdmissionProvider {
         acknowledgements: Mutex::new(VecDeque::from([PublishAcknowledgement::DestinationAdmissions(vec![])])),
         visibility: PublishVisibility::DestinationAdmissions,
+        publish_guarantee: PublishGuarantee::Accepted,
         payload_modes: PayloadModes::Native,
         publish_calls: AtomicUsize::new(0),
         event_ids: Mutex::new(Vec::new()),

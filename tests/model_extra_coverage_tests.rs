@@ -192,10 +192,16 @@ fn test_publish_receipts_and_batches_report_admission_outcomes() {
         ProviderId::new("local").expect("valid provider ID"),
         PublishAcknowledgement::DroppedByInterceptor,
     );
-    let batch = BatchPublishResult::new(vec![Ok(receipt), Ok(dropped)]);
-    assert_eq!(batch.total_count(), 2);
+    let unconfirmed = PublishReceipt::new(
+        EventId::new("unconfirmed").expect("valid event ID"),
+        Some(EventId::new("unconfirmed").expect("valid event ID")),
+        ProviderId::new("local").expect("valid provider ID"),
+        PublishAcknowledgement::SentUnconfirmed,
+    );
+    let batch = BatchPublishResult::new(vec![Ok(receipt), Ok(dropped), Ok(unconfirmed)]);
+    assert_eq!(batch.total_count(), 3);
     assert_eq!(batch.accepted_count(), 1);
     assert_eq!(batch.dropped_count(), 1);
     assert_eq!(batch.failure_count(), 0);
-    assert_eq!(batch.into_items().len(), 2);
+    assert_eq!(batch.into_items().len(), 3);
 }

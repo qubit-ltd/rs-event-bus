@@ -3168,6 +3168,48 @@ fn test_async_failure_directives_settle_requeue_discard_and_dead_letter_outcomes
 }
 
 #[test]
+fn test_async_unconfirmed_dead_letter_send_is_not_republished_or_settled() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
+    block_on(async {
+        let options = SubscribeOptions::<u32>::builder()
+            .retry_policy(RetryPolicy::builder().max_attempts(3).build().unwrap())
+            .error_handler(|_, _| FailureDirective::DeadLetter)
+            .dead_letter(DeadLetterPolicy::with_topic_name("test.dead").unwrap())
+            .build();
+        let subscription = bus
+            .subscribe(
+                SubscribeRequest::new("unconfirmed-dead-letter", topic())
+                    .expect("valid subscriber ID")
+                    .with_options(options),
+            )
+            .await
+            .unwrap();
+        spi.unconfirm_next_publish();
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+            subscription.id(),
+            "unconfirmed-source-token",
+        ))));
+        let error = subscription
+            .run(|_| async {
+                Err(DeliveryError::Handler {
+                    source: Box::new(std::io::Error::other("handler failed")),
+                })
+            })
+            .await
+            .expect_err("unconfirmed forwarding leaves source unsettled");
+        assert!(matches!(error, ReceiveError::DeadLetterForwardFailed { .. }));
+        assert_eq!(spi.operation_log().iter().filter(|call| **call == "publish").count(), 1);
+        assert!(
+            spi.settlement_dispositions().is_empty(),
+            "source token remains unsettled"
+        );
+        let _ = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
+    });
+}
+
+#[test]
 fn test_async_dead_letter_forward_exhaustion_leaves_the_source_token_unsettled() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =

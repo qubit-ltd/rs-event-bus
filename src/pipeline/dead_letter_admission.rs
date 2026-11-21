@@ -47,6 +47,7 @@ pub(crate) fn was_accepted(
         (AdmissionOutcome::OpaqueAccepted, DeadLetterAdmissionPolicy::KnownDestination)
         | (AdmissionOutcome::NoneAccepted(_), _)
         | (AdmissionOutcome::NoDestinations, _)
-        | (AdmissionOutcome::Dropped, _) => false,
+        | (AdmissionOutcome::Dropped, _)
+        | (AdmissionOutcome::SentUnconfirmed, _) => false,
     }
 }

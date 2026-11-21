@@ -44,6 +44,9 @@ pub type ProviderMessageMetadata = BTreeMap<String, String>;
 #[non_exhaustive]
 #[must_use]
 pub enum PublishAcknowledgement {
+    /// The provider completed its send or commit attempt without confirming
+    /// admission.
+    SentUnconfirmed,
     /// A broker accepted the message; consumer identities may be unknown.
     Accepted {
         /// Provider message ID, when one is available.
@@ -77,6 +80,7 @@ impl PublishAcknowledgement {
     #[must_use = "Use the returned admission outcome."]
     pub fn admission_outcome(&self) -> AdmissionOutcome {
         match self {
+            Self::SentUnconfirmed => AdmissionOutcome::SentUnconfirmed,
             Self::Accepted { .. } => AdmissionOutcome::OpaqueAccepted,
             Self::DroppedByInterceptor => AdmissionOutcome::Dropped,
             Self::DestinationAdmissions(destinations) if destinations.is_empty() => AdmissionOutcome::NoDestinations,
