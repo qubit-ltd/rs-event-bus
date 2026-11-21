@@ -7,6 +7,7 @@
 // =============================================================================
 //! Asynchronous event bus subscribing operations.
 
+use std::sync::Arc;
 use std::sync::PoisonError;
 use std::sync::atomic::Ordering;
 
@@ -21,6 +22,7 @@ use crate::codec::resolve_codec;
 use crate::error::ConfigurationError;
 use crate::facade::async_event_bus::BusState;
 use crate::facade::async_event_bus::catch_spi_future;
+use crate::facade::async_subscription::BusContextFuture;
 use crate::model::DeadLetterAdmissionPolicy;
 use crate::model::OrderingPolicy;
 use crate::model::SubscribeRequest;
@@ -54,6 +56,10 @@ impl AsyncEventBus {
     /// is misconfigured, options require unsupported provider capabilities, the
     /// bus-local subscription ID space is exhausted, the configured
     /// subscription limit has been reached, or provider subscription fails.
+    /// A shutdown attempted from the same bus while the provider subscription
+    /// call is being created or polled returns
+    /// [`crate::LifecycleError::WouldDeadlock`]. Request shutdown from an
+    /// application lifecycle task after the subscription call returns.
     pub async fn subscribe<T: Send + Sync + 'static>(
         &self,
         request: SubscribeRequest<T>,
@@ -130,18 +136,21 @@ impl AsyncEventBus {
             options.provider_options().clone(),
             topic.payload_type_id(),
         );
-        let subscribe = crate::spi::panic_boundary::catch_spi_call(
-            self.inner.provider_id.as_str(),
-            "subscribe",
-            Some(subscriber_id.as_str()),
-            || self.inner.spi.subscribe(spi_request),
-        )?;
-        let receiver = catch_spi_future(
-            subscribe,
-            &self.inner.provider_id,
-            "subscribe",
-            Some(subscriber_id.as_str()),
-        )
+        let receiver = BusContextFuture::new(Arc::as_ptr(&self.inner) as usize, async {
+            let subscribe = crate::spi::panic_boundary::catch_spi_call(
+                self.inner.provider_id.as_str(),
+                "subscribe",
+                Some(subscriber_id.as_str()),
+                || self.inner.spi.subscribe(spi_request),
+            )?;
+            catch_spi_future(
+                subscribe,
+                &self.inner.provider_id,
+                "subscribe",
+                Some(subscriber_id.as_str()),
+            )
+            .await
+        })
         .await?;
         let (subscription, control) = AsyncSubscription::new(
             self.inner.clone(),

@@ -115,7 +115,10 @@ pub trait AsyncEventBusSpi: Send + Sync + 'static {
     /// `Graceful` shutdown.
     ///
     /// # Parameters
-    /// - `mode`: requested graceful or immediate shutdown behavior.
+    /// - `mode`: requested graceful or immediate shutdown behavior. When called
+    ///   by the asynchronous facade, a graceful timeout is the remaining
+    ///   portion of the caller's original absolute shutdown deadline, and can
+    ///   be zero; it is not a fresh total budget.
     ///
     /// # Returns
     /// A future resolving to the provider shutdown outcome.

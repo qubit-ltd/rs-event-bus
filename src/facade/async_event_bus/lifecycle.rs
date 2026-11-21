@@ -150,6 +150,9 @@ impl AsyncEventBus {
     /// publisher futures. Request shutdown from an application lifecycle task
     /// after the callback returns. Independently spawned tasks are outside
     /// that scope; this check does not detect arbitrary dependency cycles.
+    /// The same protection applies while an asynchronous provider subscription
+    /// call is being created or polled. Request shutdown from an application
+    /// lifecycle task after that call returns.
     ///
     /// # Parameters
     /// - `mode`: Shutdown policy and, for graceful mode, its deadline.
@@ -165,6 +168,9 @@ impl AsyncEventBus {
     /// after this call returns. An empty receiver batch can proceed to later
     /// cleanup stages, including provider shutdown, even with a zero-length
     /// budget; those stages can still time out if they need to wait.
+    /// The provider receives the portion of this same absolute deadline that
+    /// remains when its shutdown call starts; it does not receive a fresh copy
+    /// of the original timeout.
     ///
     /// # Returns
     /// The cached provider outcome, the cumulative number of facade-held
@@ -229,6 +235,7 @@ impl AsyncEventBus {
             self.stop_subscriptions(self.requested_shutdown_mode(mode));
         }
         let mut deadline = None;
+        let mut deadline_at = None;
         loop {
             let is_closed = { *self.inner.state.lock().unwrap_or_else(PoisonError::into_inner) == BusState::Closed };
             if is_closed {
@@ -243,8 +250,21 @@ impl AsyncEventBus {
                     .unwrap_or(ShutdownReport::new(ShutdownOutcome::Complete, 0, false)));
             }
             if let Some(absolute_deadline) = pending_deadline.take() {
-                match absolute_deadline.and_then(|instant| self.inner.timer.at(instant)) {
-                    Ok(timer) => deadline = Some(timer),
+                match absolute_deadline {
+                    Ok(instant) => match self.inner.timer.at(instant) {
+                        Ok(timer) => {
+                            deadline_at = Some(instant);
+                            deadline = Some(timer);
+                        }
+                        Err(error) => {
+                            let closed =
+                                *self.inner.state.lock().unwrap_or_else(PoisonError::into_inner) == BusState::Closed;
+                            if closed {
+                                continue;
+                            }
+                            return Err(LifecycleError::from(error).into());
+                        }
+                    },
                     Err(error) => {
                         let closed =
                             *self.inner.state.lock().unwrap_or_else(PoisonError::into_inner) == BusState::Closed;
@@ -272,7 +292,7 @@ impl AsyncEventBus {
                     self.stop_subscriptions(requested_mode);
                 }
                 return self
-                    .shutdown_as_leader(mode, requested_mode, timeout, &mut deadline)
+                    .shutdown_as_leader(mode, requested_mode, timeout, &mut deadline, deadline_at)
                     .await;
             }
             let stopped = wait_until_deadline(&self.inner.shutdown_signal, deadline.as_mut(), || {
@@ -307,6 +327,7 @@ impl AsyncEventBus {
         requested_mode: ShutdownMode,
         timeout: Option<Duration>,
         deadline: &mut Option<TimerFuture>,
+        deadline_at: Option<qubit_clock::MonotonicInstant>,
     ) -> Result<ShutdownReport, ShutdownError> {
         if !self
             .close_subscription_receivers(requested_mode, deadline.as_mut())
@@ -326,7 +347,7 @@ impl AsyncEventBus {
             });
         }
 
-        let outcome = self.shutdown_provider(mode, timeout, deadline).await?;
+        let outcome = self.shutdown_provider(mode, timeout, deadline, deadline_at).await?;
         let remaining_controls: Vec<_> = self
             .inner
             .controls
@@ -373,11 +394,25 @@ impl AsyncEventBus {
         mode: ShutdownMode,
         timeout: Option<Duration>,
         deadline: &mut Option<TimerFuture>,
+        deadline_at: Option<qubit_clock::MonotonicInstant>,
     ) -> Result<ShutdownOutcome, ShutdownError> {
         loop {
             let requested_mode = self.requested_shutdown_mode(mode);
+            let provider_mode = match requested_mode {
+                ShutdownMode::Immediate => ShutdownMode::Immediate,
+                ShutdownMode::Graceful { .. } => {
+                    let deadline_at = deadline_at.expect("graceful shutdown has a registered deadline");
+                    let now = self.inner.timer.clock().now();
+                    let remaining = match deadline_at.duration_since(now) {
+                        Ok(remaining) => remaining,
+                        Err(qubit_clock::TimeError::InvalidInstantOrder { .. }) => Duration::ZERO,
+                        Err(error) => return Err(LifecycleError::from(error).into()),
+                    };
+                    ShutdownMode::Graceful { timeout: remaining }
+                }
+            };
             let shutdown = catch_spi_call(self.inner.provider_id.as_str(), "shutdown", None, || {
-                self.inner.spi.shutdown(requested_mode)
+                self.inner.spi.shutdown(provider_mode)
             })?;
             let shutdown = catch_spi_future(shutdown, &self.inner.provider_id, "shutdown", None);
             if requested_mode == ShutdownMode::Immediate {

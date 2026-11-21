@@ -21,6 +21,8 @@ use std::task::Wake;
 use std::task::Waker;
 use std::time::Duration;
 
+use qubit_clock::ManualMonotonicClock;
+use qubit_clock::MonotonicClock;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::error::ShutdownError;
 use qubit_event_bus::error::SpiError;
@@ -133,8 +135,13 @@ impl AsyncEventBusSpi for ShutdownGateSpi {
 #[test]
 fn test_immediate_shutdown_escalates_active_graceful_provider_call() {
     let provider = Arc::new(ShutdownGateSpi::new(false));
-    let bus = AsyncEventBus::from_spi(ProviderId::new("shutdown-gate").expect("provider ID"), provider.clone())
-        .expect("facade");
+    let clock = ManualMonotonicClock::new();
+    let bus = AsyncEventBus::with_timer(
+        ProviderId::new("shutdown-gate").expect("provider ID"),
+        provider.clone(),
+        clock.new_timer(),
+    )
+    .expect("facade");
     let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
     let waker = Waker::from(counter.clone());
     let mut graceful = Box::pin(bus.shutdown(ShutdownMode::Graceful {
@@ -189,8 +196,13 @@ fn test_immediate_shutdown_escalates_active_graceful_provider_call() {
 #[test]
 fn test_immediate_shutdown_provider_error_reaches_both_waiters() {
     let provider = Arc::new(ShutdownGateSpi::new(true));
-    let bus = AsyncEventBus::from_spi(ProviderId::new("shutdown-gate").expect("provider ID"), provider.clone())
-        .expect("facade");
+    let clock = ManualMonotonicClock::new();
+    let bus = AsyncEventBus::with_timer(
+        ProviderId::new("shutdown-gate").expect("provider ID"),
+        provider.clone(),
+        clock.new_timer(),
+    )
+    .expect("facade");
     let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
     let waker = Waker::from(counter.clone());
     let mut graceful = Box::pin(bus.shutdown(ShutdownMode::Graceful {

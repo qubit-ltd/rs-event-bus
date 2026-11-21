@@ -12,6 +12,7 @@ mod support;
 use std::future::Future;
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -226,6 +227,166 @@ fn test_cancelling_polled_publish_future_does_not_retract_provider_acceptance() 
     assert_eq!(1, accepted.load(Ordering::Acquire));
     assert_eq!(Some(event_id), *observed_event_id.lock().unwrap());
     let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+}
+
+struct ReentrantSubscribeSpi {
+    inner: FakeAsyncEventBusSpi,
+    bus: Mutex<Option<AsyncEventBus>>,
+    check_during_poll: bool,
+    rejected_shutdowns: AtomicUsize,
+}
+
+impl ReentrantSubscribeSpi {
+    fn check_shutdown(&self, bus: &AsyncEventBus) {
+        let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+        assert!(matches!(
+            shutdown.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+            Poll::Ready(Err(ShutdownError::Lifecycle(LifecycleError::WouldDeadlock {
+                operation: "shutdown"
+            })))
+        ));
+        self.rejected_shutdowns.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+impl AsyncEventBusSpi for ReentrantSubscribeSpi {
+    fn capabilities(&self) -> EventBusCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        self.inner.publish(message)
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        request: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+        let bus = self.bus.lock().unwrap().as_ref().unwrap().clone();
+        if !self.check_during_poll {
+            self.check_shutdown(&bus);
+        }
+        let inner = self.inner.subscribe(request);
+        Box::pin(async move {
+            if self.check_during_poll {
+                self.check_shutdown(&bus);
+            }
+            inner.await
+        })
+    }
+
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        self.inner.shutdown(mode)
+    }
+}
+
+#[test]
+fn test_async_subscribe_reentrant_shutdown_returns_would_deadlock() {
+    for check_during_poll in [false, true] {
+        let spi = Arc::new(ReentrantSubscribeSpi {
+            inner: FakeAsyncEventBusSpi::new(),
+            bus: Mutex::new(None),
+            check_during_poll,
+            rejected_shutdowns: AtomicUsize::new(0),
+        });
+        let bus =
+            AsyncEventBus::from_spi(ProviderId::new("subscribe-reentrant-shutdown").unwrap(), spi.clone()).unwrap();
+        *spi.bus.lock().unwrap() = Some(bus.clone());
+        let subscription = block_on(bus.subscribe(SubscribeRequest::new("reentrant", topic()).unwrap()))
+            .expect("outer subscription should succeed");
+        assert_eq!(1, spi.rejected_shutdowns.load(Ordering::Acquire));
+        drop(subscription);
+        let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown from normal call site succeeds");
+    }
+}
+
+struct RecordingShutdownSpi {
+    inner: FakeAsyncEventBusSpi,
+    calls: Arc<Mutex<Vec<ShutdownMode>>>,
+}
+
+impl AsyncEventBusSpi for RecordingShutdownSpi {
+    fn capabilities(&self) -> EventBusCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        self.inner.publish(message)
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        request: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+        self.inner.subscribe(request)
+    }
+
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        self.calls.lock().unwrap().push(mode);
+        self.inner.shutdown(mode)
+    }
+}
+
+#[test]
+fn test_async_graceful_shutdown_passes_remaining_budget_to_spi() {
+    let inner = FakeAsyncEventBusSpi::new();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let spi = Arc::new(RecordingShutdownSpi {
+        inner: inner.clone(),
+        calls: calls.clone(),
+    });
+    let clock = ManualMonotonicClock::new();
+    let bus = AsyncEventBus::with_timer(
+        ProviderId::new("remaining-shutdown-budget").unwrap(),
+        spi,
+        clock.new_timer(),
+    )
+    .unwrap();
+
+    block_on(async {
+        let _subscription = bus
+            .subscribe(SubscribeRequest::new("budget", topic()).unwrap())
+            .await
+            .unwrap();
+        inner.pause_close();
+        let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Graceful {
+            timeout: Duration::from_secs(10),
+        }));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(shutdown.as_mut().poll(&mut context).is_pending());
+        clock.advance(Duration::from_secs(3)).unwrap();
+        inner.release_close();
+        assert!(matches!(shutdown.as_mut().poll(&mut context), Poll::Ready(Ok(_))));
+    });
+    assert_eq!(
+        vec![ShutdownMode::Graceful {
+            timeout: Duration::from_secs(7),
+        }],
+        *calls.lock().unwrap(),
+    );
+
+    let zero_calls = Arc::new(Mutex::new(Vec::new()));
+    let zero_spi = Arc::new(RecordingShutdownSpi {
+        inner: FakeAsyncEventBusSpi::new(),
+        calls: zero_calls.clone(),
+    });
+    let zero_clock = ManualMonotonicClock::new();
+    let zero_bus = AsyncEventBus::with_timer(
+        ProviderId::new("zero-shutdown-budget").unwrap(),
+        zero_spi,
+        zero_clock.new_timer(),
+    )
+    .unwrap();
+    let _ = block_on(zero_bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::ZERO,
+    }))
+    .expect("empty close batch permits immediate provider completion");
+    assert_eq!(
+        vec![ShutdownMode::Graceful {
+            timeout: Duration::ZERO
+        }],
+        *zero_calls.lock().unwrap(),
+    );
 }
 
 #[test]
