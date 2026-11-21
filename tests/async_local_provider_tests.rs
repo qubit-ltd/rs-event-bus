@@ -16,6 +16,9 @@ use std::num::NonZeroU32;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::Barrier;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::task::Poll;
 use std::thread;
@@ -75,6 +78,61 @@ use crate::support::manual_async::poll_once;
 struct DeadlineLimitTimer {
     clock: Arc<ManualMonotonicClock>,
     max_deadline: Duration,
+}
+
+struct CountingFailureTimer {
+    clock: Arc<ManualMonotonicClock>,
+    calls: AtomicUsize,
+}
+
+struct GatedTimer {
+    clock: Arc<ManualMonotonicClock>,
+    registered: mpsc::Sender<()>,
+    continue_registration: Mutex<mpsc::Receiver<()>>,
+    calls: AtomicUsize,
+}
+
+impl Timer for GatedTimer {
+    fn clock(&self) -> &dyn MonotonicClock {
+        self.clock.as_ref()
+    }
+
+    fn at(&self, deadline: MonotonicInstant) -> Result<TimerFuture, TimeError> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.registered.send(()).map_err(|error| TimeError::TimerUnavailable {
+            source: qubit_clock::TimerUnavailableError::BackendUnavailable {
+                backend: "test",
+                source: Box::new(std::io::Error::other(error.to_string())),
+            },
+        })?;
+        self.continue_registration
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|error| TimeError::TimerUnavailable {
+                source: qubit_clock::TimerUnavailableError::BackendUnavailable {
+                    backend: "test",
+                    source: Box::new(std::io::Error::other(error.to_string())),
+                },
+            })?;
+        ManualTimer::from_clock(&self.clock).at(deadline)
+    }
+}
+
+impl Timer for CountingFailureTimer {
+    fn clock(&self) -> &dyn MonotonicClock {
+        self.clock.as_ref()
+    }
+
+    fn at(&self, _: MonotonicInstant) -> Result<TimerFuture, TimeError> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        Err(TimeError::TimerUnavailable {
+            source: qubit_clock::TimerUnavailableError::BackendUnavailable {
+                backend: "test",
+                source: Box::new(std::io::Error::other("registration failed")),
+            },
+        })
+    }
 }
 
 impl Timer for DeadlineLimitTimer {
@@ -185,6 +243,177 @@ fn assert_async_pre_admission_error(error: &qubit_event_bus::error::SpiError, ex
             effect: PublishEffect::NotAccepted,
             ..
         }
+    ));
+}
+
+#[test]
+fn test_async_local_delayed_publish_checks_rejections_before_timer() {
+    let make_message = |topic: &str, id: &str, payload, delay| {
+        OutboundMessage::new(
+            TopicAddress::new(topic).unwrap(),
+            EventId::new(id).unwrap(),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            delay,
+            payload,
+        )
+    };
+    let make_spi = |config| {
+        let timer = Arc::new(CountingFailureTimer {
+            clock: ManualMonotonicClock::new_shared(),
+            calls: AtomicUsize::new(0),
+        });
+        let spi = AsyncLocalEventBusSpi::with_timer(&config, timer.clone()).unwrap();
+        (spi, timer)
+    };
+    let delay = Some(Duration::from_secs(1));
+
+    let (closed, closed_timer) = make_spi(LocalEventBusConfig::default());
+    let _ = block_on(closed.shutdown(ShutdownMode::Immediate)).unwrap();
+    let error = block_on(closed.publish(make_message(
+        "closed.delayed",
+        "closed-delayed",
+        TransportPayload::Native(Arc::new(1_u32)),
+        delay,
+    )))
+    .unwrap_err();
+    assert_async_pre_admission_error(&error, "provider_closed");
+    assert_eq!(0, closed_timer.calls.load(Ordering::Relaxed));
+
+    let (conflict, conflict_timer) = make_spi(LocalEventBusConfig::new().queue_capacity(1));
+    let mut receiver = block_on(conflict.subscribe(spi_request_with_type(
+        9991,
+        "typed",
+        "typed.delayed",
+        TypeId::of::<u32>(),
+    )))
+    .unwrap();
+    let error = block_on(conflict.publish(make_message(
+        "typed.delayed",
+        "typed-delayed",
+        TransportPayload::Native(Arc::new(String::from("wrong"))),
+        delay,
+    )))
+    .unwrap_err();
+    assert_async_pre_admission_error(&error, "topic_type_conflict");
+    assert_eq!(0, conflict_timer.calls.load(Ordering::Relaxed));
+    assert!(matches!(
+        block_on(receiver.receive(Duration::ZERO)).unwrap(),
+        ReceiveOutcome::TimedOut
+    ));
+
+    let (weighted, weighted_timer) =
+        make_spi(LocalEventBusConfig::new().max_total_outstanding_weight_bytes(NonZeroUsize::new(16).unwrap()));
+    let mut receiver = block_on(weighted.subscribe(spi_request_with_type(
+        9992,
+        "weighted",
+        "weighted.delayed",
+        TypeId::of::<u32>(),
+    )))
+    .unwrap();
+    let error = block_on(weighted.publish(make_message(
+        "weighted.delayed",
+        "weighted-delayed",
+        TransportPayload::Native(Arc::new(3_u32)),
+        delay,
+    )))
+    .unwrap_err();
+    assert_async_pre_admission_error(&error, "missing_native_payload_weight");
+    assert_eq!(0, weighted_timer.calls.load(Ordering::Relaxed));
+    assert!(matches!(
+        block_on(receiver.receive(Duration::ZERO)).unwrap(),
+        ReceiveOutcome::TimedOut
+    ));
+
+    let (valid, valid_timer) = make_spi(LocalEventBusConfig::new().queue_capacity(1));
+    let mut receiver = block_on(valid.subscribe(spi_request_with_type(
+        9993,
+        "valid",
+        "valid.delayed",
+        TypeId::of::<u32>(),
+    )))
+    .unwrap();
+    let error = block_on(valid.publish(make_message(
+        "valid.delayed",
+        "valid-delayed",
+        TransportPayload::Native(Arc::new(4_u32)),
+        delay,
+    )))
+    .unwrap_err();
+    assert_async_pre_admission_error(&error, "timer_error");
+    assert!(matches!(
+        error,
+        qubit_event_bus::error::SpiError::Publish { source, .. }
+            if source.downcast_ref::<TimeError>().is_some_and(|e| matches!(e, TimeError::TimerUnavailable { .. }))
+    ));
+    assert_eq!(1, valid_timer.calls.load(Ordering::Relaxed));
+    assert!(matches!(
+        block_on(receiver.receive(Duration::ZERO)).unwrap(),
+        ReceiveOutcome::TimedOut
+    ));
+    let accepted = block_on(valid.publish(make_message(
+        "valid.delayed",
+        "valid-immediate",
+        TransportPayload::Native(Arc::new(5_u32)),
+        None,
+    )))
+    .unwrap();
+    assert!(
+        matches!(accepted, PublishAcknowledgement::DestinationAdmissions(admissions)
+        if admissions.len() == 1 && admissions[0].status() == &AdmissionStatus::Accepted)
+    );
+    assert!(matches!(
+        block_on(receiver.receive(Duration::ZERO)).unwrap(),
+        ReceiveOutcome::Message(_)
+    ));
+}
+
+#[test]
+fn test_async_local_delayed_publish_rechecks_shutdown_after_timer_registration() {
+    let clock = ManualMonotonicClock::new_shared();
+    let (registered_tx, registered_rx) = mpsc::channel();
+    let (continue_tx, continue_rx) = mpsc::channel();
+    let timer = Arc::new(GatedTimer {
+        clock,
+        registered: registered_tx,
+        continue_registration: Mutex::new(continue_rx),
+        calls: AtomicUsize::new(0),
+    });
+    let spi = Arc::new(AsyncLocalEventBusSpi::with_timer(&LocalEventBusConfig::default(), timer.clone()).unwrap());
+    let mut receiver = block_on(spi.subscribe(spi_request_with_type(
+        9994,
+        "shutdown",
+        "shutdown.during.timer",
+        TypeId::of::<u32>(),
+    )))
+    .unwrap();
+    let publish_spi = spi.clone();
+    let publisher = thread::spawn(move || {
+        block_on(publish_spi.publish(OutboundMessage::new(
+            TopicAddress::new("shutdown.during.timer").unwrap(),
+            EventId::new("shutdown-during-timer").unwrap(),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            Some(Duration::from_secs(1)),
+            TransportPayload::Native(Arc::new(7_u32)),
+        )))
+    });
+    registered_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("timer registration begins");
+    assert_eq!(
+        ShutdownOutcome::Complete,
+        block_on(spi.shutdown(ShutdownMode::Immediate)).unwrap()
+    );
+    continue_tx.send(()).unwrap();
+    let error = publisher.join().unwrap().unwrap_err();
+    assert_async_pre_admission_error(&error, "provider_closed");
+    assert_eq!(1, timer.calls.load(Ordering::Relaxed));
+    assert!(matches!(
+        block_on(receiver.receive(Duration::ZERO)).unwrap(),
+        ReceiveOutcome::Closed
     ));
 }
 

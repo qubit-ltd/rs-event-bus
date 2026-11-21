@@ -1584,6 +1584,17 @@ The structure matches the synchronous provider. The waiting primitive and the in
   `AsyncLocalEventBusProvider`, when created through the registry, uses `qubit_clock::StdTimer`.
   That provider is **not** submitted to the async inventory catalog (§6.4).
 
+  For a future `not_before`, publish checks known admission rejections (closed
+  provider, topic type conflict, then missing native payload weight) before
+  registering the deadline with the timer, and repeats those checks after
+  successful registration before taking the route snapshot. Registration runs
+  outside the bus-state lock. A deadline the timer cannot represent reports
+  `delay_deadline_overflow`; another registration failure reports `timer_error`.
+  Both are pre-admission errors with the original `TimeError` source and
+  `PublishEffect::NotAccepted`. The receive side still waits for the deadline
+  when it needs to deliver a queued message, and that later wait may fail
+  independently.
+
 ### 10.5 How the facade and `local` divide one message
 
 Take a delayed `PerKey` message. The facade checks capabilities and puts

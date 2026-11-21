@@ -23,6 +23,7 @@ use qubit_clock::Timer;
 use super::LocalCapacityMonitor;
 use super::LocalEventBusConfig;
 use super::async_local_event_subscription::AsyncLocalEventSubscription;
+use super::internal::AsyncBusState;
 use super::internal::AsyncLocalShared;
 use super::internal::AsyncMailbox;
 use super::internal::MailboxKey;
@@ -61,6 +62,13 @@ use crate::spi::TransportPayload;
 
 /// Asynchronous native-only local backend. Receive waits are driven by wakers;
 /// the provider creates no receiver thread per subscription.
+///
+/// Delayed publications validate known admission rejections before registering
+/// the deadline with the configured timer, then recheck provider state after
+/// registration succeeds. A timer registration failure therefore does not
+/// mask a known rejection. Pre-admission timer failures preserve their
+/// `qubit_clock::TimeError` source and report
+/// [`crate::model::PublishEffect::NotAccepted`].
 ///
 /// # Examples
 ///
@@ -195,8 +203,15 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
     ///
     /// # Errors
     /// Returns an SPI error for encoded payloads, closed state, type conflicts,
-    /// an unrepresentable delay deadline, or a missing native weight
-    /// declaration when weight budgeting is enabled.
+    /// an unrepresentable delay deadline, a timer registration failure, or a
+    /// missing native weight declaration when weight budgeting is enabled.
+    /// Known admission rejections take precedence over timer registration. A
+    /// future delay is validated before admission; an unrepresentable deadline
+    /// yields `delay_deadline_overflow`, while other registration failures
+    /// yield `timer_error`. Both preserve the underlying time error and report
+    /// [`crate::model::PublishEffect::NotAccepted`]. Provider state is checked
+    /// again after successful registration. Receive-side waiting may fail
+    /// independently later.
     fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         Box::pin(async move {
             let topic = message.topic().clone();
@@ -215,25 +230,11 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                     qubit_clock::TimeError::InstantOverflow,
                 )
             })?;
-            if let Some(deadline) = event.not_before
-                && deadline > now
-            {
-                let deadline = MonotonicInstant::new(now_instant.domain(), deadline);
-                drop(self.shared.timer.at(deadline).map_err(|error| {
-                    let kind = if matches!(error, qubit_clock::TimeError::InstantOverflow) {
-                        "delay_deadline_overflow"
-                    } else {
-                        "timer_error"
-                    };
-                    pre_admission_publish_time_error(Some(topic.as_str()), kind, error)
-                })?);
-            }
             let payload_type = match message.payload() {
                 TransportPayload::Native(payload) => payload.as_ref().type_id(),
                 TransportPayload::Encoded(_) => unreachable!("encoded payload was rejected above"),
             };
-            let mailboxes = {
-                let mut bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let validate_admission = |bus: &AsyncBusState| {
                 if bus.closed {
                     return Err(pre_admission_publish_error(Some(topic.as_str()), "provider_closed"));
                 }
@@ -247,6 +248,28 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 if self.shared.outstanding.requires_weight() && message.native_payload_weight_bytes().is_none() {
                     return Err(missing_native_payload_weight_error(topic.as_str()));
                 }
+                Ok(())
+            };
+            if let Some(deadline) = event.not_before
+                && deadline > now
+            {
+                {
+                    let bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+                    validate_admission(&bus)?;
+                }
+                let deadline = MonotonicInstant::new(now_instant.domain(), deadline);
+                drop(self.shared.timer.at(deadline).map_err(|error| {
+                    let kind = if matches!(error, qubit_clock::TimeError::InstantOverflow) {
+                        "delay_deadline_overflow"
+                    } else {
+                        "timer_error"
+                    };
+                    pre_admission_publish_time_error(Some(topic.as_str()), kind, error)
+                })?);
+            }
+            let mailboxes = {
+                let mut bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+                validate_admission(&bus)?;
                 bus.publish_mailboxes_for_topic(&topic)
             };
             if !self.shared.outstanding.requires_weight() {

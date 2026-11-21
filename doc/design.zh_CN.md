@@ -1457,6 +1457,12 @@ LocalQueueState
   `AsyncLocalEventBusProvider` 通过 registry 创建时使用 `qubit_clock::StdTimer`。
   该 provider 目前**未**提交到异步 inventory 目录（§6.4）。
 
+  对未来的 `not_before`，publish 会先检查已知接纳拒绝（provider 已关闭、topic 类型冲突、
+  缺少原生载荷权重），再向 timer 注册期限；注册成功后、快照路由前会再次执行这些检查。
+  注册在 bus-state 锁外进行。timer 无法表示期限时返回 `delay_deadline_overflow`，其他注册失败
+  返回 `timer_error`。两者都是接纳前错误，保留原始 `TimeError` source，并报告
+  `PublishEffect::NotAccepted`。接收侧在需要投递排队消息时仍会等待期限，该后续等待可能独立失败。
+
 ### 10.5 与 facade 的分工示例
 
 以一条 `PerKey` 延迟消息为例：facade 校验能力并把 `ordering_key`/`delay` 放进
