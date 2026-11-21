@@ -417,6 +417,75 @@ fn test_large_timeout_probe_graceful_shutdown() {
 }
 
 #[test]
+fn test_local_immediate_escalates_waiting_graceful_shutdown() {
+    isolated(
+        "test_local_immediate_escalates_waiting_graceful_shutdown",
+        "immediate-escalates-graceful",
+        || {
+            let topic = "probe.shutdown.escalation";
+            let spi = Arc::new(LocalEventBusSpi::new(&LocalEventBusConfig::default()).unwrap());
+            let capacity = spi.capacity_monitor();
+            let mut receiver = spi.subscribe(subscription(91, topic)).unwrap();
+            publish(&*spi, topic, "shutdown-escalation");
+            let ReceiveOutcome::Message(message) = receiver.receive(Duration::ZERO).unwrap() else {
+                panic!("published message is received");
+            };
+
+            let probe = test_wait_probe::install("graceful_shutdown");
+            let graceful_spi = Arc::clone(&spi);
+            let (graceful_tx, graceful_rx) = mpsc::channel();
+            let graceful = thread::spawn(move || {
+                graceful_tx
+                    .send(graceful_spi.shutdown(ShutdownMode::Graceful { timeout: Duration::MAX }))
+                    .unwrap();
+            });
+            probe
+                .recv_timeout(Duration::from_secs(2))
+                .expect("graceful call reached its wait");
+
+            let immediate_spi = Arc::clone(&spi);
+            let (immediate_tx, immediate_rx) = mpsc::channel();
+            let immediate = thread::spawn(move || {
+                immediate_tx
+                    .send(immediate_spi.shutdown(ShutdownMode::Immediate))
+                    .unwrap();
+            });
+            assert_eq!(
+                ShutdownOutcome::Complete,
+                immediate_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("immediate shutdown completes")
+                    .unwrap()
+            );
+            assert_eq!(
+                ShutdownOutcome::Complete,
+                graceful_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("graceful shutdown observes escalation")
+                    .unwrap()
+            );
+            assert_eq!(
+                ShutdownOutcome::Complete,
+                spi.shutdown(ShutdownMode::Immediate).unwrap()
+            );
+            assert!(matches!(
+                receiver.receive(Duration::ZERO).unwrap(),
+                ReceiveOutcome::Closed
+            ));
+            drop(message);
+            assert_eq!(0, capacity.snapshot().outstanding_count);
+            assert_eq!(
+                ShutdownOutcome::Complete,
+                spi.shutdown(ShutdownMode::Immediate).unwrap()
+            );
+            assert_eq!(0, capacity.snapshot().outstanding_count);
+            immediate.join().unwrap();
+            graceful.join().unwrap();
+        },
+    );
+}
+
+#[test]
 fn test_large_timeout_probe_notification_close() {
     isolated(
         "test_large_timeout_probe_notification_close",
