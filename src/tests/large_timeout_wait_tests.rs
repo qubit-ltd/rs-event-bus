@@ -485,7 +485,7 @@ fn test_async_local_graceful_rejects_publish_after_empty_scan() {
             let topic = "probe.shutdown.empty-scan-async";
             let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::default()).unwrap());
             let monitor = spi.capacity_monitor();
-            let _receiver = poll_ready(spi.subscribe(subscription(992, topic)));
+            let mut receiver = poll_ready(spi.subscribe(subscription(992, topic))).unwrap();
             let ((snapshot_seen, snapshot_release), (scan_seen, scan_release)) = test_wait_probe::install_two_gated(
                 "async_publish_after_route_snapshot",
                 "async_graceful_shutdown_decision",
@@ -523,8 +523,16 @@ fn test_async_local_graceful_rejects_publish_after_empty_scan() {
             assert!(
                 matches!(admissions[0].status(), AdmissionStatus::Rejected(reason) if reason.as_ref() == "provider is closing")
             );
+            assert!(matches!(
+                poll_ready(receiver.receive(Duration::ZERO)).unwrap(),
+                ReceiveOutcome::TimedOut
+            ));
             scan_release.send(()).unwrap();
             assert_eq!(ShutdownOutcome::Complete, shutdown.join().unwrap().unwrap());
+            assert!(matches!(
+                poll_ready(receiver.receive(Duration::ZERO)).unwrap(),
+                ReceiveOutcome::Closed
+            ));
             let snapshot = monitor.snapshot();
             assert_eq!(0, snapshot.outstanding_count);
             assert_eq!(1, snapshot.rejected_subscription_closed);
@@ -540,8 +548,9 @@ fn test_sync_local_graceful_preserves_partial_admission() {
         || {
             let topic = "probe.shutdown.partial-sync";
             let spi = Arc::new(LocalEventBusSpi::new(&LocalEventBusConfig::default()).unwrap());
+            let monitor = spi.capacity_monitor();
             let mut first = spi.subscribe(subscription(993, topic)).unwrap();
-            let _second = spi.subscribe(subscription(994, topic)).unwrap();
+            let mut second = spi.subscribe(subscription(994, topic)).unwrap();
             let ((publish_seen, publish_release), (scan_seen, scan_release)) =
                 test_wait_probe::install_two_gated("publish_between_targets", "graceful_shutdown_decision");
             let publish_spi = Arc::clone(&spi);
@@ -579,8 +588,19 @@ fn test_sync_local_graceful_preserves_partial_admission() {
             assert!(
                 matches!(admissions[1].status(), AdmissionStatus::Rejected(reason) if reason.as_ref() == "provider is closing")
             );
+            assert!(matches!(
+                second.receive(Duration::ZERO).unwrap(),
+                ReceiveOutcome::TimedOut
+            ));
             scan_release.send(()).unwrap();
             assert_eq!(ShutdownOutcome::Complete, shutdown.join().unwrap());
+            assert!(matches!(
+                second.receive(Duration::ZERO).unwrap(),
+                ReceiveOutcome::Closed
+            ));
+            let snapshot = monitor.snapshot();
+            assert_eq!(0, snapshot.outstanding_count);
+            assert_eq!(1, snapshot.rejected_subscription_closed);
         },
     );
 }
@@ -593,8 +613,9 @@ fn test_async_local_graceful_preserves_partial_admission() {
         || {
             let topic = "probe.shutdown.partial-async";
             let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::default()).unwrap());
+            let monitor = spi.capacity_monitor();
             let mut first = poll_ready(spi.subscribe(subscription(995, topic))).unwrap();
-            let _second = poll_ready(spi.subscribe(subscription(996, topic))).unwrap();
+            let mut second = poll_ready(spi.subscribe(subscription(996, topic))).unwrap();
             let ((publish_seen, publish_release), (scan_seen, scan_release)) =
                 test_wait_probe::install_two_gated("async_publish_between_targets", "async_graceful_shutdown_decision");
             let publish_spi = Arc::clone(&spi);
@@ -639,8 +660,19 @@ fn test_async_local_graceful_preserves_partial_admission() {
             assert!(
                 matches!(admissions[1].status(), AdmissionStatus::Rejected(reason) if reason.as_ref() == "provider is closing")
             );
+            assert!(matches!(
+                poll_ready(second.receive(Duration::ZERO)).unwrap(),
+                ReceiveOutcome::TimedOut
+            ));
             scan_release.send(()).unwrap();
             assert_eq!(ShutdownOutcome::Complete, shutdown.join().unwrap().unwrap());
+            assert!(matches!(
+                poll_ready(second.receive(Duration::ZERO)).unwrap(),
+                ReceiveOutcome::Closed
+            ));
+            let snapshot = monitor.snapshot();
+            assert_eq!(0, snapshot.outstanding_count);
+            assert_eq!(1, snapshot.rejected_subscription_closed);
         },
     );
 }
