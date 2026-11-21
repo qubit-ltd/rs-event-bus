@@ -312,8 +312,8 @@ impl AsyncEventBus {
     /// - `timeout`: optional graceful-shutdown duration used in timeout errors.
     /// - `deadline`: timer future for the shared graceful deadline, or `None`
     ///   when no graceful deadline exists.
-    /// - `deadline_at`: absolute monotonic timestamp associated with `deadline`,
-    ///   or `None` when no graceful deadline exists.
+    /// - `deadline_at`: absolute monotonic timestamp associated with
+    ///   `deadline`, or `None` when no graceful deadline exists.
     ///
     /// # Returns
     /// The provider outcome and facade-known abandoned-delivery count.
@@ -384,9 +384,9 @@ impl AsyncEventBus {
     /// - `timeout`: optional graceful-shutdown duration used in timeout errors.
     /// - `deadline`: timer future for the shared graceful deadline, or `None`
     ///   when no graceful deadline exists.
-    /// - `deadline_at`: absolute monotonic timestamp associated with `deadline`,
-    ///   or `None` when no graceful deadline exists. The provider receives the
-    ///   remaining duration until this timestamp.
+    /// - `deadline_at`: absolute monotonic timestamp associated with
+    ///   `deadline`, or `None` when no graceful deadline exists. The provider
+    ///   receives the remaining duration until this timestamp.
     ///
     /// # Returns
     /// The outcome reported by the provider.
