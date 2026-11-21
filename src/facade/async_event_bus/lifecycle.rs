@@ -32,6 +32,7 @@ use crate::facade::async_event_bus::waiting::await_shutdown_or_immediate;
 use crate::facade::async_event_bus::waiting::await_until_deadline;
 use crate::facade::async_event_bus::waiting::wait_until;
 use crate::facade::async_event_bus::waiting::wait_until_deadline;
+use crate::facade::async_subscription::BusContextFuture;
 use crate::facade::async_subscription::is_current_bus_poll;
 use crate::model::Topic;
 use crate::spi::DurabilityCapability;
@@ -134,6 +135,12 @@ impl AsyncEventBus {
     /// If shutdown returns a receiver-close error after provider cleanup has
     /// completed, [`Self::shutdown_report`] still exposes the final provider
     /// outcome and facade abandonment count.
+    ///
+    /// Receiver close and provider shutdown SPI calls carry the same
+    /// reentrancy protection as other asynchronous SPI calls. Calling shutdown
+    /// for this bus from either cleanup call returns
+    /// [`LifecycleError::WouldDeadlock`]. Providers should let application
+    /// lifecycle tasks stop the bus after the cleanup callback returns.
     ///
     /// A pending future must keep being polled to drive this attempt. Dropping
     /// it cancels that attempt, and a later call can retry cleanup that has
@@ -250,21 +257,11 @@ impl AsyncEventBus {
                     .unwrap_or(ShutdownReport::new(ShutdownOutcome::Complete, 0, false)));
             }
             if let Some(absolute_deadline) = pending_deadline.take() {
-                match absolute_deadline {
-                    Ok(instant) => match self.inner.timer.at(instant) {
-                        Ok(timer) => {
-                            deadline_at = Some(instant);
-                            deadline = Some(timer);
-                        }
-                        Err(error) => {
-                            let closed =
-                                *self.inner.state.lock().unwrap_or_else(PoisonError::into_inner) == BusState::Closed;
-                            if closed {
-                                continue;
-                            }
-                            return Err(LifecycleError::from(error).into());
-                        }
-                    },
+                match absolute_deadline.and_then(|instant| self.inner.timer.at(instant).map(|timer| (instant, timer))) {
+                    Ok((instant, timer)) => {
+                        deadline_at = Some(instant);
+                        deadline = Some(timer);
+                    }
                     Err(error) => {
                         let closed =
                             *self.inner.state.lock().unwrap_or_else(PoisonError::into_inner) == BusState::Closed;
@@ -313,7 +310,10 @@ impl AsyncEventBus {
     /// - `mode`: shutdown policy selected by this caller.
     /// - `requested_mode`: strongest mode observed before receiver cleanup.
     /// - `timeout`: optional graceful-shutdown duration used in timeout errors.
-    /// - `deadline`: shared absolute deadline for all graceful cleanup stages.
+    /// - `deadline`: timer future for the shared graceful deadline, or `None`
+    ///   when no graceful deadline exists.
+    /// - `deadline_at`: absolute monotonic timestamp associated with `deadline`,
+    ///   or `None` when no graceful deadline exists.
     ///
     /// # Returns
     /// The provider outcome and facade-known abandoned-delivery count.
@@ -382,7 +382,11 @@ impl AsyncEventBus {
     /// # Parameters
     /// - `mode`: shutdown policy selected by this caller.
     /// - `timeout`: optional graceful-shutdown duration used in timeout errors.
-    /// - `deadline`: shared absolute deadline for provider shutdown.
+    /// - `deadline`: timer future for the shared graceful deadline, or `None`
+    ///   when no graceful deadline exists.
+    /// - `deadline_at`: absolute monotonic timestamp associated with `deadline`,
+    ///   or `None` when no graceful deadline exists. The provider receives the
+    ///   remaining duration until this timestamp.
     ///
     /// # Returns
     /// The outcome reported by the provider.
@@ -411,10 +415,12 @@ impl AsyncEventBus {
                     ShutdownMode::Graceful { timeout: remaining }
                 }
             };
-            let shutdown = catch_spi_call(self.inner.provider_id.as_str(), "shutdown", None, || {
-                self.inner.spi.shutdown(provider_mode)
-            })?;
-            let shutdown = catch_spi_future(shutdown, &self.inner.provider_id, "shutdown", None);
+            let shutdown = BusContextFuture::new(Arc::as_ptr(&self.inner) as usize, async {
+                let shutdown = catch_spi_call(self.inner.provider_id.as_str(), "shutdown", None, || {
+                    self.inner.spi.shutdown(provider_mode)
+                })?;
+                catch_spi_future(shutdown, &self.inner.provider_id, "shutdown", None).await
+            });
             if requested_mode == ShutdownMode::Immediate {
                 let Some(outcome) = await_until_deadline(shutdown, deadline.as_mut()).await? else {
                     return Err(ShutdownError::TimedOut {

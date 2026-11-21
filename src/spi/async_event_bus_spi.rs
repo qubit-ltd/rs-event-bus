@@ -113,6 +113,10 @@ pub trait AsyncEventBusSpi: Send + Sync + 'static {
     /// backend has already closed must succeed and report a stable outcome.
     /// A later `Immediate` call may strengthen a previously requested
     /// `Graceful` shutdown.
+    /// When called by the facade, both creation and polling of this future are
+    /// scoped for same-bus reentrancy detection. Calling shutdown for that bus
+    /// from this operation returns `WouldDeadlock`; providers should request
+    /// application lifecycle shutdown after this operation returns.
     ///
     /// # Parameters
     /// - `mode`: requested graceful or immediate shutdown behavior. When called

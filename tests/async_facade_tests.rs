@@ -300,6 +300,208 @@ fn test_async_subscribe_reentrant_shutdown_returns_would_deadlock() {
     }
 }
 
+struct CleanupReentryProbe {
+    bus: Mutex<Option<AsyncEventBus>>,
+    different_bus: Mutex<Option<AsyncEventBus>>,
+    check_during_poll: bool,
+    calls: AtomicUsize,
+}
+
+impl CleanupReentryProbe {
+    fn check(&self) {
+        let bus = self.bus.lock().unwrap().as_ref().unwrap().clone();
+        let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+        assert!(matches!(
+            shutdown.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+            Poll::Ready(Err(ShutdownError::Lifecycle(LifecycleError::WouldDeadlock {
+                operation: "shutdown"
+            })))
+        ));
+        if let Some(other_bus) = self.different_bus.lock().unwrap().as_ref() {
+            let _ =
+                block_on(other_bus.shutdown(ShutdownMode::Immediate)).expect("shutdown of a different bus is allowed");
+        }
+        self.calls.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+struct ReentrantCleanupSpi {
+    inner: FakeAsyncEventBusSpi,
+    probe: Arc<CleanupReentryProbe>,
+    check_close: bool,
+    check_shutdown: bool,
+    close_calls: Arc<AtomicUsize>,
+    shutdown_calls: Arc<AtomicUsize>,
+}
+
+impl AsyncEventBusSpi for ReentrantCleanupSpi {
+    fn capabilities(&self) -> EventBusCapabilities {
+        self.inner.capabilities()
+    }
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        self.inner.publish(message)
+    }
+    fn subscribe<'a>(
+        &'a self,
+        request: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+        let inner = self.inner.clone();
+        let probe = self.probe.clone();
+        let check_close = self.check_close;
+        let check_during_poll = probe.check_during_poll;
+        let close_calls = self.close_calls.clone();
+        Box::pin(async move {
+            let receiver = inner.subscribe(request).await?;
+            Ok(Box::new(ReentrantCleanupReceiver {
+                inner: receiver,
+                probe,
+                check_close,
+                check_during_poll,
+                close_calls,
+            }) as Box<dyn AsyncEventSubscriptionSpi>)
+        })
+    }
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        self.shutdown_calls.fetch_add(1, Ordering::AcqRel);
+        if self.check_shutdown && !self.probe.check_during_poll {
+            self.probe.check();
+        }
+        let future = self.inner.shutdown(mode);
+        if self.check_shutdown && self.probe.check_during_poll {
+            let probe = self.probe.clone();
+            Box::pin(async move {
+                probe.check();
+                future.await
+            })
+        } else {
+            future
+        }
+    }
+}
+
+struct ReentrantCleanupReceiver {
+    inner: Box<dyn AsyncEventSubscriptionSpi>,
+    probe: Arc<CleanupReentryProbe>,
+    check_close: bool,
+    check_during_poll: bool,
+    close_calls: Arc<AtomicUsize>,
+}
+
+impl AsyncEventSubscriptionSpi for ReentrantCleanupReceiver {
+    fn receive<'a>(
+        &'a mut self,
+        timeout: Duration,
+    ) -> SpiFuture<'a, Result<qubit_event_bus::spi::ReceiveOutcome, SpiError>> {
+        self.inner.receive(timeout)
+    }
+    fn settle<'a>(
+        &'a mut self,
+        token: &SettlementToken,
+        disposition: DeliveryDisposition,
+    ) -> SpiFuture<'a, Result<(), SpiError>> {
+        self.inner.settle(token, disposition)
+    }
+    fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), SpiError>> {
+        self.close_calls.fetch_add(1, Ordering::AcqRel);
+        if self.check_close && !self.check_during_poll {
+            self.probe.check();
+        }
+        let future = self.inner.close();
+        if self.check_close && self.check_during_poll {
+            let probe = self.probe.clone();
+            Box::pin(async move {
+                probe.check();
+                future.await
+            })
+        } else {
+            future
+        }
+    }
+}
+
+#[test]
+fn test_async_spi_cleanup_reentrant_shutdown_returns_would_deadlock() {
+    for check_during_poll in [false, true] {
+        for close_during_shutdown in [false, true] {
+            let probe = Arc::new(CleanupReentryProbe {
+                bus: Mutex::new(None),
+                different_bus: Mutex::new(None),
+                check_during_poll,
+                calls: AtomicUsize::new(0),
+            });
+            let close_calls = Arc::new(AtomicUsize::new(0));
+            let shutdown_calls = Arc::new(AtomicUsize::new(0));
+            let spi = Arc::new(ReentrantCleanupSpi {
+                inner: FakeAsyncEventBusSpi::new(),
+                probe: probe.clone(),
+                check_close: true,
+                check_shutdown: false,
+                close_calls: close_calls.clone(),
+                shutdown_calls: shutdown_calls.clone(),
+            });
+            let bus = AsyncEventBus::from_spi(ProviderId::new("cleanup-close-reentrant").unwrap(), spi).unwrap();
+            *probe.bus.lock().unwrap() = Some(bus.clone());
+            let mut subscription =
+                block_on(bus.subscribe(SubscribeRequest::new("cleanup-close", topic()).unwrap())).unwrap();
+            if close_during_shutdown {
+                let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+            } else {
+                block_on(subscription.close()).unwrap();
+                let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+            }
+            assert_eq!(1, probe.calls.load(Ordering::Acquire));
+            assert_eq!(1, close_calls.load(Ordering::Acquire));
+            assert_eq!(1, shutdown_calls.load(Ordering::Acquire));
+        }
+
+        let probe = Arc::new(CleanupReentryProbe {
+            bus: Mutex::new(None),
+            different_bus: Mutex::new(None),
+            check_during_poll,
+            calls: AtomicUsize::new(0),
+        });
+        let close_calls = Arc::new(AtomicUsize::new(0));
+        let shutdown_calls = Arc::new(AtomicUsize::new(0));
+        let spi = Arc::new(ReentrantCleanupSpi {
+            inner: FakeAsyncEventBusSpi::new(),
+            probe: probe.clone(),
+            check_close: false,
+            check_shutdown: true,
+            close_calls: close_calls.clone(),
+            shutdown_calls: shutdown_calls.clone(),
+        });
+        let bus = AsyncEventBus::from_spi(ProviderId::new("cleanup-provider-reentrant").unwrap(), spi).unwrap();
+        *probe.bus.lock().unwrap() = Some(bus.clone());
+        let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+        assert_eq!(1, probe.calls.load(Ordering::Acquire));
+        assert_eq!(1, shutdown_calls.load(Ordering::Acquire));
+    }
+
+    let other_bus = AsyncEventBus::from_spi(
+        ProviderId::new("cleanup-other-bus").unwrap(),
+        Arc::new(FakeAsyncEventBusSpi::new()),
+    )
+    .unwrap();
+    let probe = Arc::new(CleanupReentryProbe {
+        bus: Mutex::new(None),
+        different_bus: Mutex::new(Some(other_bus)),
+        check_during_poll: false,
+        calls: AtomicUsize::new(0),
+    });
+    let spi = Arc::new(ReentrantCleanupSpi {
+        inner: FakeAsyncEventBusSpi::new(),
+        probe: probe.clone(),
+        check_close: false,
+        check_shutdown: true,
+        close_calls: Arc::new(AtomicUsize::new(0)),
+        shutdown_calls: Arc::new(AtomicUsize::new(0)),
+    });
+    let bus = AsyncEventBus::from_spi(ProviderId::new("cleanup-reentrant-other").unwrap(), spi).unwrap();
+    *probe.bus.lock().unwrap() = Some(bus.clone());
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    assert_eq!(1, probe.calls.load(Ordering::Acquire));
+}
+
 struct RecordingShutdownSpi {
     inner: FakeAsyncEventBusSpi,
     calls: Arc<Mutex<Vec<ShutdownMode>>>,
@@ -2291,6 +2493,24 @@ fn test_graceful_shutdown_registration_failure_stops_admission() {
         );
         assert_eq!(1, timer.registrations.load(Ordering::SeqCst));
     });
+}
+
+#[test]
+fn test_graceful_shutdown_preserves_deadline_calculation_overflow() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let timer = Arc::new(FailingRegistrationTimer::new());
+    timer.clock.advance(Duration::from_secs(1)).unwrap();
+    let bus = AsyncEventBus::with_timer(ProviderId::new("deadline-overflow").unwrap(), spi, timer.clone())
+        .expect("valid provider capabilities");
+
+    assert!(matches!(
+        block_on(bus.shutdown(ShutdownMode::Graceful { timeout: Duration::MAX })),
+        Err(ShutdownError::Lifecycle(LifecycleError::Timer(
+            TimeError::InstantOverflow
+        )))
+    ));
+    assert_eq!(0, timer.registrations.load(Ordering::SeqCst));
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate retry completes shutdown");
 }
 
 struct AdvanceClockOnWake {

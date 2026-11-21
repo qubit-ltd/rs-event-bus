@@ -283,6 +283,9 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// only after success. A failed close may be retried while the bus remains
     /// running; historical errors can still be included in the bus shutdown
     /// result.
+    /// Calling shutdown for this bus from the receiver close SPI call returns
+    /// [`LifecycleError::WouldDeadlock`]. Request shutdown from an application
+    /// lifecycle task after the close callback returns.
     ///
     /// # Panics
     /// Panics if the session lease invariant is violated internally.
