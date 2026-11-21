@@ -17,6 +17,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Wake;
 use std::task::Waker;
 use std::time::Duration;
 use std::time::Instant;
@@ -2128,6 +2129,67 @@ fn test_graceful_shutdown_registration_failure_stops_admission() {
             .unwrap()
         );
         assert_eq!(1, timer.registrations.load(Ordering::SeqCst));
+    });
+}
+
+struct AdvanceClockOnWake {
+    clock: Arc<ManualMonotonicClock>,
+    amount: Duration,
+    enabled: AtomicBool,
+}
+
+impl Wake for AdvanceClockOnWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        if self.enabled.swap(false, Ordering::AcqRel) {
+            self.clock.advance(self.amount).expect("advance notification clock");
+        }
+    }
+}
+
+#[test]
+fn test_graceful_shutdown_counts_stop_notification_in_budget() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let clock = Arc::new(ManualMonotonicClock::new());
+    let bus = AsyncEventBus::with_timer(
+        ProviderId::new("graceful-notification-budget").unwrap(),
+        spi.clone(),
+        clock.new_timer(),
+    )
+    .expect("valid provider capabilities");
+
+    block_on(async {
+        let subscription = bus
+            .subscribe(SubscribeRequest::new("notification-budget", topic()).unwrap())
+            .await
+            .unwrap();
+        let mut runner = Box::pin(subscription.run(|_| async { Ok(()) }));
+        let wake = Arc::new(AdvanceClockOnWake {
+            clock: clock.clone(),
+            amount: Duration::from_secs(1),
+            enabled: AtomicBool::new(false),
+        });
+        let waker = Waker::from(wake.clone());
+        let mut context = Context::from_waker(&waker);
+        assert!(runner.as_mut().poll(&mut context).is_pending());
+
+        wake.enabled.store(true, Ordering::Release);
+        let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Graceful {
+            timeout: Duration::from_secs(1),
+        }));
+        assert!(matches!(
+            shutdown.as_mut().poll(&mut context),
+            Poll::Ready(Err(ShutdownError::TimedOut { timeout })) if timeout == Duration::from_secs(1)
+        ));
+        assert_eq!(0, spi.close_call_count());
+        assert_eq!(0, spi.shutdown_transition_count());
+
+        drop(shutdown);
+        assert!(matches!(runner.as_mut().poll(&mut context), Poll::Ready(Ok(()))));
+        let _ = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
     });
 }
 

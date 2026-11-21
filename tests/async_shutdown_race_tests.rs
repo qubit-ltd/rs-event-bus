@@ -33,6 +33,8 @@ use qubit_event_bus::EventBusFacadeConfig;
 use qubit_event_bus::SpiError;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
 use qubit_event_bus::spi::EventBusCapabilities;
@@ -48,6 +50,7 @@ struct FakeAsyncEventBusSpi {
     calls: Mutex<Vec<&'static str>>,
     shutdown_paused: AtomicBool,
     shutdown_wakers: Mutex<Vec<Waker>>,
+    fail_receiver_close: bool,
 }
 
 impl FakeAsyncEventBusSpi {
@@ -56,6 +59,14 @@ impl FakeAsyncEventBusSpi {
             calls: Mutex::new(Vec::new()),
             shutdown_paused: AtomicBool::new(false),
             shutdown_wakers: Mutex::new(Vec::new()),
+            fail_receiver_close: false,
+        }
+    }
+
+    fn close_failing() -> Self {
+        Self {
+            fail_receiver_close: true,
+            ..Self::new()
         }
     }
 
@@ -98,9 +109,11 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
 
     fn subscribe<'a>(
         &'a self,
-        _request: SpiSubscriptionRequest,
+        request: SpiSubscriptionRequest,
     ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
-        Box::pin(async { panic!("subscribe is unused in shutdown tests") })
+        let subscriber = request.subscriber_id().as_str().to_owned();
+        let fail_close = self.fail_receiver_close;
+        Box::pin(async move { Ok(Box::new(RaceSubscription { subscriber, fail_close }) as _) })
     }
 
     fn shutdown<'a>(&'a self, _mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
@@ -121,6 +134,40 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
             .await;
             Ok(ShutdownOutcome::Complete)
         })
+    }
+}
+
+struct RaceSubscription {
+    subscriber: String,
+    fail_close: bool,
+}
+
+impl AsyncEventSubscriptionSpi for RaceSubscription {
+    fn receive<'a>(
+        &'a mut self,
+        _timeout: Duration,
+    ) -> SpiFuture<'a, Result<qubit_event_bus::spi::ReceiveOutcome, SpiError>> {
+        Box::pin(async { Ok(qubit_event_bus::spi::ReceiveOutcome::TimedOut) })
+    }
+
+    fn settle<'a>(
+        &'a mut self,
+        _token: &qubit_event_bus::spi::SettlementToken,
+        _disposition: qubit_event_bus::spi::DeliveryDisposition,
+    ) -> SpiFuture<'a, Result<(), SpiError>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), SpiError>> {
+        let error = self.fail_close.then(|| SpiError::Operation {
+            provider_id: "shutdown-race".into(),
+            operation: "close",
+            resource: Some(self.subscriber.clone().into()),
+            kind: "close_failed",
+            retryable: Some(false),
+            source: Box::new(std::io::Error::other("injected receiver close failure")),
+        });
+        Box::pin(async move { error.map_or(Ok(()), Err) })
     }
 }
 
@@ -186,6 +233,7 @@ struct ControlledTimer {
     clock: StdMonotonicClock,
     gate: Arc<Gate>,
     pause_next: AtomicBool,
+    fail_after_gate: AtomicBool,
 }
 
 impl Timer for ControlledTimer {
@@ -196,6 +244,14 @@ impl Timer for ControlledTimer {
     fn at(&self, deadline: MonotonicInstant) -> Result<TimerFuture, TimeError> {
         if self.pause_next.swap(false, Ordering::AcqRel) {
             self.gate.pause();
+        }
+        if self.fail_after_gate.swap(false, Ordering::AcqRel) {
+            return Err(TimeError::TimerUnavailable {
+                source: qubit_clock::TimerUnavailableError::BackendUnavailable {
+                    backend: "controlled",
+                    source: Box::new(std::io::Error::other("registration failed")),
+                },
+            });
         }
         self.clock.new_timer().at(deadline)
     }
@@ -237,6 +293,7 @@ fn test_closed_bus_is_not_reopened_by_late_shutdown_leader() {
         clock: StdMonotonicClock::new(),
         gate: gate.clone(),
         pause_next: AtomicBool::new(true),
+        fail_after_gate: AtomicBool::new(false),
     });
     let (bus, spi) = setup(timer);
     let _release_on_unwind = GateRelease(gate.clone());
@@ -274,6 +331,110 @@ fn test_closed_bus_is_not_reopened_by_late_shutdown_leader() {
     assert_eq!(
         1,
         spi.operation_log().iter().filter(|&&call| call == "shutdown").count()
+    );
+}
+
+#[test]
+fn test_graceful_registration_error_reuses_completed_shutdown() {
+    let gate = Arc::new(Gate::default());
+    let timer = Arc::new(ControlledTimer {
+        clock: StdMonotonicClock::new(),
+        gate: gate.clone(),
+        pause_next: AtomicBool::new(true),
+        fail_after_gate: AtomicBool::new(true),
+    });
+    let (bus, spi) = setup(timer);
+    let _release_on_unwind = GateRelease(gate.clone());
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    let graceful_bus = bus.clone();
+    let graceful_thread = thread::spawn(move || {
+        result_tx
+            .send(block_on(graceful_bus.shutdown(ShutdownMode::Graceful {
+                timeout: Duration::from_secs(30),
+            })))
+            .expect("send graceful result");
+    });
+
+    assert!(
+        gate.wait_until_entered(),
+        "graceful timer registration watchdog expired"
+    );
+    let immediate_report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("immediate shutdown");
+    gate.release();
+    let graceful_report = result_rx
+        .recv_timeout(WATCHDOG)
+        .expect("graceful shutdown watchdog expired")
+        .expect("completed shutdown takes precedence over late timer error");
+    graceful_thread.join().expect("graceful thread");
+    assert_eq!(immediate_report, graceful_report);
+    assert_eq!(
+        1,
+        spi.operation_log().iter().filter(|&&call| call == "shutdown").count()
+    );
+    assert_eq!(Some(immediate_report), bus.shutdown_report());
+}
+
+#[test]
+fn test_graceful_registration_error_reuses_completed_close_failure() {
+    let gate = Arc::new(Gate::default());
+    let timer = Arc::new(ControlledTimer {
+        clock: StdMonotonicClock::new(),
+        gate: gate.clone(),
+        pause_next: AtomicBool::new(true),
+        fail_after_gate: AtomicBool::new(true),
+    });
+    let spi = Arc::new(FakeAsyncEventBusSpi::close_failing());
+    let bus = AsyncEventBus::with_config_and_timer(
+        ProviderId::new("shutdown-race").expect("provider id"),
+        spi.clone(),
+        EventBusFacadeConfig::default(),
+        timer,
+    )
+    .expect("event bus");
+    let _subscription = block_on(
+        bus.subscribe(
+            SubscribeRequest::new("receiver-close-error", Topic::<u32>::new("test.topic").unwrap())
+                .expect("valid subscription request"),
+        ),
+    )
+    .expect("subscription");
+    let _release_on_unwind = GateRelease(gate.clone());
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    let graceful_bus = bus.clone();
+    let graceful_thread = thread::spawn(move || {
+        result_tx
+            .send(block_on(graceful_bus.shutdown(ShutdownMode::Graceful {
+                timeout: Duration::from_secs(30),
+            })))
+            .expect("send graceful result");
+    });
+
+    assert!(
+        gate.wait_until_entered(),
+        "graceful timer registration watchdog expired"
+    );
+    let immediate_error = block_on(bus.shutdown(ShutdownMode::Immediate)).expect_err("receiver close failure");
+    gate.release();
+    let graceful_error = result_rx
+        .recv_timeout(WATCHDOG)
+        .expect("graceful shutdown watchdog expired")
+        .expect_err("completed close error takes precedence over late timer error");
+    graceful_thread.join().expect("graceful thread");
+    let error_record = |error: qubit_event_bus::ShutdownError| match error {
+        qubit_event_bus::ShutdownError::SubscriptionClose(errors) => errors
+            .iter()
+            .map(|failure| (failure.subscriber_id().as_str().to_owned(), failure.error().kind()))
+            .collect::<Vec<_>>(),
+        other => panic!("expected cached receiver close error, got {other:?}"),
+    };
+    assert_eq!(error_record(immediate_error), error_record(graceful_error));
+    assert_eq!(
+        1,
+        spi.operation_log().iter().filter(|&&call| call == "shutdown").count()
+    );
+    assert!(
+        bus.shutdown_report().is_some(),
+        "provider report remains cached after close failure"
     );
 }
 

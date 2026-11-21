@@ -154,8 +154,10 @@ impl AsyncEventBus {
     /// # Parameters
     /// - `mode`: Shutdown policy and, for graceful mode, its deadline.
     ///
-    /// Graceful shutdown first stops admission and signals active runners to
-    /// stop, then checks the deadline before starting the registered receiver
+    /// Graceful shutdown first stops admission and fixes its absolute deadline,
+    /// then signals active runners to stop. Synchronous stop notifications
+    /// cannot be interrupted, but their time counts against the budget. The
+    /// deadline is checked before starting the registered receiver
     /// close batch. If receivers remain when a zero-length budget is exhausted,
     /// this call returns [`ShutdownError::TimedOut`] without starting those
     /// close operations. An active runner that the application continues to
@@ -188,7 +190,11 @@ impl AsyncEventBus {
     /// retry cleanup that remains incomplete. A cancelled future publishes
     /// no report unless a later attempt completes provider cleanup; use
     /// [`Self::shutdown_report`] to inspect the cached result without
-    /// starting another attempt.
+    /// starting another attempt. If deadline calculation or timer registration
+    /// fails while another call completes shutdown, the completed shutdown
+    /// result (including a recorded receiver-close error) takes precedence.
+    /// Otherwise the timer error is returned and the closing bus can be
+    /// retried.
     ///
     /// # Panics
     /// An internal invariant violation while handling a graceful deadline
@@ -202,23 +208,26 @@ impl AsyncEventBus {
             self.inner.shutdown_immediate.store(true, Ordering::Release);
             self.inner.shutdown_mode_signal.notify();
         }
-        let started_closing = {
+        let (started_closing, already_closed) = {
             let mut state = self.inner.state.lock().unwrap_or_else(PoisonError::into_inner);
             if *state == BusState::Running {
                 *state = BusState::Closing;
-                true
+                (true, false)
             } else {
-                false
+                (false, *state == BusState::Closed)
             }
         };
-        let notified_controls = started_closing || mode == ShutdownMode::Immediate;
-        if notified_controls {
-            self.stop_subscriptions(self.requested_shutdown_mode(mode));
-        }
         let timeout = match mode {
             ShutdownMode::Graceful { timeout } => Some(timeout),
             ShutdownMode::Immediate => None,
         };
+        let mut pending_deadline = timeout
+            .filter(|_| !already_closed)
+            .map(|duration| self.inner.timer.clock().deadline_after(duration));
+        let notified_controls = started_closing || mode == ShutdownMode::Immediate;
+        if notified_controls {
+            self.stop_subscriptions(self.requested_shutdown_mode(mode));
+        }
         let mut deadline = None;
         loop {
             let is_closed = { *self.inner.state.lock().unwrap_or_else(PoisonError::into_inner) == BusState::Closed };
@@ -233,10 +242,18 @@ impl AsyncEventBus {
                     .unwrap_or_else(PoisonError::into_inner)
                     .unwrap_or(ShutdownReport::new(ShutdownOutcome::Complete, 0, false)));
             }
-            if deadline.is_none() {
-                deadline = timeout
-                    .map(|timeout| self.inner.timer.after(timeout).map_err(LifecycleError::from))
-                    .transpose()?;
+            if let Some(absolute_deadline) = pending_deadline.take() {
+                match absolute_deadline.and_then(|instant| self.inner.timer.at(instant)) {
+                    Ok(timer) => deadline = Some(timer),
+                    Err(error) => {
+                        let closed =
+                            *self.inner.state.lock().unwrap_or_else(PoisonError::into_inner) == BusState::Closed;
+                        if closed {
+                            continue;
+                        }
+                        return Err(LifecycleError::from(error).into());
+                    }
+                }
             }
             if self
                 .inner
