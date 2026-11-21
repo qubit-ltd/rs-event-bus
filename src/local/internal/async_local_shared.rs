@@ -10,6 +10,7 @@
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 
 use qubit_clock::Timer;
 
@@ -25,6 +26,8 @@ pub(in crate::local) struct AsyncLocalShared {
     pub(in crate::local) outstanding: Arc<OutstandingBudget>,
     /// Mailbox registry and provider lifecycle state.
     pub(in crate::local) state: Mutex<AsyncBusState>,
+    /// Provider-wide admission gate shared with per-mailbox publishing.
+    pub(in crate::local) closed: AtomicBool,
     /// Wakes graceful shutdown when queue state changes.
     pub(in crate::local) changed: AsyncSignal,
     /// Timer used by cancellation-safe provider waits.
@@ -56,6 +59,7 @@ impl AsyncLocalShared {
             capacity,
             outstanding: Arc::new(OutstandingBudget::new(max_total_outstanding, max_weight)),
             state: Mutex::new(AsyncBusState::default()),
+            closed: AtomicBool::new(false),
             changed: AsyncSignal::default(),
             timer,
         }

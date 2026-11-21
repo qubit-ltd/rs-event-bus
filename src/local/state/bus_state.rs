@@ -25,8 +25,6 @@ pub(in crate::local) struct BusState {
     pub(in crate::local) topics: HashMap<TopicAddress, TopicSubscriptions>,
     /// Live subscription identifiers are unique across the provider.
     pub(in crate::local) subscription_ids: HashSet<Id>,
-    /// Rejects new provider operations after shutdown begins.
-    pub(in crate::local) closed: bool,
     /// Stable outcome returned by all later shutdown calls.
     pub(in crate::local) shutdown_outcome: Option<ShutdownOutcome>,
     /// Records an immediate request that must upgrade an active graceful drain.

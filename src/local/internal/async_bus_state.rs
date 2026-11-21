@@ -23,8 +23,6 @@ use crate::spi::TopicAddress;
 /// Registry and lifecycle state shared by asynchronous local bus calls.
 #[derive(Default)]
 pub(in crate::local) struct AsyncBusState {
-    /// Rejects new subscriptions and publications after shutdown starts.
-    pub(in crate::local) closed: bool,
     /// Stable outcome returned after provider shutdown completes.
     pub(in crate::local) outcome: Option<ShutdownOutcome>,
     /// Mailboxes keyed by their bus-local subscription IDs.

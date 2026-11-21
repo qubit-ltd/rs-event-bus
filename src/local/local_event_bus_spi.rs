@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::sync::Weak;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use super::LocalCapacityMonitor;
@@ -224,13 +225,18 @@ impl EventBusSpi for LocalEventBusSpi {
     /// - `message`: event to validate and enqueue without copying its payload.
     ///
     /// # Returns
-    /// Per-destination admission outcomes; a full queue rejects only its
-    /// target.
+    /// Per-destination admission outcomes; a full or closed target queue, or
+    /// a provider that begins closing during admission, rejects only that
+    /// target. A publish spanning shutdown may therefore be partially
+    /// accepted.
     ///
     /// # Errors
     /// Returns a non-retryable operation error for an encoded payload, an
-    /// overflowing delay deadline, a closed provider, a topic type conflict,
-    /// or a missing native weight declaration when weight budgeting is enabled.
+    /// overflowing delay deadline, a provider closed before routing, a topic
+    /// type conflict, or a missing native weight declaration when weight
+    /// budgeting is enabled. Provider closure after routing is reported as a
+    /// per-destination `SubscriptionClosed` rejection and can produce partial
+    /// acceptance.
     fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         let topic = message.topic().clone();
         validate_message(&message, &topic)?;
@@ -239,7 +245,7 @@ impl EventBusSpi for LocalEventBusSpi {
         let payload_type_id = native_payload_type_id(message.payload());
         let queues = {
             let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
-            if state.closed {
+            if self.shared.closed.load(Ordering::Acquire) {
                 return Err(pre_admission_publish_error(Some(topic.as_str()), "provider_closed"));
             }
             let queues = state.live_queues_for_topic(&topic);
@@ -268,6 +274,8 @@ impl EventBusSpi for LocalEventBusSpi {
             let mut state = queue.lock();
             let rejection = if state.closed {
                 Some((AdmissionRejectionKind::SubscriptionClosed, "subscription is closed"))
+            } else if self.shared.closed.load(Ordering::Acquire) {
+                Some((AdmissionRejectionKind::SubscriptionClosed, "provider is closing"))
             } else if state.pending_count() + state.in_flight.len() >= queue.capacity {
                 Some((
                     AdmissionRejectionKind::SubscriptionCapacity,
@@ -335,7 +343,7 @@ impl EventBusSpi for LocalEventBusSpi {
             async_ready: Default::default(),
         });
         let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if state.closed {
+        if self.shared.closed.load(Ordering::Acquire) {
             return Err(operation_error(
                 "subscribe",
                 Some(request.topic().as_str()),
@@ -437,7 +445,10 @@ impl EventBusSpi for LocalEventBusSpi {
         {
             return Ok(outcome);
         }
-        self.shared.state.lock().unwrap_or_else(PoisonError::into_inner).closed = true;
+        {
+            let _state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+            self.shared.closed.store(true, Ordering::Release);
+        }
         signal_changed(&self.shared);
 
         let mut outcome = match mode {

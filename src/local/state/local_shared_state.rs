@@ -11,6 +11,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 
 use super::bus_state::BusState;
 use crate::local::outstanding_budget::OutstandingBudget;
@@ -19,6 +20,8 @@ use crate::local::outstanding_budget::OutstandingBudget;
 pub(in crate::local) struct LocalSharedState {
     /// Routing metadata, admission gate, and shutdown result.
     pub(in crate::local) state: Mutex<BusState>,
+    /// Provider-wide admission gate shared with per-queue publishing.
+    pub(in crate::local) closed: AtomicBool,
     /// Signals provider-level queue or settlement progress.
     pub(in crate::local) changed: Condvar,
     /// Serializes concurrent shutdown callers through the final outcome.
@@ -50,6 +53,7 @@ impl LocalSharedState {
     ) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(BusState::default()),
+            closed: AtomicBool::new(false),
             changed: Condvar::new(),
             shutdown_gate: Mutex::new(()),
             capacity,

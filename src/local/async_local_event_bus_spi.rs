@@ -13,6 +13,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
 use std::time::Duration;
 
@@ -199,10 +200,13 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
     ///
     /// # Returns
     /// Per-subscription admission results, including an empty list when no
-    /// mailbox is subscribed.
+    /// mailbox is subscribed. A mailbox or provider that closes during
+    /// admission rejects only that target, so the result may show partial
+    /// acceptance.
     ///
     /// # Errors
-    /// Returns an SPI error for encoded payloads, closed state, type conflicts,
+    /// Returns an SPI error for encoded payloads, a provider closed before
+    /// routing, type conflicts,
     /// an unrepresentable delay deadline, a timer registration failure, or a
     /// missing native weight declaration when weight budgeting is enabled.
     /// Known admission rejections take precedence over timer registration. A
@@ -235,7 +239,7 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 TransportPayload::Encoded(_) => unreachable!("encoded payload was rejected above"),
             };
             let validate_admission = |bus: &AsyncBusState| {
-                if bus.closed {
+                if self.shared.closed.load(Ordering::Acquire) {
                     return Err(pre_admission_publish_error(Some(topic.as_str()), "provider_closed"));
                 }
                 if bus
@@ -280,6 +284,8 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 let mut queue = mailbox.queue.lock();
                 let rejection = if queue.closed {
                     Some((AdmissionRejectionKind::SubscriptionClosed, "subscription is closed"))
+                } else if self.shared.closed.load(Ordering::Acquire) {
+                    Some((AdmissionRejectionKind::SubscriptionClosed, "provider is closing"))
                 } else if queue.pending_count() + queue.in_flight.len() >= mailbox.queue.capacity {
                     Some((
                         AdmissionRejectionKind::SubscriptionCapacity,
@@ -354,7 +360,7 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 subscription_id: request.subscription_id(),
             };
             let mut bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
-            if bus.closed {
+            if self.shared.closed.load(Ordering::Acquire) {
                 return Err(operation_error("subscribe", Some(topic.as_str()), "provider_closed"));
             }
             if bus
@@ -410,8 +416,8 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
     fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         Box::pin(async move {
             {
-                let mut bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
-                bus.closed = true;
+                let _bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+                self.shared.closed.store(true, Ordering::Release);
             }
             let result = match mode {
                 ShutdownMode::Immediate => ShutdownOutcome::Complete,
@@ -495,7 +501,6 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 if let Some(previous) = bus.outcome {
                     return Ok(previous);
                 }
-                bus.closed = true;
                 let mailboxes = bus.drain_mailboxes();
                 let mut discarded = Vec::new();
                 for mailbox in &mailboxes {
