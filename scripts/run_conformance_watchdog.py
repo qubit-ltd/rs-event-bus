@@ -14,6 +14,23 @@ import sys
 import time
 
 
+def process_group_options():
+    """Start a process that can be terminated together with its descendants."""
+    return {"start_new_session": True} if os.name == "posix" else {}
+
+
+def terminate_process_group(process):
+    """Kill the child's process group on POSIX and always reap the child."""
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    elif process.poll() is None:
+        process.kill()
+    process.wait()
+
+
 def positive_finite(value):
     try:
         number = float(value)
@@ -40,9 +57,8 @@ def parse_args(argv):
 def main(argv=None):
     args = parse_args(sys.argv[1:] if argv is None else argv)
     deadline = time.monotonic() + args.timeout_seconds
-    options = {"start_new_session": True} if os.name == "posix" else {}
     try:
-        process = subprocess.Popen(args.command, **options)
+        process = subprocess.Popen(args.command, **process_group_options())
     except OSError as error:
         print(f"conformance watchdog [{args.label}]: failed to start command: {error}", file=sys.stderr)
         return 1
@@ -55,14 +71,7 @@ def main(argv=None):
                 stream.flush()
                 os.fsync(stream.fileno())
         except OSError as error:
-            if os.name == "posix":
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            else:
-                process.kill()
-            process.wait()
+            terminate_process_group(process)
             print(f"conformance watchdog [{args.label}]: failed to write child PID file: {error}", file=sys.stderr)
             return 1
 
@@ -70,14 +79,7 @@ def main(argv=None):
     try:
         return process.wait(timeout=remaining)
     except subprocess.TimeoutExpired:
-        if os.name == "posix":
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        else:
-            process.kill()
-        process.wait()
+        terminate_process_group(process)
         print(
             f"conformance watchdog [{args.label}]: timed out after {args.timeout_seconds:g} seconds; "
             "logs show the last progress event as an operation that had not completed",

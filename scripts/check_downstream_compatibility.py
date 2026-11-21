@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate this event-bus checkout against pinned Redis and rs-task sources."""
+"""Validate downstream projects from isolated copies of their tracked state."""
 
 import argparse
 import json
@@ -11,8 +11,14 @@ import tempfile
 
 try:
     from scripts.check_event_bus_graph import validate_graph_for_downstream
+    from scripts.downstream_source_snapshot import copy_tracked_source
+    from scripts.run_conformance_watchdog import process_group_options
+    from scripts.run_conformance_watchdog import terminate_process_group
 except ModuleNotFoundError:
     from check_event_bus_graph import validate_graph_for_downstream
+    from downstream_source_snapshot import copy_tracked_source
+    from run_conformance_watchdog import process_group_options
+    from run_conformance_watchdog import terminate_process_group
 
 
 TIMEOUT_SECONDS = 900
@@ -28,26 +34,57 @@ TESTS = (
 )
 
 
-def run(command, *, cwd, env, label, print_stdout=True):
+def _read_output(stream):
+    stream.flush()
+    stream.seek(0)
+    return stream.read()
+
+
+def _print_captured(label, stdout, stderr, *, print_stdout):
+    if stdout and print_stdout:
+        print(stdout, end="")
+    if stderr:
+        print(stderr, end="", file=sys.stderr)
+
+
+def run(command, *, cwd, env, label, print_stdout=True, timeout=TIMEOUT_SECONDS):
+    """Run a bounded command and kill/reap its process group on timeout or interrupt."""
     print(f"[{label}] $ {' '.join(map(str, command))}", flush=True)
-    try:
-        result = subprocess.run(command, cwd=cwd, env=env, text=True, capture_output=True,
-                                timeout=TIMEOUT_SECONDS, check=False)
-    except subprocess.TimeoutExpired as error:
-        print(f"[{label}] timed out after {TIMEOUT_SECONDS}s", file=sys.stderr)
-        if error.stdout:
-            print(error.stdout, file=sys.stderr)
-        if error.stderr:
-            print(error.stderr, file=sys.stderr)
-        raise RuntimeError(f"{label} timed out") from error
-    if result.stdout and print_stdout:
-        print(result.stdout, end="")
-    if result.stderr:
-        print(result.stderr, end="", file=sys.stderr)
-    if result.returncode:
-        raise RuntimeError(f"{label} exited {result.returncode}")
-    print(f"[{label}] passed", flush=True)
-    return result.stdout
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as stdout_file, \
+            tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as stderr_file:
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=env,
+            text=True,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            **process_group_options(),
+        )
+        timed_out = False
+        interrupted = False
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            terminate_process_group(process)
+            timed_out = True
+        except KeyboardInterrupt:
+            terminate_process_group(process)
+            interrupted = True
+
+        stdout = _read_output(stdout_file)
+        stderr = _read_output(stderr_file)
+        _print_captured(label, stdout, stderr, print_stdout=print_stdout or timed_out or interrupted)
+        if timed_out:
+            print(f"[{label}] timed out after {timeout}s", file=sys.stderr)
+            raise RuntimeError(f"{label} timed out")
+        if interrupted:
+            print(f"[{label}] interrupted; terminated process group", file=sys.stderr)
+            raise KeyboardInterrupt
+        if process.returncode:
+            raise RuntimeError(f"{label} exited {process.returncode}")
+        print(f"[{label}] passed", flush=True)
+        return stdout
 
 
 def cargo_config(core, redis=None):
@@ -67,9 +104,15 @@ def metadata(root, features, core, redis, target):
         command.append("--all-features")
     env = os.environ.copy()
     env["CARGO_TARGET_DIR"] = str(target)
-    output = run(command, cwd=root, env=env, label=f"metadata:{root.name}:{features or 'all'}",
-                 print_stdout=False)
-    graph = json.loads(output)
+
+    # The first pass writes a lockfile in the isolated snapshot if Cargo needs to
+    # resolve a patched local dependency. The locked pass validates that stable graph.
+    run(command, cwd=root, env=env, label=f"metadata-update:{root.name}:{features or 'all'}",
+        print_stdout=False)
+    locked_output = run([*command, "--locked"], cwd=root, env=env,
+                        label=f"metadata-locked:{root.name}:{features or 'all'}",
+                        print_stdout=False)
+    graph = json.loads(locked_output)
     validate_graph_for_downstream(graph, expected_core=core,
                                   expected_redis=redis if root.name == "rs-task" else None)
     return graph
@@ -78,8 +121,8 @@ def metadata(root, features, core, redis, target):
 def verify_test(root, name, arguments, core, redis, env):
     manifest = root / "Cargo.toml"
     config = cargo_config(core, redis)
-    list_command = ["cargo", "test", "--manifest-path", str(manifest), *config,
-                   *arguments, "--", "--list", "--exact"]
+    list_command = ["cargo", "test", "--locked", "--manifest-path", str(manifest), *config,
+                    *arguments, "--", "--list", "--exact"]
     listing = run(list_command, cwd=root, env=env, label=f"list:{root.name}:{name}")
     matches = [line for line in listing.splitlines() if line.strip() == f"{name}: test"]
     if len(matches) != 1:
@@ -89,46 +132,59 @@ def verify_test(root, name, arguments, core, redis, env):
     run(command, cwd=root, env=env, label=f"test:{root.name}:{name}")
 
 
+def git_revision_and_tracked_changes(root):
+    revision = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, check=True).stdout.strip()
+    changes = subprocess.run(["git", "-C", str(root), "status", "--porcelain=v1",
+                              "--untracked-files=no"],
+                             capture_output=True, text=True, check=True).stdout.splitlines()
+    return revision, changes
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--redis-root", type=Path, required=True)
     parser.add_argument("--task-root", type=Path, required=True)
     args = parser.parse_args()
     core = Path(__file__).resolve().parents[1]
-    redis = args.redis_root.resolve()
-    task = args.task_root.resolve()
-    for label, root in (("core", core), ("redis", redis), ("rs-task", task)):
+    inputs = (("redis", args.redis_root.resolve()), ("rs-task", args.task_root.resolve()))
+    for label, root in (("core", core), *inputs):
         if not (root / "Cargo.toml").is_file():
             raise ValueError(f"{label} root has no Cargo.toml: {root}")
-        revision = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
-                                  capture_output=True, text=True, check=True).stdout.strip()
-        print(f"{label}: revision={revision} root={root}", flush=True)
+    for label, root in (("core", core), *inputs):
+        revision, changes = git_revision_and_tracked_changes(root)
+        print(f"{label}: revision={revision} root={root} "
+              f"tracked_changes={changes!r}", flush=True)
 
-    locks = {root / "Cargo.lock": (root / "Cargo.lock").read_bytes()
-             for root in (redis, task) if (root / "Cargo.lock").is_file()}
-    try:
-        with tempfile.TemporaryDirectory(prefix="event-bus-downstream-target-") as temp:
-            target_root = Path(temp)
+    with tempfile.TemporaryDirectory(prefix="event-bus-downstream-") as temp:
+        temp_root = Path(temp)
+        snapshots = {}
+        for label, source in inputs:
+            snapshot = temp_root / "sources" / label
+            snapshot.parent.mkdir(parents=True, exist_ok=True)
+            copy_tracked_source(source, snapshot)
+            if not (snapshot / "Cargo.toml").is_file():
+                raise ValueError(f"tracked source snapshot is missing Cargo.toml: {label}")
+            snapshots[label] = snapshot
+
+        target_root = temp_root / "target"
+        redis = snapshots["redis"]
+        task = snapshots["rs-task"]
+        metadata(redis, None, core, None, target_root / "redis")
+        metadata(task, "sqlite,event-bus", core, redis, target_root / "rs-task")
+        for label, manifest, test_name, command in TESTS:
+            root = task if label == "rs-task-outbox" else redis
+            package = redis if root == task else None
             env = os.environ.copy()
-            for path, features, package in ((redis, None, None), (task, "sqlite,event-bus", redis)):
-                target = target_root / ("redis-metadata" if path == redis else "task-metadata")
-                graph = metadata(path, features, core, package, target)
-                print(f"metadata: {path.name} packages={len(graph['packages'])} core={core}")
-            for label, manifest, test_name, command in TESTS:
-                root = task if label == "rs-task-outbox" else redis
-                package = redis if root == task else None
-                target = target_root / label
-                env["CARGO_TARGET_DIR"] = str(target)
-                verify_test(root, test_name, command, core, package, env)
-    finally:
-        for path, contents in locks.items():
-            path.write_bytes(contents)
+            env["CARGO_TARGET_DIR"] = str(target_root / ("rs-task" if root == task else "redis"))
+            verify_test(root, test_name, command, core, package, env)
     print("downstream compatibility checks passed", flush=True)
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError,
+            json.JSONDecodeError) as error:
         print(f"downstream compatibility check failed: {error}", file=sys.stderr)
         raise SystemExit(1)

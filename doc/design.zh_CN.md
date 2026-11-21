@@ -2152,4 +2152,6 @@ python3 -B scripts/check_downstream_compatibility.py \
   --redis-root ../rs-event-bus-redis --task-root ../rs-task
 ```
 
-命令会输出三个 Git revision，通过 Cargo `patch.crates-io` 覆盖分别解析下游依赖图，确认可达的 `qubit-event-bus` 恰好一个且来自当前 checkout，确认指定测试精确匹配，再运行 Redis 同步/异步 SPI conformance 与 rs-task durable outbox 取消回归。Redis conformance 需要现有 testcontainers 兼容的 Redis 运行环境。脚本使用隔离的 Cargo target 目录，并恢复输入 worktree 的原始 lockfile 字节。该检查用于发版验证；常规 PR CI 不依赖下游活动分支或 Redis 服务。
+命令会报告各输入 HEAD 和已跟踪改动，然后将 Redis 与 rs-task 当前已跟踪的工作树内容复制到临时源码快照中。快照包含未提交的已跟踪源码和锁文件，保留已跟踪删除，但不包含构建产物和未跟踪文件；需要参与检查的源码必须进入 Git 跟踪清单。快照和 Cargo 锁文件均与输入 checkout 隔离；遇到 submodule、缺失 manifest 或越出快照范围的已跟踪链接时，会报告具体路径并失败。Cargo 首先在快照中解析 metadata，再以相同 feature 和 patch 参数通过 `--locked` 核对依赖图。rs-task 对 `qubit-event-bus-redis` 的 patch 指向 Redis 快照。精确测试枚举和执行都使用 `--locked`；Cargo 构建产物留在临时根目录中，Redis 的 metadata 与测试共用一个 target 目录。
+
+每条 Cargo 命令均有 900 秒期限。在 POSIX 上，命令运行于新进程组；超时或 Python 能处理的键盘中断会终止整个进程组并回收直接子进程。其他平台会终止并等待直接子进程，后代进程仍可能存活。两路输出写入临时文件，避免后代继续持有管道而阻塞结果读取。Redis conformance 优先使用 Docker fixture；Docker 不可用时可回退到本地 Redis 6.2 或更新版本。该检查用于发版验证；常规 PR CI 不依赖下游活动分支或 Redis 服务。
