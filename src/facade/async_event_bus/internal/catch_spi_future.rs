@@ -15,6 +15,7 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
+use super::cleanup_future_guard::CleanupFutureGuard;
 use crate::error::SpiError;
 use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::ProviderId;
@@ -28,27 +29,6 @@ use crate::spi::panic_boundary::provider_panic;
 pub(in crate::facade::async_event_bus) struct CatchSpiFuture<F: Future> {
     /// Pinned provider future being polled.
     pub(in crate::facade::async_event_bus) future: Pin<Box<F>>,
-}
-
-/// Owns a cleanup SPI future and isolates its destruction on cancellation.
-struct CleanupFutureGuard<'a, T> {
-    future: Option<SpiFuture<'a, Result<T, SpiError>>>,
-}
-
-impl<T> CleanupFutureGuard<'_, T> {
-    /// Destroys the retained future once and returns any destructor panic.
-    fn drop_future(&mut self) -> Result<(), Box<dyn Any + Send>> {
-        let future = self.future.take();
-        catch_unwind(AssertUnwindSafe(|| drop(future)))
-    }
-}
-
-impl<T> Drop for CleanupFutureGuard<'_, T> {
-    fn drop(&mut self) {
-        if let Err(payload) = self.drop_future() {
-            dispose_panic_payload(payload);
-        }
-    }
 }
 
 /// Captures a provider panic while polling its future.

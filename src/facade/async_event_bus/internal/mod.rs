@@ -18,6 +18,7 @@ mod async_subscribe_guard;
 mod async_tracker;
 mod bus_state;
 mod catch_spi_future;
+mod cleanup_future_guard;
 mod publish_completion_guard;
 mod shutdown_leader_guard;
 mod shutdown_wait;
