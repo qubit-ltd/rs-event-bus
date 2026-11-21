@@ -16,7 +16,7 @@ use qubit_clock::TimeError;
 
 use crate::Diagnostic;
 use crate::SpiError;
-use crate::facade::async_event_bus::catch_spi_future;
+use crate::facade::async_event_bus::catch_cleanup_spi_future;
 use crate::facade::async_subscription::internal::AsyncSession;
 use crate::facade::async_subscription::internal::settlement_attempt_guard::SettlementAttemptGuard;
 use crate::facade::internal::SettlementRetryDecision;
@@ -229,7 +229,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             );
             let result = match settle {
                 Ok(future) => {
-                    let mut future = Box::pin(catch_spi_future(
+                    let mut future = Box::pin(catch_cleanup_spi_future(
                         future,
                         &self.inner.provider_id,
                         "settle",

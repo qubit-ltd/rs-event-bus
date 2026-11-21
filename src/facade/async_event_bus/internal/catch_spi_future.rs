@@ -19,6 +19,7 @@ use super::cleanup_future_guard::CleanupFutureGuard;
 use crate::error::SpiError;
 use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::ProviderId;
+use crate::spi::ReceiveOutcome;
 use crate::spi::SpiFuture;
 use crate::spi::panic_boundary::provider_panic;
 
@@ -63,6 +64,44 @@ pub(in crate::facade) async fn catch_spi_future<T, F: Future<Output = Result<T, 
         .map_err(|payload| provider_panic(provider_id.as_str(), operation, resource, payload))?
 }
 
+/// Installs cancellation protection before returning the receive future.
+///
+/// A destructor panic while receive is cancelled is disposed, preserving the
+/// competing scheduler event. Once polling has produced an outcome, a
+/// destructor panic is secondary and the original outcome or SPI error wins.
+/// Panics while polling are still converted to `provider_panicked`.
+///
+/// # Parameters
+/// - `future`: provider receive future to protect.
+/// - `provider_id`: provider identity attached to polling panics.
+/// - `resource`: optional subscription context.
+///
+/// # Returns
+/// A future preserving the receive result while isolating destructor panics.
+pub(in crate::facade) fn catch_receive_spi_future<'a>(
+    future: SpiFuture<'a, Result<ReceiveOutcome, SpiError>>,
+    provider_id: &'a ProviderId,
+    resource: Option<&'a str>,
+) -> impl Future<Output = Result<ReceiveOutcome, SpiError>> + Send + 'a {
+    let mut guard = CleanupFutureGuard { future: Some(future) };
+    async move {
+        let result = catch_spi_future(
+            guard.future.as_mut().expect("receive future is present").as_mut(),
+            provider_id,
+            "receive",
+            resource,
+        )
+        .await;
+        match guard.drop_future() {
+            Ok(()) => result,
+            Err(payload) => {
+                dispose_panic_payload(payload);
+                result
+            }
+        }
+    }
+}
+
 /// Awaits a cleanup future and isolates panics from destroying it, both after
 /// completion and when the awaiting operation is cancelled.
 ///
@@ -84,29 +123,31 @@ pub(in crate::facade) async fn catch_spi_future<T, F: Future<Output = Result<T, 
 /// # Errors
 /// Preserves a provider error over a secondary destructor panic; otherwise
 /// converts that panic to `provider_panicked`.
-pub(in crate::facade) async fn catch_cleanup_spi_future<T>(
-    future: SpiFuture<'_, Result<T, SpiError>>,
-    provider_id: &ProviderId,
+pub(in crate::facade) fn catch_cleanup_spi_future<'a, T: 'a>(
+    future: SpiFuture<'a, Result<T, SpiError>>,
+    provider_id: &'a ProviderId,
     operation: &'static str,
-    resource: Option<&str>,
-) -> Result<T, SpiError> {
+    resource: Option<&'a str>,
+) -> impl Future<Output = Result<T, SpiError>> + Send + 'a {
     let mut guard = CleanupFutureGuard { future: Some(future) };
-    let result = catch_spi_future(
-        guard.future.as_mut().expect("cleanup future is present").as_mut(),
-        provider_id,
-        operation,
-        resource,
-    )
-    .await;
-    match guard.drop_future() {
-        Ok(()) => result,
-        Err(payload) => match result {
-            Err(error) => {
-                dispose_panic_payload(payload);
-                Err(error)
-            }
-            Ok(_) => Err(provider_panic(provider_id.as_str(), operation, resource, payload)),
-        },
+    async move {
+        let result = catch_spi_future(
+            guard.future.as_mut().expect("cleanup future is present").as_mut(),
+            provider_id,
+            operation,
+            resource,
+        )
+        .await;
+        match guard.drop_future() {
+            Ok(()) => result,
+            Err(payload) => match result {
+                Err(error) => {
+                    dispose_panic_payload(payload);
+                    Err(error)
+                }
+                Ok(_) => Err(provider_panic(provider_id.as_str(), operation, resource, payload)),
+            },
+        }
     }
 }
 
@@ -143,9 +184,11 @@ mod tests {
     use std::task::Waker;
 
     use super::catch_cleanup_spi_future;
+    use super::catch_receive_spi_future;
     use super::catch_spi_future;
     use crate::SpiError;
     use crate::model::ProviderId;
+    use crate::spi::ReceiveOutcome;
 
     struct PanicPayload;
     impl Drop for PanicPayload {
@@ -249,6 +292,92 @@ mod tests {
             })
         ));
         assert_eq!(drops.load(Ordering::SeqCst), 2);
+    }
+
+    struct ReadyReceiveDropPanic {
+        drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Future for ReadyReceiveDropPanic {
+        type Output = Result<ReceiveOutcome, SpiError>;
+
+        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+            Poll::Ready(Ok(ReceiveOutcome::Closed))
+        }
+    }
+
+    impl Drop for ReadyReceiveDropPanic {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            panic!("receive future cleanup panic");
+        }
+    }
+
+    #[test]
+    fn test_receive_future_is_guarded_before_poll_and_preserves_ready_outcome() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+
+        let provider_id = ProviderId::new("receive-drop-test").expect("provider ID");
+        let drops = Arc::new(AtomicUsize::new(0));
+        let wrapped = catch_receive_spi_future(
+            Box::pin(ReadyReceiveDropPanic { drops: drops.clone() }),
+            &provider_id,
+            Some("receiver"),
+        );
+        let result = futures_lite_block_on(wrapped).expect("secondary destructor panic is isolated");
+        assert!(matches!(result, ReceiveOutcome::Closed));
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+
+        let cancelled_drops = Arc::new(AtomicUsize::new(0));
+        let wrapped = catch_receive_spi_future(
+            Box::pin(PendingReceiveDropPanic(cancelled_drops.clone())),
+            &provider_id,
+            None,
+        );
+        let cancellation = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(wrapped)));
+        assert!(cancellation.is_ok(), "cancellation cleanup panic must not escape Drop");
+        assert_eq!(cancelled_drops.load(Ordering::SeqCst), 1);
+    }
+
+    struct PendingReceiveDropPanic(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl Future for PendingReceiveDropPanic {
+        type Output = Result<ReceiveOutcome, SpiError>;
+
+        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+            Poll::Pending
+        }
+    }
+
+    impl Drop for PendingReceiveDropPanic {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            panic!("pending receive future cleanup panic");
+        }
+    }
+
+    #[test]
+    fn test_cleanup_future_is_guarded_before_first_poll() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+
+        let provider_id = ProviderId::new("cleanup-first-poll-test").expect("provider ID");
+        let drops = Arc::new(AtomicUsize::new(0));
+        let wrapped = catch_cleanup_spi_future(
+            Box::pin(DropPanicFuture {
+                result: Some(Ok(())),
+                drops: drops.clone(),
+            }),
+            &provider_id,
+            "settle",
+            None,
+        );
+        let cancellation = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(wrapped)));
+        assert!(cancellation.is_ok(), "unpolled cleanup future drop must be protected");
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
     }
 
     fn futures_lite_block_on<F: Future>(future: F) -> F::Output {

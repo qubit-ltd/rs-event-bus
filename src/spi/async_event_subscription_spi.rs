@@ -53,6 +53,14 @@ pub trait AsyncEventSubscriptionSpi: Send + 'static {
     /// This contract applies while retaining the receiver; receiver close or
     /// drop may discard ephemeral messages. Closing or dropping a durable
     /// receiver must not implicitly acknowledge an unsettled delivery.
+    /// When called by the facade, the receive future is protected from a
+    /// destructor panic both before its first poll and when a competing
+    /// scheduler event cancels it. A destructor panic during cancellation is
+    /// isolated so scheduler grants can still be transferred. If the future
+    /// has already returned an outcome, that outcome is preserved; a
+    /// destructor panic after a successful outcome is treated as secondary to
+    /// the receive result. Panics while polling are still reported as a
+    /// structured `provider_panicked` receive error.
     ///
     /// # Parameters
     /// - `timeout`: maximum receive wait duration.
@@ -74,6 +82,14 @@ pub trait AsyncEventSubscriptionSpi: Send + 'static {
     /// make both in-progress and completed settlement attempts idempotent.
     /// Providers must synchronously derive any owned operation state before
     /// returning the future; the future must not borrow the token.
+    /// When called by the facade, the settlement future is protected from a
+    /// destructor panic from the moment it is returned by the SPI. A panic
+    /// after a successful terminal result is reported as a structured
+    /// `provider_panicked` settlement error. An original SPI or polling error
+    /// takes precedence over a secondary destructor panic. If a still-pending
+    /// settlement is cancelled, destructor panic is isolated and the existing
+    /// cancellation accounting, token, disposition, and idempotent retry
+    /// behavior are preserved.
     ///
     /// # Parameters
     /// - `token`: provider-issued token for the delivery being settled.

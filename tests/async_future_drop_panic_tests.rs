@@ -10,6 +10,7 @@ mod support;
 
 use std::future::Future;
 use std::marker::PhantomData;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -28,7 +29,9 @@ use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::Diagnostic;
 use qubit_event_bus::SpiError;
 use qubit_event_bus::error::PublishError;
+use qubit_event_bus::error::ReceiveError;
 use qubit_event_bus::error::ShutdownError;
+use qubit_event_bus::facade::DeliverySchedulingConfig;
 use qubit_event_bus::facade::EventBusFacadeConfig;
 use qubit_event_bus::model::Delivery;
 use qubit_event_bus::model::FailureDirective;
@@ -36,6 +39,7 @@ use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::SubscriptionStopReason;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
@@ -859,4 +863,444 @@ fn test_async_handler_duration_boundary_factory_panic_records_one_sample() {
     assert_eq!(metrics.handler_duration_count, 1);
     assert_eq!(metrics.handler_duration_total_nanos, 0);
     assert_eq!(metrics.handler_duration_max_nanos, 0);
+}
+
+#[derive(Clone, Copy)]
+enum FutureDropFault {
+    ReadyReceive,
+    PendingReceiveAfterFirst,
+    ReadySettleSuccess,
+    ReadySettleError,
+    PendingSettleOnce,
+}
+
+struct FutureDropPanicBus {
+    inner: FakeAsyncEventBusSpi,
+    target_subscriber: &'static str,
+    fault: FutureDropFault,
+    drops: Arc<AtomicUsize>,
+    settles: Arc<AtomicUsize>,
+    pending_receive_created: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl AsyncEventBusSpi for FutureDropPanicBus {
+    fn capabilities(&self) -> qubit_event_bus::spi::EventBusCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        self.inner.publish(message)
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        request: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+        let targeted = request.subscriber_id().as_str() == self.target_subscriber;
+        let receiver = self.inner.subscribe(request);
+        let fault = self.fault;
+        let drops = self.drops.clone();
+        let receives = Arc::new(AtomicUsize::new(0));
+        let settles = self.settles.clone();
+        let pending_receive_created = self.pending_receive_created.clone();
+        Box::pin(async move {
+            let inner = receiver.await?;
+            Ok(Box::new(FutureDropPanicReceiver {
+                inner,
+                targeted,
+                fault,
+                drops,
+                receives,
+                settles,
+                pending_receive_created,
+            }) as Box<dyn AsyncEventSubscriptionSpi>)
+        })
+    }
+
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        self.inner.shutdown(mode)
+    }
+}
+
+struct FutureDropPanicReceiver {
+    inner: Box<dyn AsyncEventSubscriptionSpi>,
+    targeted: bool,
+    fault: FutureDropFault,
+    drops: Arc<AtomicUsize>,
+    receives: Arc<AtomicUsize>,
+    settles: Arc<AtomicUsize>,
+    pending_receive_created: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl AsyncEventSubscriptionSpi for FutureDropPanicReceiver {
+    fn receive<'a>(&'a mut self, timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
+        let call = self.receives.fetch_add(1, Ordering::SeqCst);
+        if self.targeted && matches!(self.fault, FutureDropFault::ReadyReceive) && call == 0 {
+            return Box::pin(ReadyReceiveDropPanic {
+                inner: self.inner.receive(timeout),
+                drops: self.drops.clone(),
+            });
+        }
+        if self.targeted && matches!(self.fault, FutureDropFault::PendingReceiveAfterFirst) && call == 1 {
+            self.pending_receive_created.store(true, Ordering::Release);
+            return Box::pin(PendingReceiveDropPanic(self.drops.clone()));
+        }
+        self.inner.receive(timeout)
+    }
+
+    fn settle<'a>(
+        &'a mut self,
+        token: &SettlementToken,
+        disposition: DeliveryDisposition,
+    ) -> SpiFuture<'a, Result<(), SpiError>> {
+        let call = self.settles.fetch_add(1, Ordering::SeqCst);
+        if self.targeted && matches!(self.fault, FutureDropFault::ReadySettleSuccess) {
+            return Box::pin(ReadySettleDropPanic {
+                result: Some(Ok(())),
+                drops: self.drops.clone(),
+            });
+        }
+        if self.targeted && matches!(self.fault, FutureDropFault::ReadySettleError) {
+            return Box::pin(ReadySettleDropPanic {
+                result: Some(Err(SpiError::Operation {
+                    provider_id: "drop-panic-test".into(),
+                    operation: "settle",
+                    resource: Some("settle".into()),
+                    kind: "original_settle_failure",
+                    retryable: Some(false),
+                    source: Box::new(std::io::Error::other("original settle failure")),
+                })),
+                drops: self.drops.clone(),
+            });
+        }
+        if self.targeted && matches!(self.fault, FutureDropFault::PendingSettleOnce) && call == 0 {
+            return Box::pin(PendingSettleDropPanic(self.drops.clone()));
+        }
+        self.inner.settle(token, disposition)
+    }
+
+    fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), SpiError>> {
+        self.inner.close()
+    }
+}
+
+struct ReadyReceiveDropPanic<'a> {
+    inner: SpiFuture<'a, Result<ReceiveOutcome, SpiError>>,
+    drops: Arc<AtomicUsize>,
+}
+
+impl Future for ReadyReceiveDropPanic<'_> {
+    type Output = Result<ReceiveOutcome, SpiError>;
+
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        self.inner.as_mut().poll(context)
+    }
+}
+
+impl Drop for ReadyReceiveDropPanic<'_> {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::SeqCst);
+        panic!("provider receive future cleanup panic");
+    }
+}
+
+struct PendingReceiveDropPanic(Arc<AtomicUsize>);
+
+impl Future for PendingReceiveDropPanic {
+    type Output = Result<ReceiveOutcome, SpiError>;
+
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        Poll::Pending
+    }
+}
+
+impl Drop for PendingReceiveDropPanic {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        panic!("pending provider receive future cleanup panic");
+    }
+}
+
+struct ReadySettleDropPanic {
+    result: Option<Result<(), SpiError>>,
+    drops: Arc<AtomicUsize>,
+}
+
+impl Future for ReadySettleDropPanic {
+    type Output = Result<(), SpiError>;
+
+    fn poll(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        Poll::Ready(self.result.take().expect("settle future polled once"))
+    }
+}
+
+impl Drop for ReadySettleDropPanic {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::SeqCst);
+        panic!("provider settle future cleanup panic");
+    }
+}
+
+struct PendingSettleDropPanic(Arc<AtomicUsize>);
+
+impl Future for PendingSettleDropPanic {
+    type Output = Result<(), SpiError>;
+
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        Poll::Pending
+    }
+}
+
+impl Drop for PendingSettleDropPanic {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        panic!("pending provider settle future cleanup panic");
+    }
+}
+
+fn future_drop_panic_bus(
+    target: &'static str,
+    fault: FutureDropFault,
+) -> (
+    AsyncEventBus,
+    FakeAsyncEventBusSpi,
+    Arc<AtomicUsize>,
+    Arc<AtomicUsize>,
+    Arc<std::sync::atomic::AtomicBool>,
+) {
+    let inner = FakeAsyncEventBusSpi::new();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let settles = Arc::new(AtomicUsize::new(0));
+    let pending_receive_created = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let spi = Arc::new(FutureDropPanicBus {
+        inner: inner.clone(),
+        target_subscriber: target,
+        fault,
+        drops: drops.clone(),
+        settles: settles.clone(),
+        pending_receive_created: pending_receive_created.clone(),
+    });
+    let config = EventBusFacadeConfig::new().with_delivery_scheduling(
+        DeliverySchedulingConfig::new(
+            NonZeroUsize::new(1).expect("limit"),
+            NonZeroUsize::new(8).expect("limit"),
+            NonZeroUsize::new(4).expect("limit"),
+            NonZeroUsize::new(8).expect("limit"),
+        )
+        .expect("valid scheduler"),
+    );
+    let bus = AsyncEventBus::with_config(ProviderId::new("drop-panic-test").unwrap(), spi, config).expect("facade");
+    (bus, inner, drops, settles, pending_receive_created)
+}
+
+fn wait_for(condition: impl Fn() -> bool, description: &str) {
+    for _ in 0..500 {
+        if condition() {
+            return;
+        }
+        sleep(Duration::from_millis(2));
+    }
+    assert!(condition(), "timed out waiting for {description}");
+}
+
+#[test]
+fn test_pending_receive_drop_panic_preserves_scheduler_grant() {
+    let _hook = PanicHookGuard::suppress();
+    let (bus, _, drops, _, pending_receive_created) =
+        future_drop_panic_bus("second", FutureDropFault::PendingReceiveAfterFirst);
+    let first_topic = Topic::<u32>::new("receive-grant-first").unwrap();
+    let second_topic = Topic::<u32>::new("receive-grant-second").unwrap();
+    let first = block_on(bus.subscribe(SubscribeRequest::new("first", first_topic.clone()).unwrap())).unwrap();
+    let second = block_on(bus.subscribe(SubscribeRequest::new("second", second_topic.clone()).unwrap())).unwrap();
+
+    let first_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let release_first = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let first_wakers = Arc::new(Mutex::new(Vec::<std::task::Waker>::new()));
+    let first_runner = {
+        let started = first_started.clone();
+        let release = release_first.clone();
+        let wakers = first_wakers.clone();
+        spawn(move || {
+            block_on(first.run(move |_| {
+                let started = started.clone();
+                let release = release.clone();
+                let wakers = wakers.clone();
+                async move {
+                    started.store(true, Ordering::Release);
+                    std::future::poll_fn(move |context| {
+                        if release.load(Ordering::Acquire) {
+                            return Poll::Ready(Ok(()));
+                        }
+                        wakers.lock().unwrap().push(context.waker().clone());
+                        Poll::Pending
+                    })
+                    .await
+                }
+            }))
+        })
+    };
+    let _ = block_on(bus.publish(PublishRequest::new(first_topic, 1).unwrap())).unwrap();
+    wait_for(
+        || first_started.load(Ordering::Acquire),
+        "first handler to hold the slot",
+    );
+
+    let second_calls = Arc::new(AtomicUsize::new(0));
+    let second_runner = {
+        let second_calls = second_calls.clone();
+        spawn(move || {
+            block_on(second.run(move |_| {
+                second_calls.fetch_add(1, Ordering::SeqCst);
+                async { Ok(()) }
+            }))
+        })
+    };
+    let _ = block_on(bus.publish(PublishRequest::new(second_topic, 2).unwrap())).unwrap();
+    wait_for(
+        || pending_receive_created.load(Ordering::Acquire),
+        "second subscription to wait in receive after buffering a message",
+    );
+
+    release_first.store(true, Ordering::Release);
+    for waker in std::mem::take(&mut *first_wakers.lock().unwrap()) {
+        waker.wake();
+    }
+    wait_for(
+        || second_calls.load(Ordering::SeqCst) == 1,
+        "scheduler grant to reach second handler",
+    );
+    wait_for(|| drops.load(Ordering::SeqCst) == 1, "cancelled receive future cleanup");
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    first_runner.join().unwrap().unwrap();
+    second_runner.join().unwrap().unwrap();
+}
+
+#[test]
+fn test_ready_receive_drop_panic_preserves_message_for_handler() {
+    let _hook = PanicHookGuard::suppress();
+    let (bus, _, drops, _, _) = future_drop_panic_bus("ready", FutureDropFault::ReadyReceive);
+    let topic = Topic::<u32>::new("receive-ready-drop-panic").unwrap();
+    let subscription = block_on(bus.subscribe(SubscribeRequest::new("ready", topic.clone()).unwrap())).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let runner = {
+        let calls = calls.clone();
+        spawn(move || {
+            block_on(subscription.run(move |_| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                async { Ok(()) }
+            }))
+        })
+    };
+    let _ = block_on(bus.publish(PublishRequest::new(topic, 7).unwrap())).unwrap();
+    wait_for(
+        || calls.load(Ordering::SeqCst) == 1,
+        "message handler after receive destructor panic",
+    );
+    wait_for(|| drops.load(Ordering::SeqCst) == 1, "completed receive future cleanup");
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    runner.join().unwrap().unwrap();
+}
+
+#[test]
+fn test_finished_settle_drop_panic_is_not_recorded_as_cancellation() {
+    let _hook = PanicHookGuard::suppress();
+    for fault in [FutureDropFault::ReadySettleSuccess, FutureDropFault::ReadySettleError] {
+        let (bus, spi, drops, settles, _) = future_drop_panic_bus("settle", fault);
+        let topic = Topic::<u32>::new("settle-ready-drop-panic").unwrap();
+        let subscription = block_on(bus.subscribe(SubscribeRequest::new("settle", topic).unwrap())).unwrap();
+        spi.enqueue(inbound_message(Some(SettlementToken::new(
+            subscription.id(),
+            "settle-token",
+        ))));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let result = block_on(subscription.run({
+            let calls = calls.clone();
+            move |_| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                async { Ok(()) }
+            }
+        }));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "terminal settlement must not rerun handler"
+        );
+        assert_eq!(settles.load(Ordering::SeqCst), 1);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        match fault {
+            FutureDropFault::ReadySettleSuccess => assert!(
+                matches!(
+                    &result,
+                    Err(ReceiveError::Stopped(reason))
+                        if matches!(reason.as_ref(), SubscriptionStopReason::Settlement {
+                            error, termination: qubit_event_bus::model::SettlementTermination::ProviderPanicked, ..
+                        } if matches!(error.as_ref(), SpiError::Operation { operation: "settle", kind: "provider_panicked", .. }))
+                ),
+                "unexpected settle result: {result:?}"
+            ),
+            FutureDropFault::ReadySettleError => assert!(
+                matches!(
+                    &result,
+                    Err(ReceiveError::Stopped(reason))
+                        if matches!(reason.as_ref(), SubscriptionStopReason::Settlement {
+                            error, ..
+                        } if matches!(error.as_ref(), SpiError::Operation { operation: "settle", kind: "original_settle_failure", .. }))
+                ),
+                "unexpected settle result: {result:?}"
+            ),
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn test_cancelling_pending_settle_drop_panic_keeps_token_for_retry() {
+    let _hook = PanicHookGuard::suppress();
+    let (bus, spi, drops, settles, _) = future_drop_panic_bus("settle", FutureDropFault::PendingSettleOnce);
+    let topic = Topic::<u32>::new("settle-pending-drop-panic").unwrap();
+    let subscription = block_on(bus.subscribe(SubscribeRequest::new("settle", topic).unwrap())).unwrap();
+    spi.enqueue(inbound_message(Some(SettlementToken::new(
+        subscription.id(),
+        "pending-settle-token",
+    ))));
+    let handler_calls = Arc::new(AtomicUsize::new(0));
+    let first_calls = handler_calls.clone();
+    let mut first_run = Box::pin(subscription.run(move |_| {
+        first_calls.fetch_add(1, Ordering::SeqCst);
+        async { Ok(()) }
+    }));
+    for _ in 0..20 {
+        let _ = poll_once(first_run.as_mut());
+        if settles.load(Ordering::SeqCst) == 1 {
+            break;
+        }
+    }
+    assert_eq!(
+        settles.load(Ordering::SeqCst),
+        1,
+        "first settle attempt reached pending state"
+    );
+    let cancellation = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(first_run)));
+    assert!(
+        cancellation.is_ok(),
+        "pending settle cleanup panic must not escape cancellation"
+    );
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+
+    let next_calls = handler_calls.clone();
+    let runner = spawn(move || {
+        block_on(subscription.run(move |_| {
+            next_calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(()) }
+        }))
+    });
+    wait_for(|| settles.load(Ordering::SeqCst) >= 2, "idempotent settlement retry");
+    assert_eq!(
+        handler_calls.load(Ordering::SeqCst),
+        1,
+        "retry must not rerun the completed handler"
+    );
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+    runner.join().unwrap().unwrap();
+    assert_eq!(spi.settlement_count(), 1, "original token is settled once");
 }
