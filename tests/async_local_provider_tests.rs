@@ -24,8 +24,12 @@ use std::time::SystemTime;
 
 use qubit_clock::ManualMonotonicClock;
 use qubit_clock::ManualTimer;
+use qubit_clock::MonotonicClock;
+use qubit_clock::MonotonicInstant;
 use qubit_clock::StdTimer;
+use qubit_clock::TimeError;
 use qubit_clock::Timer;
+use qubit_clock::TimerFuture;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::AsyncEventBusRegistry;
 use qubit_event_bus::EventBusConfig;
@@ -67,6 +71,24 @@ use qubit_id::Id;
 
 use crate::support::manual_async::block_on;
 use crate::support::manual_async::poll_once;
+
+struct DeadlineLimitTimer {
+    clock: Arc<ManualMonotonicClock>,
+    max_deadline: Duration,
+}
+
+impl Timer for DeadlineLimitTimer {
+    fn clock(&self) -> &dyn MonotonicClock {
+        self.clock.as_ref()
+    }
+
+    fn at(&self, deadline: MonotonicInstant) -> Result<TimerFuture, TimeError> {
+        if deadline.elapsed_since_origin() > self.max_deadline {
+            return Err(TimeError::InstantOverflow);
+        }
+        ManualTimer::from_clock(&self.clock).at(deadline)
+    }
+}
 
 #[test]
 fn test_async_local_delivers_and_settles_without_a_runtime_dependency() {
@@ -683,6 +705,155 @@ fn test_async_local_with_timer_rejects_zero_limits() {
             Err(ConfigurationError::InvalidField { .. }) => {}
             Err(error) => panic!("expected invalid configuration, got {error}"),
             Ok(_) => panic!("zero capacities must be rejected at construction"),
+        }
+    }
+}
+
+#[test]
+fn test_async_local_deadline_timer_limit_rejects_before_admission() {
+    let clock = ManualMonotonicClock::new_shared();
+    let timer = DeadlineLimitTimer {
+        clock: clock.clone(),
+        max_deadline: Duration::from_secs(1),
+    };
+    let spi =
+        AsyncLocalEventBusSpi::with_timer(&LocalEventBusConfig::new().queue_capacity(1), Arc::new(timer)).unwrap();
+    let mut receiver = block_on(spi.subscribe(spi_request_with_type(
+        9901,
+        "deadline-limit",
+        "async.local.deadline-limit",
+        TypeId::of::<u32>(),
+    )))
+    .unwrap();
+    let make_message = |id: &str, delay| {
+        OutboundMessage::new(
+            TopicAddress::new("async.local.deadline-limit").unwrap(),
+            EventId::new(id).unwrap(),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            delay,
+            TransportPayload::Native(Arc::new(41_u32)),
+        )
+    };
+
+    let error = block_on(spi.publish(make_message("too-late", Some(Duration::from_secs(2))))).unwrap_err();
+    assert_async_pre_admission_error(&error, "delay_deadline_overflow");
+    assert!(matches!(
+        &error,
+        qubit_event_bus::error::SpiError::Publish { source, .. }
+            if source.downcast_ref::<TimeError>().is_some_and(|e| matches!(e, TimeError::InstantOverflow))
+    ));
+
+    let accepted = block_on(spi.publish(make_message("immediate-after-rejection", None))).unwrap();
+    assert!(
+        matches!(accepted, PublishAcknowledgement::DestinationAdmissions(admissions)
+        if admissions.len() == 1 && admissions[0].status() == &AdmissionStatus::Accepted)
+    );
+    assert!(matches!(
+        block_on(receiver.receive(Duration::ZERO)).unwrap(),
+        ReceiveOutcome::Message(_)
+    ));
+}
+
+#[test]
+fn test_async_local_deadline_overflow_preserves_ready_and_closed_priority() {
+    let clock = ManualMonotonicClock::new_shared();
+    let spi = AsyncLocalEventBusSpi::with_timer(&LocalEventBusConfig::new(), Arc::new(ManualTimer::from_clock(&clock)))
+        .unwrap();
+    let mut ready = block_on(spi.subscribe(spi_request_with_type(
+        9902,
+        "ready",
+        "async.local.deadline-ready",
+        TypeId::of::<u32>(),
+    )))
+    .unwrap();
+    let message = OutboundMessage::new(
+        TopicAddress::new("async.local.deadline-ready").unwrap(),
+        EventId::new("ready-before-overflow").unwrap(),
+        SystemTime::UNIX_EPOCH,
+        Headers::new(),
+        None,
+        None,
+        TransportPayload::Native(Arc::new(42_u32)),
+    );
+    let _acknowledgement = block_on(spi.publish(message)).unwrap();
+    clock.advance(Duration::MAX - Duration::from_secs(1)).unwrap();
+    assert!(matches!(
+        block_on(ready.receive(Duration::from_secs(2))).unwrap(),
+        ReceiveOutcome::Message(_)
+    ));
+
+    let mut empty = block_on(spi.subscribe(spi_request_with_type(
+        9903,
+        "empty",
+        "async.local.deadline-empty",
+        TypeId::of::<u32>(),
+    )))
+    .unwrap();
+    let error = match block_on(empty.receive(Duration::from_secs(2))) {
+        Err(error) => error,
+        Ok(_) => panic!("deadline overflow must be returned when the empty receiver needs to wait"),
+    };
+    assert!(matches!(
+        error,
+        qubit_event_bus::error::SpiError::Operation { kind: "timer_error", source, .. }
+            if source.downcast_ref::<TimeError>().is_some_and(|e| matches!(e, TimeError::InstantOverflow))
+    ));
+
+    let mut closed = block_on(spi.subscribe(spi_request_with_type(
+        9904,
+        "closed",
+        "async.local.deadline-closed",
+        TypeId::of::<u32>(),
+    )))
+    .unwrap();
+    block_on(closed.close()).unwrap();
+    assert!(matches!(
+        block_on(closed.receive(Duration::from_secs(2))).unwrap(),
+        ReceiveOutcome::Closed
+    ));
+}
+
+#[test]
+fn test_async_local_deadline_std_timer_boundary_matches_registration_result() {
+    let timer = Arc::new(StdTimer::new());
+    let now = timer.clock().now();
+    let delay = Duration::MAX
+        .checked_sub(now.elapsed_since_origin())
+        .and_then(|remaining| remaining.checked_sub(Duration::from_secs(2)))
+        .expect("standard clock elapsed time leaves room for the boundary deadline");
+    let deadline = now.checked_add(delay).unwrap();
+    let registration = timer.at(deadline);
+    let spi = AsyncLocalEventBusSpi::with_timer(&LocalEventBusConfig::new(), timer).unwrap();
+    let message = OutboundMessage::new(
+        TopicAddress::new("async.local.std-deadline-boundary").unwrap(),
+        EventId::new("std-deadline-boundary").unwrap(),
+        SystemTime::UNIX_EPOCH,
+        Headers::new(),
+        None,
+        Some(delay),
+        TransportPayload::Native(Arc::new(43_u32)),
+    );
+
+    match registration {
+        Err(TimeError::InstantOverflow) => {
+            let error = block_on(spi.publish(message)).unwrap_err();
+            assert_async_pre_admission_error(&error, "delay_deadline_overflow");
+            assert!(matches!(
+                error,
+                qubit_event_bus::error::SpiError::Publish { source, .. }
+                    if source.downcast_ref::<TimeError>().is_some_and(|e| matches!(e, TimeError::InstantOverflow))
+            ));
+        }
+        Err(error) => panic!("unexpected standard timer registration error: {error}"),
+        Ok(future) => {
+            drop(future);
+            let result = block_on(spi.publish(message));
+            if let Err(error) = result {
+                assert_eq!("delay_deadline_overflow", error.kind());
+                assert_eq!(PublishEffect::NotAccepted, error.publish_effect());
+            }
         }
     }
 }

@@ -16,6 +16,7 @@ use std::sync::PoisonError;
 use std::task::Poll;
 use std::time::Duration;
 
+use qubit_clock::MonotonicInstant;
 use qubit_clock::StdTimer;
 use qubit_clock::Timer;
 
@@ -78,6 +79,31 @@ use crate::spi::TransportPayload;
 pub struct AsyncLocalEventBusSpi {
     /// Queues and timer shared by async provider operations.
     pub(super) shared: Arc<AsyncLocalShared>,
+}
+
+/// Builds a pre-admission publish error while preserving its clock failure.
+///
+/// # Parameters
+/// - `resource`: optional topic associated with the publication.
+/// - `kind`: stable provider error classification.
+/// - `source`: original timer failure.
+///
+/// # Returns
+/// A non-retryable publish error that records that no destination accepted the
+/// message.
+fn pre_admission_publish_time_error(
+    resource: Option<&str>,
+    kind: &'static str,
+    source: qubit_clock::TimeError,
+) -> SpiError {
+    SpiError::Publish {
+        provider_id: "local".into(),
+        resource: resource.map(Into::into),
+        kind,
+        retryable: Some(false),
+        effect: crate::model::PublishEffect::NotAccepted,
+        source: Box::new(source),
+    }
 }
 
 impl AsyncLocalEventBusSpi {
@@ -180,9 +206,28 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                     "unsupported_payload_mode",
                 ));
             }
-            let now = self.shared.timer.clock().now().elapsed_since_origin();
-            let mut event = LocalEvent::<Duration>::transport_at(topic.clone(), &message, now)
-                .ok_or_else(|| pre_admission_publish_error(Some(topic.as_str()), "delay_deadline_overflow"))?;
+            let now_instant = self.shared.timer.clock().now();
+            let now = now_instant.elapsed_since_origin();
+            let mut event = LocalEvent::<Duration>::transport_at(topic.clone(), &message, now).ok_or_else(|| {
+                pre_admission_publish_time_error(
+                    Some(topic.as_str()),
+                    "delay_deadline_overflow",
+                    qubit_clock::TimeError::InstantOverflow,
+                )
+            })?;
+            if let Some(deadline) = event.not_before
+                && deadline > now
+            {
+                let deadline = MonotonicInstant::new(now_instant.domain(), deadline);
+                drop(self.shared.timer.at(deadline).map_err(|error| {
+                    let kind = if matches!(error, qubit_clock::TimeError::InstantOverflow) {
+                        "delay_deadline_overflow"
+                    } else {
+                        "timer_error"
+                    };
+                    pre_admission_publish_time_error(Some(topic.as_str()), kind, error)
+                })?);
+            }
             let payload_type = match message.payload() {
                 TransportPayload::Native(payload) => payload.as_ref().type_id(),
                 TransportPayload::Encoded(_) => unreachable!("encoded payload was rejected above"),

@@ -98,14 +98,13 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
                 return Ok(pop_message(&mut state, subscription_id, now)?.unwrap_or(ReceiveOutcome::TimedOut));
             }
             let first_now = timer.clock().now();
-            let receive_deadline = if timeout == Duration::MAX {
-                None
+            let (receive_deadline, mut receive_deadline_error) = if timeout == Duration::MAX {
+                (None, None)
             } else {
-                Some(
-                    first_now
-                        .checked_add(timeout)
-                        .map_err(|_| operation_error("receive", Some(queue.topic.as_str()), "timer_error"))?,
-                )
+                match first_now.checked_add(timeout) {
+                    Ok(deadline) => (Some(deadline), None),
+                    Err(error) => (None, Some(error)),
+                }
             };
             let mut waiter = None;
             let mut timer_future: Option<ReceiveTimer> = None;
@@ -132,6 +131,18 @@ impl AsyncEventSubscriptionSpi for AsyncLocalEventSubscription {
                         return Poll::Ready(Err(error));
                     }
                     Ok(None) => {}
+                }
+                if let Some(error) = receive_deadline_error.take() {
+                    drop(state);
+                    drop(waiter.take());
+                    return Poll::Ready(Err(SpiError::Operation {
+                        provider_id: "local".into(),
+                        operation: "receive",
+                        resource: Some(queue.topic.as_str().into()),
+                        kind: "timer_error",
+                        retryable: Some(false),
+                        source: Box::new(error),
+                    }));
                 }
                 if receive_deadline.is_some_and(|deadline| now >= deadline) {
                     drop(state);

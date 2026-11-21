@@ -15,6 +15,7 @@ from scripts.check_downstream_compatibility import metadata
 from scripts.check_downstream_compatibility import run
 from scripts.check_downstream_compatibility import validate_graph_for_downstream
 from scripts.check_downstream_compatibility import verify_test
+from scripts.tests.process_test_support import wait_for_process_exit
 
 
 class DownstreamCompatibilityTests(unittest.TestCase):
@@ -184,18 +185,8 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             self.assertIn("started", stdout.getvalue())
             self.assertIn("timed out after 0.3s", stderr.getvalue())
             child_pid = int(pid_file.read_text())
-            deadline = time.monotonic() + 2
-            while time.monotonic() < deadline:
-                try:
-                    os.kill(child_pid, 0)
-                except ProcessLookupError:
-                    break
-                stat_path = Path(f"/proc/{child_pid}/stat")
-                if stat_path.exists() and stat_path.read_text().split()[2] == "Z":
-                    break
-                time.sleep(0.02)
-            else:
-                self.fail(f"Cargo-like descendant {child_pid} survived command timeout")
+            self.assertTrue(wait_for_process_exit(child_pid),
+                            f"Cargo-like descendant {child_pid} survived command timeout")
 
     def make_input_repository(self, root, name):
         root.mkdir()

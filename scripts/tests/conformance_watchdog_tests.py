@@ -6,7 +6,9 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from scripts.tests import process_test_support
 from scripts.run_conformance_watchdog import process_group_options
 from scripts.run_conformance_watchdog import terminate_process_group
 
@@ -80,18 +82,8 @@ class ConformanceWatchdogTests(unittest.TestCase):
 
             terminate_process_group(child)
 
-            deadline = time.monotonic() + 2
-            while time.monotonic() < deadline:
-                try:
-                    os.kill(child_pid, 0)
-                except ProcessLookupError:
-                    break
-                stat_path = Path(f"/proc/{child_pid}/stat")
-                if stat_path.exists() and stat_path.read_text().split()[2] == "Z":
-                    break
-                time.sleep(0.02)
-            else:
-                self.fail(f"descendant {child_pid} survived after its group leader exited")
+            self.assertTrue(process_test_support.wait_for_process_exit(child_pid),
+                            f"descendant {child_pid} survived after its group leader exited")
 
     def test_pid_file_failure_kills_child_and_preserves_failure_status(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -121,20 +113,31 @@ class ConformanceWatchdogTests(unittest.TestCase):
             result = self.run_watchdog(1, sys.executable, "-c", code)
             self.assertEqual(result.returncode, 124, result.stderr)
             child_pid = int(pid_file.read_text())
-            deadline = time.monotonic() + 2
-            while time.monotonic() < deadline:
-                try:
-                    os.kill(child_pid, 0)
-                except ProcessLookupError:
-                    break
-                stat_path = Path(f"/proc/{child_pid}/stat")
-                if stat_path.exists():
-                    stat = stat_path.read_text().split()
-                    if len(stat) > 2 and stat[2] == "Z":
-                        break
-                time.sleep(0.02)
-            else:
-                self.fail(f"descendant {child_pid} survived watchdog timeout")
+            self.assertTrue(process_test_support.wait_for_process_exit(child_pid),
+                            f"descendant {child_pid} survived watchdog timeout")
+
+    def test_process_observation_handles_stat_disappearing_after_probe(self):
+        with patch.object(process_test_support, "_procfs_is_available", return_value=True), \
+                patch.object(process_test_support.os, "kill", return_value=None), \
+                patch.object(Path, "read_text", side_effect=FileNotFoundError):
+            self.assertTrue(process_test_support.wait_for_process_exit(123, timeout=0.1))
+
+    def test_process_observation_parses_zombie_after_spaced_process_name(self):
+        with patch.object(process_test_support, "_procfs_is_available", return_value=True), \
+                patch.object(process_test_support.os, "kill", return_value=None), \
+                patch.object(Path, "read_text", return_value="123 (name with spaces) Z 1 2"):
+            self.assertTrue(process_test_support.wait_for_process_exit(123, timeout=0.1))
+
+    def test_process_observation_uses_signal_probe_without_procfs(self):
+        with patch.object(process_test_support, "_procfs_is_available", return_value=False), \
+                patch.object(process_test_support.os, "kill", side_effect=[None, ProcessLookupError]):
+            self.assertTrue(process_test_support.wait_for_process_exit(123, timeout=0.1))
+
+    def test_process_observation_returns_false_for_live_process(self):
+        with patch.object(process_test_support, "_procfs_is_available", return_value=False), \
+                patch.object(process_test_support.os, "kill", return_value=None), \
+                patch.object(process_test_support.time, "sleep"):
+            self.assertFalse(process_test_support.wait_for_process_exit(123, timeout=0))
 
 
 if __name__ == "__main__":
