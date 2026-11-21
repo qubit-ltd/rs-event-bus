@@ -8,6 +8,7 @@
 //! Exact wait-entry synchronization checks for the four large-timeout paths.
 
 use std::any::TypeId;
+use std::future::Future;
 use std::io;
 use std::num::NonZeroUsize;
 use std::process::Command;
@@ -19,6 +20,9 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
+use std::task::Context;
+use std::task::Poll;
+use std::task::Waker;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
@@ -32,6 +36,7 @@ use crate::NotificationPublisher;
 use crate::WaitOutcome;
 use crate::error::SpiError;
 use crate::internal::test_wait_probe;
+use crate::local::AsyncLocalEventBusSpi;
 use crate::local::LocalEventBusConfig;
 use crate::local::LocalEventBusProvider;
 use crate::local::LocalEventBusSpi;
@@ -46,6 +51,7 @@ use crate::model::SubscriberId;
 use crate::model::SubscriptionDurability;
 use crate::model::Topic;
 use crate::registry::EventBusConfig;
+use crate::spi::AsyncEventBusSpi;
 use crate::spi::DelayedDeliveryCapability;
 use crate::spi::DeliveryDisposition;
 use crate::spi::DurabilityCapability;
@@ -414,6 +420,238 @@ fn test_large_timeout_probe_graceful_shutdown() {
             }
         },
     );
+}
+
+#[test]
+fn test_sync_local_graceful_rejects_publish_after_empty_scan() {
+    isolated(
+        "test_sync_local_graceful_rejects_publish_after_empty_scan",
+        "sync-local-close-admission",
+        || {
+            let topic = "probe.shutdown.empty-scan-sync";
+            let spi = Arc::new(LocalEventBusSpi::new(&LocalEventBusConfig::default()).unwrap());
+            let monitor = spi.capacity_monitor();
+            let mut receiver = spi.subscribe(subscription(991, topic)).unwrap();
+            let ((snapshot_seen, snapshot_release), (scan_seen, scan_release)) =
+                test_wait_probe::install_two_gated("publish_after_route_snapshot", "graceful_shutdown_decision");
+            let publish_spi = Arc::clone(&spi);
+            let publish = thread::spawn(move || publish_ack(&*publish_spi, topic, "after-empty-scan"));
+            snapshot_seen
+                .recv_timeout(Duration::from_secs(2))
+                .expect("publish captured its route snapshot");
+            let shutdown_spi = Arc::clone(&spi);
+            let shutdown = thread::spawn(move || {
+                shutdown_spi
+                    .shutdown(ShutdownMode::Graceful {
+                        timeout: Duration::ZERO,
+                    })
+                    .unwrap()
+            });
+            scan_seen
+                .recv_timeout(Duration::from_secs(2))
+                .expect("graceful shutdown found queues empty");
+            snapshot_release.send(()).unwrap();
+            let PublishAcknowledgement::DestinationAdmissions(admissions) = publish.join().unwrap() else {
+                panic!("local publish returns destination admissions");
+            };
+            assert_eq!(1, admissions.len());
+            assert!(matches!(
+                admissions[0].status(),
+                AdmissionStatus::Rejected(reason) if reason.as_ref() == "provider is closing"
+            ));
+            assert!(matches!(
+                receiver.receive(Duration::ZERO).unwrap(),
+                ReceiveOutcome::TimedOut
+            ));
+            scan_release.send(()).unwrap();
+            assert_eq!(ShutdownOutcome::Complete, shutdown.join().unwrap());
+            assert!(matches!(
+                receiver.receive(Duration::ZERO).unwrap(),
+                ReceiveOutcome::Closed
+            ));
+            let snapshot = monitor.snapshot();
+            assert_eq!(0, snapshot.outstanding_count);
+            assert_eq!(1, snapshot.rejected_subscription_closed);
+        },
+    );
+}
+
+#[test]
+fn test_async_local_graceful_rejects_publish_after_empty_scan() {
+    isolated(
+        "test_async_local_graceful_rejects_publish_after_empty_scan",
+        "async-local-close-admission",
+        || {
+            let topic = "probe.shutdown.empty-scan-async";
+            let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::default()).unwrap());
+            let monitor = spi.capacity_monitor();
+            let _receiver = poll_ready(spi.subscribe(subscription(992, topic)));
+            let ((snapshot_seen, snapshot_release), (scan_seen, scan_release)) = test_wait_probe::install_two_gated(
+                "async_publish_after_route_snapshot",
+                "async_graceful_shutdown_decision",
+            );
+            let publish_spi = Arc::clone(&spi);
+            let publish = thread::spawn(move || {
+                poll_ready(publish_spi.publish(OutboundMessage::new(
+                    TopicAddress::new(topic).unwrap(),
+                    EventId::new("async-after-empty-scan").unwrap(),
+                    SystemTime::now(),
+                    Headers::new(),
+                    None,
+                    None,
+                    TransportPayload::Native(Arc::new(42_u32)),
+                )))
+            });
+            snapshot_seen
+                .recv_timeout(Duration::from_secs(2))
+                .expect("publish captured its route snapshot");
+            let shutdown_spi = Arc::clone(&spi);
+            let shutdown = thread::spawn(move || {
+                poll_ready(shutdown_spi.shutdown(ShutdownMode::Graceful {
+                    timeout: Duration::ZERO,
+                }))
+            });
+            scan_seen
+                .recv_timeout(Duration::from_secs(2))
+                .expect("async graceful shutdown found queues empty");
+            snapshot_release.send(()).unwrap();
+            let acknowledgement = publish.join().unwrap().unwrap();
+            let PublishAcknowledgement::DestinationAdmissions(admissions) = acknowledgement else {
+                panic!("local publish returns destination admissions");
+            };
+            assert_eq!(1, admissions.len());
+            assert!(
+                matches!(admissions[0].status(), AdmissionStatus::Rejected(reason) if reason.as_ref() == "provider is closing")
+            );
+            scan_release.send(()).unwrap();
+            assert_eq!(ShutdownOutcome::Complete, shutdown.join().unwrap().unwrap());
+            let snapshot = monitor.snapshot();
+            assert_eq!(0, snapshot.outstanding_count);
+            assert_eq!(1, snapshot.rejected_subscription_closed);
+        },
+    );
+}
+
+#[test]
+fn test_sync_local_graceful_preserves_partial_admission() {
+    isolated(
+        "test_sync_local_graceful_preserves_partial_admission",
+        "sync-local-partial-close",
+        || {
+            let topic = "probe.shutdown.partial-sync";
+            let spi = Arc::new(LocalEventBusSpi::new(&LocalEventBusConfig::default()).unwrap());
+            let mut first = spi.subscribe(subscription(993, topic)).unwrap();
+            let _second = spi.subscribe(subscription(994, topic)).unwrap();
+            let ((publish_seen, publish_release), (scan_seen, scan_release)) =
+                test_wait_probe::install_two_gated("publish_between_targets", "graceful_shutdown_decision");
+            let publish_spi = Arc::clone(&spi);
+            let publish = thread::spawn(move || publish_ack(&*publish_spi, topic, "partial-sync"));
+            publish_seen
+                .recv_timeout(Duration::from_secs(2))
+                .expect("first target was admitted");
+            let ReceiveOutcome::Message(message) = first.receive(Duration::ZERO).unwrap() else {
+                panic!("first target received its admitted message");
+            };
+            first
+                .settle(
+                    message.settlement().expect("delivery is settleable"),
+                    DeliveryDisposition::Accept,
+                )
+                .unwrap();
+            let shutdown_spi = Arc::clone(&spi);
+            let shutdown = thread::spawn(move || {
+                shutdown_spi
+                    .shutdown(ShutdownMode::Graceful {
+                        timeout: Duration::ZERO,
+                    })
+                    .unwrap()
+            });
+            scan_seen
+                .recv_timeout(Duration::from_secs(2))
+                .expect("graceful shutdown found first target settled");
+            publish_release.send(()).unwrap();
+            let PublishAcknowledgement::DestinationAdmissions(admissions) = publish.join().unwrap() else {
+                panic!("destination admissions returned");
+            };
+            assert_eq!(2, admissions.len());
+            assert_eq!(Id::new(993), admissions[0].subscription_id());
+            assert_eq!(AdmissionStatus::Accepted, *admissions[0].status());
+            assert!(
+                matches!(admissions[1].status(), AdmissionStatus::Rejected(reason) if reason.as_ref() == "provider is closing")
+            );
+            scan_release.send(()).unwrap();
+            assert_eq!(ShutdownOutcome::Complete, shutdown.join().unwrap());
+        },
+    );
+}
+
+#[test]
+fn test_async_local_graceful_preserves_partial_admission() {
+    isolated(
+        "test_async_local_graceful_preserves_partial_admission",
+        "async-local-partial-close",
+        || {
+            let topic = "probe.shutdown.partial-async";
+            let spi = Arc::new(AsyncLocalEventBusSpi::new(&LocalEventBusConfig::default()).unwrap());
+            let mut first = poll_ready(spi.subscribe(subscription(995, topic))).unwrap();
+            let _second = poll_ready(spi.subscribe(subscription(996, topic))).unwrap();
+            let ((publish_seen, publish_release), (scan_seen, scan_release)) =
+                test_wait_probe::install_two_gated("async_publish_between_targets", "async_graceful_shutdown_decision");
+            let publish_spi = Arc::clone(&spi);
+            let publish = thread::spawn(move || {
+                poll_ready(publish_spi.publish(OutboundMessage::new(
+                    TopicAddress::new(topic).unwrap(),
+                    EventId::new("partial-async").unwrap(),
+                    SystemTime::now(),
+                    Headers::new(),
+                    None,
+                    None,
+                    TransportPayload::Native(Arc::new(42_u32)),
+                )))
+            });
+            publish_seen
+                .recv_timeout(Duration::from_secs(2))
+                .expect("first target was admitted");
+            let ReceiveOutcome::Message(message) = poll_ready(first.receive(Duration::ZERO)).unwrap() else {
+                panic!("first target received its admitted message");
+            };
+            poll_ready(first.settle(
+                message.settlement().expect("delivery is settleable"),
+                DeliveryDisposition::Accept,
+            ))
+            .unwrap();
+            let shutdown_spi = Arc::clone(&spi);
+            let shutdown = thread::spawn(move || {
+                poll_ready(shutdown_spi.shutdown(ShutdownMode::Graceful {
+                    timeout: Duration::ZERO,
+                }))
+            });
+            scan_seen
+                .recv_timeout(Duration::from_secs(2))
+                .expect("graceful shutdown found first target settled");
+            publish_release.send(()).unwrap();
+            let PublishAcknowledgement::DestinationAdmissions(admissions) = publish.join().unwrap().unwrap() else {
+                panic!("destination admissions returned");
+            };
+            assert_eq!(2, admissions.len());
+            assert_eq!(Id::new(995), admissions[0].subscription_id());
+            assert_eq!(AdmissionStatus::Accepted, *admissions[0].status());
+            assert!(
+                matches!(admissions[1].status(), AdmissionStatus::Rejected(reason) if reason.as_ref() == "provider is closing")
+            );
+            scan_release.send(()).unwrap();
+            assert_eq!(ShutdownOutcome::Complete, shutdown.join().unwrap().unwrap());
+        },
+    );
+}
+
+fn poll_ready<F: Future>(future: F) -> F::Output {
+    let mut future = std::pin::pin!(future);
+    let mut context = Context::from_waker(Waker::noop());
+    match future.as_mut().poll(&mut context) {
+        Poll::Ready(output) => output,
+        Poll::Pending => panic!("zero-budget operation should complete in one poll"),
+    }
 }
 
 #[test]

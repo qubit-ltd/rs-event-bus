@@ -262,6 +262,8 @@ impl EventBusSpi for LocalEventBusSpi {
             }
             queues
         };
+        #[cfg(test)]
+        crate::internal::test_wait_probe::announce("publish_after_route_snapshot");
         if !self.shared.outstanding.requires_weight() {
             event.weight_bytes = 0;
         }
@@ -309,6 +311,8 @@ impl EventBusSpi for LocalEventBusSpi {
             } else {
                 DestinationAdmission::new(queue.id, queue.subscriber_id.clone(), status)
             });
+            #[cfg(test)]
+            crate::internal::test_wait_probe::announce("publish_between_targets");
         }
         if admitted_any {
             signal_changed(&self.shared);

@@ -276,6 +276,8 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 validate_admission(&bus)?;
                 bus.publish_mailboxes_for_topic(&topic)
             };
+            #[cfg(test)]
+            crate::internal::test_wait_probe::announce("async_publish_after_route_snapshot");
             if !self.shared.outstanding.requires_weight() {
                 event.weight_bytes = 0;
             }
@@ -320,6 +322,8 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 } else {
                     DestinationAdmission::new(mailbox.queue.id, mailbox.queue.subscriber_id.clone(), status)
                 });
+                #[cfg(test)]
+                crate::internal::test_wait_probe::announce("async_publish_between_targets");
             }
             if !admissions.is_empty() {
                 self.shared.changed.notify_all();
@@ -496,6 +500,10 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                     .await?
                 }
             };
+            if matches!(mode, ShutdownMode::Graceful { .. }) {
+                #[cfg(test)]
+                crate::internal::test_wait_probe::announce("async_graceful_shutdown_decision");
+            }
             let (mailboxes, discarded) = {
                 let mut bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
                 if let Some(previous) = bus.outcome {

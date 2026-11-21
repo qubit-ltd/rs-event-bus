@@ -63,6 +63,33 @@ pub(crate) fn install_gated(
     (gate_receiver, observed_receiver, gate_release_sender)
 }
 
+/// Installs two independently controlled gates for one deterministic race.
+pub(crate) fn install_two_gated(
+    first_site: &'static str,
+    second_site: &'static str,
+) -> ((Receiver<()>, Sender<()>), (Receiver<()>, Sender<()>)) {
+    let (first_seen_tx, first_seen_rx) = mpsc::channel();
+    let (first_release_tx, first_release_rx) = mpsc::channel();
+    let (second_seen_tx, second_seen_rx) = mpsc::channel();
+    let (second_release_tx, second_release_rx) = mpsc::channel();
+    let mut probes = PROBE
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert!(probes.is_empty(), "only one wait probe may be active");
+    probes.push(WaitProbe {
+        site: first_site,
+        sender: first_seen_tx,
+        gate: Some(first_release_rx),
+    });
+    probes.push(WaitProbe {
+        site: second_site,
+        sender: second_seen_tx,
+        gate: Some(second_release_rx),
+    });
+    ((first_seen_rx, first_release_tx), (second_seen_rx, second_release_tx))
+}
+
 /// Signals at the named synchronization point, blocking if a gate was
 /// installed.
 pub(crate) fn announce(wait_site: &'static str) {
