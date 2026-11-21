@@ -407,7 +407,9 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
     }
 
     /// Closes admission, waits according to the requested mode, and drains all
-    /// registered mailboxes.
+    /// registered mailboxes. A completed concurrent shutdown outcome takes
+    /// precedence over a later graceful timer error; without a cached outcome,
+    /// the timer error is returned unchanged.
     ///
     /// # Parameters
     /// - `mode`: immediate close or graceful wait deadline.
@@ -420,11 +422,14 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
     fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
         Box::pin(async move {
             {
-                let _bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+                let bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some(previous) = bus.outcome {
+                    return Ok(previous);
+                }
                 self.shared.closed.store(true, Ordering::Release);
             }
             let result = match mode {
-                ShutdownMode::Immediate => ShutdownOutcome::Complete,
+                ShutdownMode::Immediate => Ok(ShutdownOutcome::Complete),
                 ShutdownMode::Graceful { timeout } => {
                     let started = self.shared.timer.clock().now();
                     let mut wait_registration = None;
@@ -497,18 +502,19 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                         }
                         Poll::Pending
                     })
-                    .await?
+                    .await
                 }
             };
-            if matches!(mode, ShutdownMode::Graceful { .. }) {
+            if matches!(mode, ShutdownMode::Graceful { .. }) && result.is_ok() {
                 #[cfg(test)]
                 crate::internal::test_wait_probe::announce("async_graceful_shutdown_decision");
             }
-            let (mailboxes, discarded) = {
+            let (mailboxes, discarded, result) = {
                 let mut bus = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
                 if let Some(previous) = bus.outcome {
                     return Ok(previous);
                 }
+                let result = result?;
                 let mailboxes = bus.drain_mailboxes();
                 let mut discarded = Vec::new();
                 for mailbox in &mailboxes {
@@ -521,7 +527,7 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 }
                 bus.payload_types.clear();
                 bus.outcome = Some(result);
-                (mailboxes, discarded)
+                (mailboxes, discarded, result)
             };
             for mailbox in mailboxes {
                 mailbox.queue.async_ready.notify_all();

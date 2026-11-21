@@ -90,6 +90,7 @@ struct GatedTimer {
     registered: mpsc::Sender<()>,
     continue_registration: Mutex<mpsc::Receiver<()>>,
     calls: AtomicUsize,
+    fail_registration: bool,
 }
 
 impl Timer for GatedTimer {
@@ -115,6 +116,14 @@ impl Timer for GatedTimer {
                     source: Box::new(std::io::Error::other(error.to_string())),
                 },
             })?;
+        if self.fail_registration {
+            return Err(TimeError::TimerUnavailable {
+                source: qubit_clock::TimerUnavailableError::BackendUnavailable {
+                    backend: "test",
+                    source: Box::new(std::io::Error::other("registration failed")),
+                },
+            });
+        }
         ManualTimer::from_clock(&self.clock).at(deadline)
     }
 }
@@ -379,6 +388,7 @@ fn test_async_local_delayed_publish_rechecks_shutdown_after_timer_registration()
         registered: registered_tx,
         continue_registration: Mutex::new(continue_rx),
         calls: AtomicUsize::new(0),
+        fail_registration: false,
     });
     let spi = Arc::new(AsyncLocalEventBusSpi::with_timer(&LocalEventBusConfig::default(), timer.clone()).unwrap());
     let mut receiver = block_on(spi.subscribe(spi_request_with_type(
@@ -415,6 +425,104 @@ fn test_async_local_delayed_publish_rechecks_shutdown_after_timer_registration()
         block_on(receiver.receive(Duration::ZERO)).unwrap(),
         ReceiveOutcome::Closed
     ));
+}
+
+#[test]
+fn test_async_local_graceful_reuses_cached_outcome_after_timer_error() {
+    let clock = ManualMonotonicClock::new_shared();
+    let (registered_tx, registered_rx) = mpsc::channel();
+    let (continue_tx, continue_rx) = mpsc::channel();
+    let timer = Arc::new(GatedTimer {
+        clock,
+        registered: registered_tx,
+        continue_registration: Mutex::new(continue_rx),
+        calls: AtomicUsize::new(0),
+        fail_registration: true,
+    });
+    let spi = Arc::new(AsyncLocalEventBusSpi::with_timer(&LocalEventBusConfig::default(), timer.clone()).unwrap());
+    let mut receiver = block_on(spi.subscribe(spi_request_with_type(
+        9995,
+        "shutdown-race",
+        "shutdown.timer-race",
+        TypeId::of::<u32>(),
+    )))
+    .unwrap();
+    let _ = block_on(spi.publish(OutboundMessage::new(
+        TopicAddress::new("shutdown.timer-race").unwrap(),
+        EventId::new("shutdown-timer-race").unwrap(),
+        SystemTime::UNIX_EPOCH,
+        Headers::new(),
+        None,
+        None,
+        TransportPayload::Native(Arc::new(7_u32)),
+    )))
+    .unwrap();
+
+    let graceful_spi = spi.clone();
+    let graceful = thread::spawn(move || {
+        block_on(graceful_spi.shutdown(ShutdownMode::Graceful {
+            timeout: Duration::from_secs(1),
+        }))
+    });
+    registered_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("graceful timer registration begins");
+    assert_eq!(
+        ShutdownOutcome::Complete,
+        block_on(spi.shutdown(ShutdownMode::Immediate)).unwrap()
+    );
+    continue_tx.send(()).unwrap();
+    assert_eq!(ShutdownOutcome::Complete, graceful.join().unwrap().unwrap());
+    assert_eq!(
+        ShutdownOutcome::Complete,
+        block_on(spi.shutdown(ShutdownMode::Immediate)).unwrap()
+    );
+    assert_eq!(1, timer.calls.load(Ordering::Relaxed));
+    assert!(matches!(
+        block_on(receiver.receive(Duration::ZERO)).unwrap(),
+        ReceiveOutcome::Closed
+    ));
+
+    let clock = ManualMonotonicClock::new_shared();
+    let timer = Arc::new(CountingFailureTimer {
+        clock: clock.clone(),
+        calls: AtomicUsize::new(0),
+    });
+    let spi = AsyncLocalEventBusSpi::with_timer(&LocalEventBusConfig::default(), timer.clone()).unwrap();
+    let _receiver = block_on(spi.subscribe(spi_request_with_type(
+        9996,
+        "shutdown-error",
+        "shutdown.timer-error",
+        TypeId::of::<u32>(),
+    )))
+    .unwrap();
+    let _ = block_on(spi.publish(OutboundMessage::new(
+        TopicAddress::new("shutdown.timer-error").unwrap(),
+        EventId::new("shutdown-timer-error").unwrap(),
+        SystemTime::UNIX_EPOCH,
+        Headers::new(),
+        None,
+        None,
+        TransportPayload::Native(Arc::new(8_u32)),
+    )))
+    .unwrap();
+    let error = block_on(spi.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(1),
+    }))
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        qubit_event_bus::error::SpiError::Operation {
+            kind: "timer_error",
+            source,
+            ..
+        } if source.downcast_ref::<TimeError>().is_some_and(|error| matches!(error, TimeError::TimerUnavailable { .. }))
+    ));
+    assert_eq!(
+        ShutdownOutcome::Complete,
+        block_on(spi.shutdown(ShutdownMode::Immediate)).unwrap()
+    );
+    assert_eq!(1, timer.calls.load(Ordering::Relaxed));
 }
 
 #[test]

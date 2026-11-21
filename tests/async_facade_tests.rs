@@ -2076,6 +2076,62 @@ fn test_wait_for_received_deliveries_only_registers_timer_when_needed() {
 }
 
 #[test]
+fn test_graceful_shutdown_registration_failure_stops_admission() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let timer = Arc::new(FailingRegistrationTimer::new());
+    let bus = AsyncEventBus::with_timer(ProviderId::new("fake").unwrap(), spi, timer.clone())
+        .expect("valid provider capabilities");
+
+    block_on(async {
+        let subscription = bus
+            .subscribe(SubscribeRequest::new("registration-failure", topic()).unwrap())
+            .await
+            .unwrap();
+        let mut runner = Box::pin(subscription.run(|_| async { Ok(()) }));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(runner.as_mut().poll(&mut context).is_pending());
+
+        assert!(matches!(
+            bus.shutdown(ShutdownMode::Graceful {
+                timeout: Duration::from_secs(1)
+            })
+            .await,
+            Err(ShutdownError::Lifecycle(LifecycleError::Timer(
+                TimeError::TimerUnavailable { .. }
+            )))
+        ));
+        assert_eq!(1, timer.registrations.load(Ordering::SeqCst));
+        assert_eq!(None, bus.shutdown_report());
+        assert!(matches!(runner.as_mut().poll(&mut context), Poll::Ready(Ok(()))));
+        assert!(matches!(
+            bus.publish(PublishRequest::new(topic(), 1).unwrap()).await,
+            Err(error) if matches!(error.cause(), qubit_event_bus::PublishError::Closed)
+        ));
+        assert!(matches!(
+            bus.subscribe(SubscribeRequest::new("after-close", topic()).unwrap())
+                .await,
+            Err(SubscribeError::Closed)
+        ));
+
+        let report = bus
+            .shutdown(ShutdownMode::Immediate)
+            .await
+            .expect("immediate retry completes shutdown");
+        assert_eq!(report, bus.shutdown_report().unwrap());
+        assert_eq!(1, timer.registrations.load(Ordering::SeqCst));
+        assert_eq!(
+            report,
+            bus.shutdown(ShutdownMode::Graceful {
+                timeout: Duration::from_secs(1)
+            })
+            .await
+            .unwrap()
+        );
+        assert_eq!(1, timer.registrations.load(Ordering::SeqCst));
+    });
+}
+
+#[test]
 fn test_zero_budget_shutdown_does_not_start_receiver_close() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let clock = ManualMonotonicClock::new_shared();

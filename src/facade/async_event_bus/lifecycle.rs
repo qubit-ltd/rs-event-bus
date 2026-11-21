@@ -177,15 +177,18 @@ impl AsyncEventBus {
     /// # Errors
     /// Returns [`ShutdownError::TimedOut`] when this graceful call's timeout
     /// expires. The bus remains closing, and a later call can continue
-    /// cleanup with a new timeout budget. Other errors report a timer failure,
-    /// provider shutdown failure, subscription receiver close failure, or a
-    /// lifecycle error such as attempting to wait from a callback running on
-    /// this bus. An error does not mean that cleanup will continue in the
-    /// background. While this future is pending, keep polling it to drive
-    /// cleanup. After it returns, a later call can retry cleanup that remains
-    /// incomplete. A cancelled future publishes no report unless a later
-    /// attempt completes provider cleanup; use [`Self::shutdown_report`] to
-    /// inspect the cached result without starting another attempt.
+    /// cleanup with a new timeout budget. A graceful timer registration error
+    /// also leaves the bus closing, so new publishes and subscriptions are
+    /// rejected while a later call retries shutdown. Other errors report a
+    /// timer failure, provider shutdown failure, subscription receiver
+    /// close failure, or a lifecycle error such as attempting to wait from
+    /// a callback running on this bus. An error does not mean that cleanup
+    /// will continue in the background. While this future is pending, keep
+    /// polling it to drive cleanup. After it returns, a later call can
+    /// retry cleanup that remains incomplete. A cancelled future publishes
+    /// no report unless a later attempt completes provider cleanup; use
+    /// [`Self::shutdown_report`] to inspect the cached result without
+    /// starting another attempt.
     ///
     /// # Panics
     /// An internal invariant violation while handling a graceful deadline
@@ -198,17 +201,19 @@ impl AsyncEventBus {
         if mode == ShutdownMode::Immediate {
             self.inner.shutdown_immediate.store(true, Ordering::Release);
             self.inner.shutdown_mode_signal.notify();
-            let controls: Vec<_> = self
-                .inner
-                .controls
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .values()
-                .cloned()
-                .collect();
-            for control in controls {
-                control.stop(ShutdownMode::Immediate);
+        }
+        let started_closing = {
+            let mut state = self.inner.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if *state == BusState::Running {
+                *state = BusState::Closing;
+                true
+            } else {
+                false
             }
+        };
+        let notified_controls = started_closing || mode == ShutdownMode::Immediate;
+        if notified_controls {
+            self.stop_subscriptions(self.requested_shutdown_mode(mode));
         }
         let timeout = match mode {
             ShutdownMode::Graceful { timeout } => Some(timeout),
@@ -240,29 +245,14 @@ impl AsyncEventBus {
                 .is_ok()
             {
                 let _leader = ShutdownLeaderGuard::new(self.inner.clone());
-                let already_closed = {
-                    let mut state = self.inner.state.lock().unwrap_or_else(PoisonError::into_inner);
-                    if *state == BusState::Closed {
-                        true
-                    } else {
-                        *state = BusState::Closing;
-                        false
-                    }
-                };
+                let already_closed =
+                    { *self.inner.state.lock().unwrap_or_else(PoisonError::into_inner) == BusState::Closed };
                 if already_closed {
                     continue;
                 }
                 let requested_mode = self.requested_shutdown_mode(mode);
-                let controls: Vec<_> = self
-                    .inner
-                    .controls
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .values()
-                    .cloned()
-                    .collect();
-                for control in controls {
-                    control.stop(requested_mode);
+                if !notified_controls {
+                    self.stop_subscriptions(requested_mode);
                 }
                 return self
                     .shutdown_as_leader(mode, requested_mode, timeout, &mut deadline)
@@ -413,6 +403,24 @@ impl AsyncEventBus {
             ShutdownMode::Immediate
         } else {
             requested
+        }
+    }
+
+    /// Sends the strongest requested stop mode to a snapshot of subscriptions.
+    ///
+    /// # Parameters
+    /// - `mode`: shutdown mode applied to each registered subscription.
+    fn stop_subscriptions(&self, mode: ShutdownMode) {
+        let controls: Vec<_> = self
+            .inner
+            .controls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect();
+        for control in controls {
+            control.stop(mode);
         }
     }
 
