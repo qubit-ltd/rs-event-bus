@@ -23,7 +23,7 @@ use crate::Diagnostic;
 use crate::ReceiveError;
 use crate::SpiError;
 use crate::facade::async_event_bus::AsyncEventBusInner;
-use crate::facade::async_event_bus::catch_receive_spi_future;
+use crate::facade::async_event_bus::catch_spi_future_preserving_result;
 use crate::facade::async_subscription::AsyncRunnerGuard;
 use crate::facade::async_subscription::SharedAsyncHandler;
 use crate::facade::async_subscription::SignalRegistration;
@@ -323,7 +323,9 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                     let receive = catch_spi_call(provider_id.as_str(), "receive", Some(&resource), || {
                         receiver.receive(Duration::MAX)
                     });
-                    let receive = receive.map(|future| catch_receive_spi_future(future, &provider_id, Some(&resource)));
+                    let receive = receive.map(|future| {
+                        catch_spi_future_preserving_result(future, &provider_id, "receive", Some(&resource))
+                    });
                     let mut receive = Box::pin(async move {
                         match receive {
                             Ok(future) => future.await,

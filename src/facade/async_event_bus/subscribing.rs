@@ -21,7 +21,7 @@ use crate::SubscribeError;
 use crate::codec::resolve_codec;
 use crate::error::ConfigurationError;
 use crate::facade::async_event_bus::BusState;
-use crate::facade::async_event_bus::catch_spi_future;
+use crate::facade::async_event_bus::catch_spi_future_preserving_result;
 use crate::facade::async_subscription::BusContextFuture;
 use crate::model::DeadLetterAdmissionPolicy;
 use crate::model::OrderingPolicy;
@@ -60,6 +60,11 @@ impl AsyncEventBus {
     /// call is being created or polled returns
     /// [`crate::LifecycleError::WouldDeadlock`]. Request shutdown from an
     /// application lifecycle task after the subscription call returns.
+    /// Polling and destruction of the provider future share this same-bus
+    /// reentrancy scope. A destructor panic during cancellation is contained;
+    /// the provider remains responsible for cleaning up any partially
+    /// allocated subscription. After completion, the returned receiver or SPI
+    /// error is retained if future destruction also panics.
     pub async fn subscribe<T: Send + Sync + 'static>(
         &self,
         request: SubscribeRequest<T>,
@@ -136,14 +141,14 @@ impl AsyncEventBus {
             options.provider_options().clone(),
             topic.payload_type_id(),
         );
-        let receiver = BusContextFuture::new(Arc::as_ptr(&self.inner) as usize, async {
+        let receiver = BusContextFuture::new_with_drop_context(Arc::as_ptr(&self.inner) as usize, async {
             let subscribe = crate::spi::panic_boundary::catch_spi_call(
                 self.inner.provider_id.as_str(),
                 "subscribe",
                 Some(subscriber_id.as_str()),
                 || self.inner.spi.subscribe(spi_request),
             )?;
-            catch_spi_future(
+            catch_spi_future_preserving_result(
                 subscribe,
                 &self.inner.provider_id,
                 "subscribe",

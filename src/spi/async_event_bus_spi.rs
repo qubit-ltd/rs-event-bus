@@ -90,6 +90,11 @@ pub trait AsyncEventBusSpi: Send + Sync + 'static {
     /// resource commitment until completion or use cancellation-safe RAII so
     /// dropping the future synchronously aborts or detaches the partial setup.
     /// The provider must not require a hidden runtime task to finish cleanup.
+    /// When called through the facade, creation, polling, and destruction of
+    /// the future are scoped for same-bus reentrancy detection. A destructor
+    /// panic on cancellation is contained and any partial setup remains the
+    /// provider's responsibility; after completion, the receiver or SPI error
+    /// is preserved if destruction also panics.
     ///
     /// # Parameters
     /// - `request`: provider subscription identity, topic, and policies.

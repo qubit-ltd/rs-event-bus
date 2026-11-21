@@ -27,6 +27,7 @@ use qubit_clock::ManualMonotonicClock;
 use qubit_clock::MonotonicClock;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::Diagnostic;
+use qubit_event_bus::LifecycleError;
 use qubit_event_bus::SpiError;
 use qubit_event_bus::error::PublishError;
 use qubit_event_bus::error::ReceiveError;
@@ -93,6 +94,209 @@ impl AsyncEventBusSpi for DropPanicSpi {
         }
         self.inner.shutdown(mode)
     }
+}
+
+struct SubscribeCancelProbe {
+    bus: Mutex<Option<AsyncEventBus>>,
+    reentry: Mutex<Option<Result<(), ShutdownError>>>,
+    drops: Arc<AtomicUsize>,
+}
+
+struct PendingSubscribeDropPanic(Arc<SubscribeCancelProbe>);
+
+impl Future for PendingSubscribeDropPanic {
+    type Output = Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>;
+
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        Poll::Pending
+    }
+}
+
+impl Drop for PendingSubscribeDropPanic {
+    fn drop(&mut self) {
+        let bus = self.0.bus.lock().unwrap().as_ref().unwrap().clone();
+        let result = match Box::pin(bus.shutdown(ShutdownMode::Immediate))
+            .as_mut()
+            .poll(&mut Context::from_waker(std::task::Waker::noop()))
+        {
+            Poll::Ready(result) => result.map(|_| ()),
+            Poll::Pending => panic!("same-bus shutdown should be rejected immediately"),
+        };
+        *self.0.reentry.lock().unwrap() = Some(result);
+        self.0.drops.fetch_add(1, Ordering::SeqCst);
+        panic!("subscribe future destructor panic");
+    }
+}
+
+struct SubscribeDropPanicSpi {
+    inner: FakeAsyncEventBusSpi,
+    calls: AtomicUsize,
+    probe: Arc<SubscribeCancelProbe>,
+}
+
+struct CloseCountReceiver {
+    inner: Box<dyn AsyncEventSubscriptionSpi>,
+    close_calls: Arc<AtomicUsize>,
+}
+
+impl AsyncEventSubscriptionSpi for CloseCountReceiver {
+    fn receive<'a>(&'a mut self, timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
+        self.inner.receive(timeout)
+    }
+    fn settle<'a>(
+        &'a mut self,
+        token: &SettlementToken,
+        disposition: DeliveryDisposition,
+    ) -> SpiFuture<'a, Result<(), SpiError>> {
+        self.inner.settle(token, disposition)
+    }
+    fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), SpiError>> {
+        self.close_calls.fetch_add(1, Ordering::SeqCst);
+        self.inner.close()
+    }
+}
+
+struct ReadySubscribeDropPanic<'a> {
+    inner: SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>>,
+    drops: Arc<AtomicUsize>,
+}
+
+impl Future for ReadySubscribeDropPanic<'_> {
+    type Output = Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.inner.as_mut().poll(cx)
+    }
+}
+
+impl Drop for ReadySubscribeDropPanic<'_> {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::SeqCst);
+        panic!("ready subscribe future destructor panic");
+    }
+}
+
+struct ReadyDropSubscribeSpi {
+    inner: FakeAsyncEventBusSpi,
+    drops: Arc<AtomicUsize>,
+    close_calls: Arc<AtomicUsize>,
+}
+
+impl AsyncEventBusSpi for ReadyDropSubscribeSpi {
+    fn capabilities(&self) -> qubit_event_bus::spi::EventBusCapabilities {
+        self.inner.capabilities()
+    }
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        self.inner.publish(message)
+    }
+    fn subscribe<'a>(
+        &'a self,
+        request: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+        let inner = self.inner.clone();
+        let close_calls = self.close_calls.clone();
+        let future = Box::pin(async move {
+            let receiver = inner.subscribe(request).await?;
+            Ok(Box::new(CloseCountReceiver {
+                inner: receiver,
+                close_calls,
+            }) as Box<dyn AsyncEventSubscriptionSpi>)
+        });
+        Box::pin(ReadySubscribeDropPanic {
+            inner: future,
+            drops: self.drops.clone(),
+        })
+    }
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        self.inner.shutdown(mode)
+    }
+}
+
+impl AsyncEventBusSpi for SubscribeDropPanicSpi {
+    fn capabilities(&self) -> qubit_event_bus::spi::EventBusCapabilities {
+        self.inner.capabilities()
+    }
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        self.inner.publish(message)
+    }
+    fn subscribe<'a>(
+        &'a self,
+        request: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            Box::pin(PendingSubscribeDropPanic(self.probe.clone()))
+        } else {
+            self.inner.subscribe(request)
+        }
+    }
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        self.inner.shutdown(mode)
+    }
+}
+
+#[test]
+fn test_async_subscribe_drop_panic_preserves_registration_and_result() {
+    let _hook = PanicHookGuard::suppress();
+    let probe = Arc::new(SubscribeCancelProbe {
+        bus: Mutex::new(None),
+        reentry: Mutex::new(None),
+        drops: Arc::new(AtomicUsize::new(0)),
+    });
+    let spi = Arc::new(SubscribeDropPanicSpi {
+        inner: FakeAsyncEventBusSpi::new(),
+        calls: AtomicUsize::new(0),
+        probe: probe.clone(),
+    });
+    let limit = NonZeroUsize::new(1).unwrap();
+    let config = EventBusFacadeConfig::new()
+        .with_delivery_scheduling(DeliverySchedulingConfig::new(limit, limit, limit, limit).unwrap());
+    let bus = AsyncEventBus::with_config(ProviderId::new("subscribe-drop-panic").unwrap(), spi, config).unwrap();
+    *probe.bus.lock().unwrap() = Some(bus.clone());
+
+    let request = SubscribeRequest::new("cancelled", Topic::<u32>::new("subscribe-cancelled").unwrap()).unwrap();
+    let mut subscribe = Box::pin(bus.subscribe(request));
+    assert!(matches!(
+        subscribe
+            .as_mut()
+            .poll(&mut Context::from_waker(std::task::Waker::noop())),
+        Poll::Pending
+    ));
+    let cancelled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(subscribe)));
+    assert!(cancelled.is_ok(), "cancel cleanup panic must not escape drop");
+    assert_eq!(probe.drops.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        probe.reentry.lock().unwrap().take().unwrap(),
+        Err(ShutdownError::Lifecycle(LifecycleError::WouldDeadlock {
+            operation: "shutdown"
+        }))
+    ));
+
+    let replacement =
+        block_on(bus.subscribe(
+            SubscribeRequest::new("replacement", Topic::<u32>::new("subscribe-replacement").unwrap()).unwrap(),
+        ))
+        .expect("cancelled registration and in-flight count are released");
+    drop(replacement);
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("bus remains usable and shuts down");
+}
+
+#[test]
+fn test_async_subscribe_ready_result_survives_future_drop_panic() {
+    let drops = Arc::new(AtomicUsize::new(0));
+    let close_calls = Arc::new(AtomicUsize::new(0));
+    let spi = Arc::new(ReadyDropSubscribeSpi {
+        inner: FakeAsyncEventBusSpi::new(),
+        drops: drops.clone(),
+        close_calls: close_calls.clone(),
+    });
+    let bus = AsyncEventBus::from_spi(ProviderId::new("subscribe-ready-drop-panic").unwrap(), spi).unwrap();
+    let subscription =
+        block_on(bus.subscribe(SubscribeRequest::new("ready", Topic::<u32>::new("subscribe-ready").unwrap()).unwrap()))
+            .expect("ready receiver must be retained across destructor panic");
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown closes admitted receiver");
+    assert_eq!(close_calls.load(Ordering::SeqCst), 1);
+    drop(subscription);
 }
 
 struct AcceptThenDropPanic(Arc<AtomicUsize>);

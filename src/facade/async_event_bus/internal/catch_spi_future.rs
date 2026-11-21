@@ -19,7 +19,6 @@ use super::cleanup_future_guard::CleanupFutureGuard;
 use crate::error::SpiError;
 use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::ProviderId;
-use crate::spi::ReceiveOutcome;
 use crate::spi::SpiFuture;
 use crate::spi::panic_boundary::provider_panic;
 
@@ -78,27 +77,25 @@ pub(in crate::facade) async fn catch_spi_future<T, F: Future<Output = Result<T, 
 ///
 /// # Returns
 /// A future preserving the receive result while isolating destructor panics.
-pub(in crate::facade) fn catch_receive_spi_future<'a>(
-    future: SpiFuture<'a, Result<ReceiveOutcome, SpiError>>,
+pub(in crate::facade) fn catch_spi_future_preserving_result<'a, T: 'a>(
+    future: SpiFuture<'a, Result<T, SpiError>>,
     provider_id: &'a ProviderId,
+    operation: &'static str,
     resource: Option<&'a str>,
-) -> impl Future<Output = Result<ReceiveOutcome, SpiError>> + Send + 'a {
+) -> impl Future<Output = Result<T, SpiError>> + Send + 'a {
     let mut guard = CleanupFutureGuard { future: Some(future) };
     async move {
         let result = catch_spi_future(
-            guard.future.as_mut().expect("receive future is present").as_mut(),
+            guard.future.as_mut().expect("SPI future is present").as_mut(),
             provider_id,
-            "receive",
+            operation,
             resource,
         )
         .await;
-        match guard.drop_future() {
-            Ok(()) => result,
-            Err(payload) => {
-                dispose_panic_payload(payload);
-                result
-            }
+        if let Err(payload) = guard.drop_future() {
+            dispose_panic_payload(payload);
         }
+        result
     }
 }
 
@@ -184,8 +181,8 @@ mod tests {
     use std::task::Waker;
 
     use super::catch_cleanup_spi_future;
-    use super::catch_receive_spi_future;
     use super::catch_spi_future;
+    use super::catch_spi_future_preserving_result;
     use crate::SpiError;
     use crate::model::ProviderId;
     use crate::spi::ReceiveOutcome;
@@ -321,9 +318,10 @@ mod tests {
 
         let provider_id = ProviderId::new("receive-drop-test").expect("provider ID");
         let drops = Arc::new(AtomicUsize::new(0));
-        let wrapped = catch_receive_spi_future(
+        let wrapped = catch_spi_future_preserving_result(
             Box::pin(ReadyReceiveDropPanic { drops: drops.clone() }),
             &provider_id,
+            "receive",
             Some("receiver"),
         );
         let result = futures_lite_block_on(wrapped).expect("secondary destructor panic is isolated");
@@ -331,14 +329,57 @@ mod tests {
         assert_eq!(drops.load(Ordering::SeqCst), 1);
 
         let cancelled_drops = Arc::new(AtomicUsize::new(0));
-        let wrapped = catch_receive_spi_future(
+        let wrapped = catch_spi_future_preserving_result(
             Box::pin(PendingReceiveDropPanic(cancelled_drops.clone())),
             &provider_id,
+            "receive",
             None,
         );
         let cancellation = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(wrapped)));
         assert!(cancellation.is_ok(), "cancellation cleanup panic must not escape Drop");
         assert_eq!(cancelled_drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_preserving_future_keeps_ready_spi_error_over_drop_panic() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+
+        let provider_id = ProviderId::new("subscribe-drop-test").expect("provider ID");
+        let drops = Arc::new(AtomicUsize::new(0));
+        let source = std::io::Error::other("original subscribe failure");
+        let original = SpiError::Operation {
+            provider_id: "subscribe-drop-test".into(),
+            operation: "subscribe",
+            resource: Some("subscriber".into()),
+            kind: "original_subscribe_failure",
+            retryable: Some(false),
+            source: Box::new(source),
+        };
+        let wrapped = catch_spi_future_preserving_result(
+            Box::pin(DropPanicFuture {
+                result: Some(Err(original)),
+                drops: drops.clone(),
+            }),
+            &provider_id,
+            "subscribe",
+            Some("subscriber"),
+        );
+        let result = futures_lite_block_on(wrapped).expect_err("original provider error wins");
+        assert!(matches!(
+            result,
+            SpiError::Operation {
+                operation: "subscribe",
+                kind: "original_subscribe_failure",
+                ..
+            }
+        ));
+        assert_eq!(
+            result.source().expect("provider source").to_string(),
+            "original subscribe failure"
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
     }
 
     struct PendingReceiveDropPanic(std::sync::Arc<std::sync::atomic::AtomicUsize>);
