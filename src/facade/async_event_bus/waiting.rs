@@ -33,6 +33,9 @@ use crate::facade::async_event_bus::SignalRegistration;
 ///
 /// # Returns
 /// `Idle` when `ready` succeeds, otherwise `TimedOut` when the deadline ends.
+/// An already-ready predicate returns `Idle` without registering a timer.
+/// A zero timeout checks the predicate once and returns `TimedOut` when it is
+/// still false, also without registering a timer.
 ///
 /// # Errors
 /// Returns a lifecycle error if creating or polling the timer fails.
@@ -42,6 +45,12 @@ pub(in crate::facade) async fn wait_until(
     timeout: Option<Duration>,
     mut ready: impl FnMut() -> bool,
 ) -> Result<WaitOutcome, LifecycleError> {
+    if ready() {
+        return Ok(WaitOutcome::Idle);
+    }
+    if timeout == Some(Duration::ZERO) {
+        return Ok(WaitOutcome::TimedOut);
+    }
     let mut deadline = match timeout {
         Some(duration) => Some(timer.after(duration)?),
         None => None,

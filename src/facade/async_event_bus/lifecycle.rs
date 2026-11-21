@@ -84,10 +84,12 @@ impl AsyncEventBus {
     ///
     /// # Returns
     /// `Idle` when no matching delivery is active, or `TimedOut` when the
-    /// timeout expires.
+    /// timeout expires. A zero timeout checks once without registering a
+    /// timer; an already idle topic returns immediately for any timeout.
     ///
     /// # Errors
-    /// Returns a lifecycle error if the timer fails or waiting would deadlock.
+    /// Returns a lifecycle error if a timer fails when a wait is needed, or
+    /// waiting would deadlock.
     pub async fn wait_for_received_deliveries<T: 'static>(
         &self,
         topic: &Topic<T>,

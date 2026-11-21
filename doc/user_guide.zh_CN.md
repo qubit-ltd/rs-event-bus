@@ -1291,6 +1291,8 @@ let bus = AsyncEventBusRegistry::with_local()?.create(&config).await?;
 
 检查目标回执时读取 `DestinationAdmission::rejection_kind()`。`None` 表示 provider 未分类该拒绝；保留原 status reason 用于诊断，不要解析文本推断类别。内置 Redis provider 返回 opaque acknowledgement，不提供 local 类别或快照。
 
+对于 local provider，`SubscriptionClosed` 和 `rejected_subscription_closed` 同时统计两种逐目标拒绝：目标订阅原本已关闭，以及完成路由后 provider 开始关闭并停止接纳该目标。如果 provider 在路由前已经关闭，发布会返回整次调用级别的 `provider_closed` 错误；此时没有逐目标回执，也不会增加该计数。
+
 ## 选择和接入第三方实现
 
 按照消息能够传递的范围，事件总线大致可以分为三类：

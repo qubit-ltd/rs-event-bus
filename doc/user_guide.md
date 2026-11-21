@@ -1291,6 +1291,8 @@ Synchronous local subscriptions start one receiver thread each. In the recorded 
 
 For destination admissions, inspect `DestinationAdmission::rejection_kind()`. A `None` value means the provider did not classify that rejection; retain the original status reason for diagnostics instead of parsing it. The built-in Redis provider returns opaque acknowledgements and does not expose local categories or snapshots.
 
+For local providers, `SubscriptionClosed` and `rejected_subscription_closed` cover both a destination whose subscription was already closed and a provider that began closing after routing and stopped admitting that destination. If the provider was already closed before routing, the publish returns the call-level `provider_closed` error instead; it produces no destination receipt and does not increment this counter.
+
 ## Choose and connect a third-party implementation
 
 By how far a message can travel, an event bus falls into three kinds:

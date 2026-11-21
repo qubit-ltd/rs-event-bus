@@ -18,7 +18,8 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum AdmissionRejectionKind {
-    /// The subscription was closed when admission was attempted.
+    /// The subscription was closed, or the provider was closing and stopped
+    /// admitting this destination.
     SubscriptionClosed,
     /// The subscription queue reached its pending and in-flight limit.
     SubscriptionCapacity,

@@ -25,6 +25,11 @@ use std::time::SystemTime;
 use qubit_clock::ManualMonotonicClock;
 use qubit_clock::ManualTimer;
 use qubit_clock::MonotonicClock;
+use qubit_clock::MonotonicInstant;
+use qubit_clock::TimeError;
+use qubit_clock::Timer;
+use qubit_clock::TimerFuture;
+use qubit_clock::TimerUnavailableError;
 use qubit_event_bus::CheckedPublishError;
 use qubit_event_bus::CodecError;
 use qubit_event_bus::ConfigurationError;
@@ -104,6 +109,50 @@ use qubit_retry::RetryPolicy;
 
 use crate::support::fake_spi::FakeAsyncEventBusSpi;
 use crate::support::manual_async::block_on;
+
+struct FailingRegistrationTimer {
+    clock: ManualMonotonicClock,
+    registrations: AtomicUsize,
+}
+
+impl FailingRegistrationTimer {
+    fn new() -> Self {
+        Self {
+            clock: ManualMonotonicClock::new(),
+            registrations: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl MonotonicClock for FailingRegistrationTimer {
+    fn domain(&self) -> qubit_clock::ClockDomain {
+        self.clock.domain()
+    }
+
+    fn now(&self) -> MonotonicInstant {
+        self.clock.now()
+    }
+
+    fn new_timer(&self) -> Arc<dyn Timer> {
+        self.clock.new_timer()
+    }
+}
+
+impl Timer for FailingRegistrationTimer {
+    fn clock(&self) -> &dyn MonotonicClock {
+        self
+    }
+
+    fn at(&self, _deadline: MonotonicInstant) -> Result<TimerFuture, TimeError> {
+        self.registrations.fetch_add(1, Ordering::SeqCst);
+        Err(TimeError::TimerUnavailable {
+            source: TimerUnavailableError::BackendUnavailable {
+                backend: "test",
+                source: Box::new(std::io::Error::other("registration failed")),
+            },
+        })
+    }
+}
 
 /// Creates the common typed topic used by asynchronous facade contracts.
 fn topic() -> Topic<u32> {
@@ -1945,6 +1994,84 @@ fn test_injected_manual_timer_wakes_idle_timeout_and_cleans_up_waiter() {
         }
         let _ = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
         runner.join().unwrap().unwrap();
+    });
+}
+
+#[test]
+fn test_wait_for_received_deliveries_only_registers_timer_when_needed() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let timer = Arc::new(FailingRegistrationTimer::new());
+    let bus = AsyncEventBus::with_timer(ProviderId::new("fake").unwrap(), spi.clone(), timer.clone())
+        .expect("valid provider capabilities");
+    let delivered_topic = topic();
+
+    block_on(async {
+        for timeout in [Some(Duration::from_secs(1)), Some(Duration::ZERO)] {
+            assert_eq!(
+                bus.wait_for_received_deliveries(&delivered_topic, timeout)
+                    .await
+                    .unwrap(),
+                WaitOutcome::Idle,
+            );
+        }
+        assert_eq!(timer.registrations.load(Ordering::SeqCst), 0);
+
+        let subscription = bus
+            .subscribe(SubscribeRequest::new("failing-timer", delivered_topic.clone()).unwrap())
+            .await
+            .unwrap();
+        spi.enqueue(crate::support::fake_spi::inbound_message(None));
+        let started = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        let started_by_handler = started.clone();
+        let release_by_handler = release.clone();
+        let mut runner = Box::pin(subscription.run(move |_| {
+            let started = started_by_handler.clone();
+            let release = release_by_handler.clone();
+            async move {
+                started.store(true, Ordering::Release);
+                std::future::poll_fn(move |_| {
+                    if release.load(Ordering::Acquire) {
+                        Poll::Ready(Ok(()))
+                    } else {
+                        Poll::Pending
+                    }
+                })
+                .await
+            }
+        }));
+        let mut context = Context::from_waker(Waker::noop());
+        for _ in 0..16 {
+            assert!(runner.as_mut().poll(&mut context).is_pending());
+            if started.load(Ordering::Acquire) {
+                break;
+            }
+        }
+        assert!(started.load(Ordering::Acquire), "handler must hold a received delivery");
+
+        assert_eq!(
+            bus.wait_for_received_deliveries(&delivered_topic, Some(Duration::ZERO))
+                .await
+                .unwrap(),
+            WaitOutcome::TimedOut,
+        );
+        assert_eq!(timer.registrations.load(Ordering::SeqCst), 0);
+
+        assert!(matches!(
+            bus.wait_for_received_deliveries(&delivered_topic, Some(Duration::from_secs(1)))
+                .await,
+            Err(LifecycleError::Timer(TimeError::TimerUnavailable { .. })),
+        ));
+        assert_eq!(timer.registrations.load(Ordering::SeqCst), 1);
+
+        release.store(true, Ordering::Release);
+        for _ in 0..16 {
+            if runner.as_mut().poll(&mut context).is_ready() {
+                break;
+            }
+        }
+        drop(runner);
+        let _ = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
     });
 }
 

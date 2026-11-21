@@ -30,7 +30,10 @@ pub struct LocalCapacitySnapshot {
     pub max_total_outstanding_weight_bytes: Option<NonZeroUsize>,
     /// Pending plus in-flight capacity for each individual subscription.
     pub queue_capacity: usize,
-    /// Targets rejected because their subscription was closed.
+    /// Targets rejected because their subscription was closed or the provider
+    /// began closing after routing and stopped admitting them. A provider
+    /// already closed before routing returns a call-level error instead and
+    /// does not increment this target counter.
     pub rejected_subscription_closed: u64,
     /// Targets rejected because their subscription queue was full.
     pub rejected_subscription_capacity: u64,
