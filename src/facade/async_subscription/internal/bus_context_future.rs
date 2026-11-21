@@ -29,7 +29,10 @@ pub(in crate::facade) struct BusContextFuture<F: Future> {
     /// Identity of the facade associated with the wrapped operation.
     bus_key: usize,
     /// Caller-owned future pinned for the wrapper's lifetime.
-    future: Pin<Box<F>>,
+    future: Option<Pin<Box<F>>>,
+    /// Whether destroying the wrapped future should also carry this bus
+    /// identity.
+    scope_drop: bool,
 }
 
 impl<F: Future> BusContextFuture<F> {
@@ -47,7 +50,26 @@ impl<F: Future> BusContextFuture<F> {
     pub(in crate::facade) fn new(bus_key: usize, future: F) -> Self {
         Self {
             bus_key,
-            future: Box::pin(future),
+            future: Some(Box::pin(future)),
+            scope_drop: false,
+        }
+    }
+
+    /// Pins a cleanup future whose cancellation and completion drops carry the
+    /// bus identity.
+    ///
+    /// # Parameters
+    /// - `bus_key`: facade identity used by reentrant-operation detection.
+    /// - `future`: cleanup operation whose polls and destruction are scoped.
+    ///
+    /// # Returns
+    /// A future wrapper that scopes the identity to polls and destruction.
+    #[must_use = "futures do nothing unless they are polled"]
+    pub(in crate::facade) fn new_with_drop_context(bus_key: usize, future: F) -> Self {
+        Self {
+            bus_key,
+            future: Some(Box::pin(future)),
+            scope_drop: true,
         }
     }
 }
@@ -67,10 +89,39 @@ impl<F: Future> Future for BusContextFuture<F> {
     /// The wrapped future's pending or ready state.
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        ACTIVE_BUS_POLLS.with(|active| active.borrow_mut().push(this.bus_key));
-        let _scope = bus_poll_scope::BusPollScope;
-        this.future.as_mut().poll(context)
+        let _scope = enter_bus_scope(this.bus_key);
+        this.future
+            .as_mut()
+            .expect("future is present while polled")
+            .as_mut()
+            .poll(context)
     }
+}
+
+impl<F: Future> Drop for BusContextFuture<F> {
+    /// Destroys the wrapped future, restoring its bus identity for cleanup
+    /// paths.
+    fn drop(&mut self) {
+        let future = self.future.take();
+        if self.scope_drop {
+            let _scope = enter_bus_scope(self.bus_key);
+            drop(future);
+        } else {
+            drop(future);
+        }
+    }
+}
+
+/// Pushes a bus identity and returns the guard that removes it.
+///
+/// # Parameters
+/// - `bus_key`: facade identity to add to the current thread's scope stack.
+///
+/// # Returns
+/// A guard that removes the identity when dropped.
+fn enter_bus_scope(bus_key: usize) -> bus_poll_scope::BusPollScope {
+    ACTIVE_BUS_POLLS.with(|active| active.borrow_mut().push(bus_key));
+    bus_poll_scope::BusPollScope
 }
 
 /// Reports whether the current thread is polling an operation for this bus.
@@ -87,4 +138,52 @@ impl<F: Future> Future for BusContextFuture<F> {
 #[inline]
 pub(in crate::facade) fn is_current_bus_poll(bus_key: usize) -> bool {
     ACTIVE_BUS_POLLS.with(|active| active.borrow().contains(&bus_key))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::task::Context;
+    use std::task::Poll;
+
+    use super::BusContextFuture;
+    use super::is_current_bus_poll;
+
+    struct CheckDropScope(Arc<std::sync::atomic::AtomicBool>, usize);
+
+    impl Future for CheckDropScope {
+        type Output = ();
+
+        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+            Poll::Pending
+        }
+    }
+
+    impl Drop for CheckDropScope {
+        fn drop(&mut self) {
+            self.0
+                .store(is_current_bus_poll(self.1), std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn test_cleanup_future_drop_carries_bus_scope() {
+        let observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let bus_key = 17;
+        let mut future = Box::pin(BusContextFuture::new_with_drop_context(
+            bus_key,
+            CheckDropScope(observed.clone(), bus_key),
+        ));
+        assert!(
+            future
+                .as_mut()
+                .poll(&mut Context::from_waker(std::task::Waker::noop()))
+                .is_pending()
+        );
+        drop(future);
+        assert!(observed.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!is_current_bus_poll(bus_key));
+    }
 }

@@ -27,7 +27,7 @@ use crate::WaitOutcome;
 use crate::facade::async_event_bus::BusState;
 use crate::facade::async_event_bus::ShutdownLeaderGuard;
 use crate::facade::async_event_bus::ShutdownWait;
-use crate::facade::async_event_bus::catch_spi_future;
+use crate::facade::async_event_bus::catch_cleanup_spi_future;
 use crate::facade::async_event_bus::waiting::await_shutdown_or_immediate;
 use crate::facade::async_event_bus::waiting::await_until_deadline;
 use crate::facade::async_event_bus::waiting::wait_until;
@@ -141,6 +141,11 @@ impl AsyncEventBus {
     /// for this bus from either cleanup call returns
     /// [`LifecycleError::WouldDeadlock`]. Providers should let application
     /// lifecycle tasks stop the bus after the cleanup callback returns.
+    /// Cleanup future destruction carries this protection as well. A panic
+    /// while destroying a completed cleanup future is returned as a structured
+    /// `provider_panicked` close or shutdown error; close retains the receiver
+    /// for retry and shutdown does not publish its report until cleanup
+    /// succeeds.
     ///
     /// A pending future must keep being polled to drive this attempt. Dropping
     /// it cancels that attempt, and a later call can retry cleanup that has
@@ -415,11 +420,11 @@ impl AsyncEventBus {
                     ShutdownMode::Graceful { timeout: remaining }
                 }
             };
-            let shutdown = BusContextFuture::new(Arc::as_ptr(&self.inner) as usize, async {
+            let shutdown = BusContextFuture::new_with_drop_context(Arc::as_ptr(&self.inner) as usize, async {
                 let shutdown = catch_spi_call(self.inner.provider_id.as_str(), "shutdown", None, || {
                     self.inner.spi.shutdown(provider_mode)
                 })?;
-                catch_spi_future(shutdown, &self.inner.provider_id, "shutdown", None).await
+                catch_cleanup_spi_future(shutdown, &self.inner.provider_id, "shutdown", None).await
             });
             if requested_mode == ShutdownMode::Immediate {
                 let Some(outcome) = await_until_deadline(shutdown, deadline.as_mut()).await? else {

@@ -24,6 +24,7 @@ use std::time::Duration;
 use qubit_clock::ManualMonotonicClock;
 use qubit_clock::MonotonicClock;
 use qubit_event_bus::AsyncEventBus;
+use qubit_event_bus::LifecycleError;
 use qubit_event_bus::error::ShutdownError;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::model::ProviderId;
@@ -191,6 +192,127 @@ fn test_immediate_shutdown_escalates_active_graceful_provider_call() {
     };
     assert_eq!(immediate_report.outcome, SpiShutdownOutcome::Complete);
     assert_eq!(immediate_report.known_abandoned_deliveries, 0);
+}
+
+struct DropReenterSpi {
+    bus: Arc<Mutex<Option<AsyncEventBus>>>,
+    rejected: Arc<std::sync::atomic::AtomicBool>,
+    capabilities: EventBusCapabilities,
+}
+
+impl AsyncEventBusSpi for DropReenterSpi {
+    fn capabilities(&self) -> EventBusCapabilities {
+        self.capabilities
+    }
+    fn publish<'a>(&'a self, _: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        Box::pin(async { Ok(PublishAcknowledgement::DroppedByInterceptor) })
+    }
+    fn subscribe<'a>(
+        &'a self,
+        _: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+        Box::pin(async {
+            Err(SpiError::Operation {
+                provider_id: "drop-reenter".into(),
+                operation: "subscribe",
+                resource: None,
+                kind: "unused",
+                retryable: Some(false),
+                source: Box::new(Error::other("unused")),
+            })
+        })
+    }
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<SpiShutdownOutcome, SpiError>> {
+        if matches!(mode, ShutdownMode::Graceful { .. }) {
+            Box::pin(ReenterOnDrop {
+                bus: self.bus.clone(),
+                rejected: self.rejected.clone(),
+            })
+        } else {
+            Box::pin(async { Ok(SpiShutdownOutcome::Complete) })
+        }
+    }
+}
+
+struct ReenterOnDrop {
+    bus: Arc<Mutex<Option<AsyncEventBus>>>,
+    rejected: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Future for ReenterOnDrop {
+    type Output = Result<SpiShutdownOutcome, SpiError>;
+    fn poll(self: std::pin::Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        Poll::Pending
+    }
+}
+
+impl Drop for ReenterOnDrop {
+    fn drop(&mut self) {
+        let bus = self.bus.lock().expect("bus slot").as_ref().cloned();
+        let Some(bus) = bus else { return };
+        let mut nested = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+        let result = nested.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+        self.rejected.store(
+            matches!(
+                result,
+                Poll::Ready(Err(qubit_event_bus::error::ShutdownError::Lifecycle(
+                    LifecycleError::WouldDeadlock { operation: "shutdown" }
+                )))
+            ),
+            Ordering::SeqCst,
+        );
+    }
+}
+
+#[test]
+fn test_graceful_cancelled_spi_future_drop_rejects_same_bus_shutdown() {
+    let rejected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let slot = Arc::new(Mutex::new(None));
+    let provider = Arc::new(DropReenterSpi {
+        bus: slot.clone(),
+        rejected: rejected.clone(),
+        capabilities: EventBusCapabilities::new(
+            PayloadModes::Native,
+            SettlementCapabilities::AcceptRetryReject,
+            OrderingCapability::None,
+            DelayedDeliveryCapability::None,
+            DurabilityCapability::Ephemeral,
+            SubscriptionModes::EPHEMERAL,
+            false,
+            ReplayCapability::None,
+            PublishGuarantee::Accepted,
+            PublishVisibility::Opaque,
+        ),
+    });
+    let bus = AsyncEventBus::from_spi(ProviderId::new("drop-reenter").expect("provider ID"), provider).expect("facade");
+    *slot.lock().expect("bus slot") = Some(bus.clone());
+
+    let mut graceful = Box::pin(bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(30),
+    }));
+    assert!(
+        graceful
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    drop(graceful);
+    assert!(
+        rejected.load(Ordering::SeqCst),
+        "same-bus shutdown from cancelled future Drop is rejected"
+    );
+
+    assert!(block_on_shutdown(bus.shutdown(ShutdownMode::Immediate)).is_ok());
+}
+
+fn block_on_shutdown<F: Future>(future: F) -> F::Output {
+    let mut future = Box::pin(future);
+    loop {
+        match future.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready(output) => return output,
+            Poll::Pending => std::thread::yield_now(),
+        }
+    }
 }
 
 #[test]

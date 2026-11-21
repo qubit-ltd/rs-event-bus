@@ -16,7 +16,9 @@ use std::task::Context;
 use std::task::Poll;
 
 use crate::error::SpiError;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::ProviderId;
+use crate::spi::SpiFuture;
 use crate::spi::panic_boundary::provider_panic;
 
 /// Future wrapper that converts polling panics into an output value.
@@ -60,6 +62,44 @@ pub(in crate::facade) async fn catch_spi_future<T, F: Future<Output = Result<T, 
         .map_err(|payload| provider_panic(provider_id.as_str(), operation, resource, payload))?
 }
 
+/// Awaits a cleanup future, then captures a panic from destroying its completed
+/// state.
+///
+/// # Type Parameters
+/// - `T`: successful cleanup output.
+///
+/// # Parameters
+/// - `future`: pinned provider future retained until its terminal result is
+///   known.
+/// - `provider_id`: provider identity attached to a destructor panic.
+/// - `operation`: stable cleanup operation name.
+/// - `resource`: optional subscription or topic context.
+///
+/// # Returns
+/// The provider result, or a structured error for a terminal destructor panic.
+///
+/// # Errors
+/// Preserves a provider error over a secondary destructor panic; otherwise
+/// converts that panic to `provider_panicked`.
+pub(in crate::facade) async fn catch_cleanup_spi_future<T>(
+    mut future: SpiFuture<'_, Result<T, SpiError>>,
+    provider_id: &ProviderId,
+    operation: &'static str,
+    resource: Option<&str>,
+) -> Result<T, SpiError> {
+    let result = catch_spi_future(future.as_mut(), provider_id, operation, resource).await;
+    match catch_unwind(AssertUnwindSafe(|| drop(future))) {
+        Ok(()) => result,
+        Err(payload) => match result {
+            Err(error) => {
+                dispose_panic_payload(payload);
+                Err(error)
+            }
+            Ok(_) => Err(provider_panic(provider_id.as_str(), operation, resource, payload)),
+        },
+    }
+}
+
 impl<F: Future> Future for CatchSpiFuture<F> {
     /// Provider output or the captured panic payload.
     type Output = Result<F::Output, Box<dyn Any + Send>>;
@@ -86,11 +126,13 @@ impl<F: Future> Future for CatchSpiFuture<F> {
 mod tests {
     use std::future::Future;
     use std::panic::panic_any;
+    use std::pin::Pin;
     use std::pin::pin;
     use std::task::Context;
     use std::task::Poll;
     use std::task::Waker;
 
+    use super::catch_cleanup_spi_future;
     use super::catch_spi_future;
     use crate::SpiError;
     use crate::model::ProviderId;
@@ -121,5 +163,90 @@ mod tests {
             provider_id, operation: "publish", resource: Some(resource),
             kind: "provider_panicked", retryable: Some(false), ..
         }) if provider_id.as_ref() == "async-panic-test" && resource.as_ref() == "topic"));
+    }
+
+    struct DropPanicFuture {
+        result: Option<Result<(), SpiError>>,
+        drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Future for DropPanicFuture {
+        type Output = Result<(), SpiError>;
+
+        fn poll(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+            Poll::Ready(self.result.take().expect("polled once"))
+        }
+    }
+
+    impl Drop for DropPanicFuture {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            panic!("cleanup future drop panic");
+        }
+    }
+
+    #[test]
+    fn test_cleanup_future_drop_panic_is_classified_and_spi_error_wins() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+
+        let provider_id = ProviderId::new("cleanup-drop-test").expect("provider ID");
+        let drops = std::sync::Arc::new(AtomicUsize::new(0));
+        let success = DropPanicFuture {
+            result: Some(Ok(())),
+            drops: drops.clone(),
+        };
+        let result = futures_lite_block_on(catch_cleanup_spi_future(
+            Box::pin(success),
+            &provider_id,
+            "close",
+            Some("receiver"),
+        ));
+        assert!(matches!(
+            result,
+            Err(SpiError::Operation {
+                operation: "close",
+                kind: "provider_panicked",
+                ..
+            })
+        ));
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+
+        let original = SpiError::Operation {
+            provider_id: "cleanup-drop-test".into(),
+            operation: "shutdown",
+            resource: None,
+            kind: "original_failure",
+            retryable: Some(false),
+            source: Box::new(std::io::Error::other("original failure")),
+        };
+        let failed = DropPanicFuture {
+            result: Some(Err(original)),
+            drops: drops.clone(),
+        };
+        let result = futures_lite_block_on(catch_cleanup_spi_future(
+            Box::pin(failed),
+            &provider_id,
+            "shutdown",
+            None,
+        ));
+        assert!(matches!(
+            result,
+            Err(SpiError::Operation {
+                operation: "shutdown",
+                kind: "original_failure",
+                ..
+            })
+        ));
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+    }
+
+    fn futures_lite_block_on<F: Future>(future: F) -> F::Output {
+        let mut future = Box::pin(future);
+        let mut context = Context::from_waker(std::task::Waker::noop());
+        match Future::poll(future.as_mut(), &mut context) {
+            Poll::Ready(output) => output,
+            Poll::Pending => panic!("test future should complete in one poll"),
+        }
     }
 }

@@ -16,7 +16,7 @@ use crate::Diagnostic;
 use crate::error::LifecycleError;
 use crate::error::ReceiveError;
 use crate::error::SubscriptionCloseFailure;
-use crate::facade::async_event_bus::catch_spi_future;
+use crate::facade::async_event_bus::catch_cleanup_spi_future;
 use crate::facade::async_subscription::AsyncSession;
 use crate::facade::async_subscription::BusContextFuture;
 use crate::facade::async_subscription::BusState;
@@ -90,14 +90,14 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         };
         let bus_key = Arc::as_ptr(&self.inner) as usize;
         let close_result = if let Some(receiver) = self.receiver.as_mut() {
-            BusContextFuture::new(bus_key, async {
+            BusContextFuture::new_with_drop_context(bus_key, async {
                 let close = catch_spi_call(
                     self.inner.provider_id.as_str(),
                     "close",
                     Some(self.subscriber_id.as_str()),
                     || receiver.close(),
                 )?;
-                catch_spi_future(
+                catch_cleanup_spi_future(
                     close,
                     &self.inner.provider_id,
                     "close",

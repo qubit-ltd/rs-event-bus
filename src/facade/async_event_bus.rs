@@ -21,6 +21,7 @@ pub(in crate::facade) use internal::PublishCompletionGuard;
 pub(in crate::facade::async_event_bus) use internal::ShutdownLeaderGuard;
 pub(in crate::facade::async_event_bus) use internal::ShutdownWait;
 pub(super) use internal::SignalRegistration;
+pub(in crate::facade) use internal::catch_cleanup_spi_future_fn as catch_cleanup_spi_future;
 pub(in crate::facade) use internal::catch_spi_future_fn as catch_spi_future;
 
 // Owns shared async provider and lifecycle state.

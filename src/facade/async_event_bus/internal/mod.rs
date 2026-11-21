@@ -34,6 +34,7 @@ pub(in crate::facade) use async_signal::AsyncSignal;
 pub(in crate::facade) use async_subscribe_guard::AsyncSubscribeGuard;
 pub(in crate::facade) use async_tracker::AsyncTracker;
 pub(in crate::facade) use bus_state::BusState;
+pub(in crate::facade) use catch_spi_future::catch_cleanup_spi_future as catch_cleanup_spi_future_fn;
 pub(in crate::facade) use catch_spi_future::catch_spi_future as catch_spi_future_fn;
 pub(in crate::facade) use publish_completion_guard::PublishCompletionGuard;
 pub(super) use shutdown_leader_guard::ShutdownLeaderGuard;

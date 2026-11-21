@@ -27,6 +27,7 @@ use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::Diagnostic;
 use qubit_event_bus::SpiError;
 use qubit_event_bus::error::PublishError;
+use qubit_event_bus::error::ShutdownError;
 use qubit_event_bus::facade::EventBusFacadeConfig;
 use qubit_event_bus::model::Delivery;
 use qubit_event_bus::model::FailureDirective;
@@ -39,6 +40,7 @@ use qubit_event_bus::spi::AsyncEventBusSpi;
 use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
 use qubit_event_bus::spi::DeliveryDisposition;
 use qubit_event_bus::spi::OutboundMessage;
+use qubit_event_bus::spi::ReceiveOutcome;
 use qubit_event_bus::spi::SettlementToken;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
@@ -55,6 +57,7 @@ struct DropPanicSpi {
     inner: FakeAsyncEventBusSpi,
     drops: Arc<AtomicUsize>,
     pending: bool,
+    shutdown_drop_panic: bool,
 }
 
 impl AsyncEventBusSpi for DropPanicSpi {
@@ -78,6 +81,11 @@ impl AsyncEventBusSpi for DropPanicSpi {
     }
 
     fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        if self.shutdown_drop_panic && self.drops.load(Ordering::SeqCst) == 0 {
+            return Box::pin(ReadyShutdownDropPanic {
+                drops: self.drops.clone(),
+            });
+        }
         self.inner.shutdown(mode)
     }
 }
@@ -121,6 +129,7 @@ fn test_future_drop_panic_public_async_publish_cancellation_has_no_result() {
         inner: FakeAsyncEventBusSpi::new(),
         drops: drops.clone(),
         pending: true,
+        shutdown_drop_panic: false,
     });
     let bus = AsyncEventBus::from_spi(ProviderId::new("cancel-drop-panic").unwrap(), spi).unwrap();
     let request = PublishRequest::new(Topic::<u32>::new("future.cancel.drop.panic").unwrap(), 7).unwrap();
@@ -153,6 +162,7 @@ fn test_future_drop_panic_public_async_publish_ready_cleanup_becomes_uncertain_s
         inner: FakeAsyncEventBusSpi::new(),
         drops: drops.clone(),
         pending: false,
+        shutdown_drop_panic: false,
     });
     let bus = AsyncEventBus::from_spi(ProviderId::new("drop-panic").unwrap(), spi).unwrap();
     let request = PublishRequest::new(Topic::<u32>::new("future.drop.panic").unwrap(), 42).unwrap();
@@ -187,6 +197,173 @@ fn test_future_drop_panic_public_async_publish_ready_cleanup_becomes_uncertain_s
         1,
         "the provider call has occurred, so it cannot be reported as not accepted"
     );
+}
+
+struct ReadyShutdownDropPanic {
+    drops: Arc<AtomicUsize>,
+}
+
+impl Future for ReadyShutdownDropPanic {
+    type Output = Result<ShutdownOutcome, SpiError>;
+
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        Poll::Ready(Ok(ShutdownOutcome::Complete))
+    }
+}
+
+impl Drop for ReadyShutdownDropPanic {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::SeqCst);
+        panic!("provider shutdown future cleanup panic");
+    }
+}
+
+#[test]
+fn test_finished_async_spi_cleanup_drop_panic_is_structured() {
+    let _hook = PanicHookGuard::suppress();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let spi = Arc::new(DropPanicSpi {
+        inner: FakeAsyncEventBusSpi::new(),
+        drops: drops.clone(),
+        pending: false,
+        shutdown_drop_panic: true,
+    });
+    let bus = AsyncEventBus::from_spi(ProviderId::new("shutdown-drop-panic").unwrap(), spi).unwrap();
+
+    let first = block_on(bus.shutdown(ShutdownMode::Immediate));
+    assert!(matches!(
+        first,
+        Err(ShutdownError::Spi(SpiError::Operation {
+            operation: "shutdown",
+            kind: "provider_panicked",
+            ..
+        }))
+    ));
+    assert_eq!(
+        drops.load(Ordering::SeqCst),
+        1,
+        "failed cleanup future is dropped exactly once"
+    );
+    assert!(
+        bus.shutdown_report().is_none(),
+        "failed cleanup must not publish its report"
+    );
+
+    let retry = block_on(bus.shutdown(ShutdownMode::Immediate));
+    assert!(retry.is_ok(), "subsequent provider shutdown can complete");
+    assert!(
+        bus.shutdown_report().is_some(),
+        "report is published after retry succeeds"
+    );
+}
+
+struct DropPanicCloseSpi {
+    inner: FakeAsyncEventBusSpi,
+    drops: Arc<AtomicUsize>,
+    closes: Arc<AtomicUsize>,
+}
+
+impl AsyncEventBusSpi for DropPanicCloseSpi {
+    fn capabilities(&self) -> qubit_event_bus::spi::EventBusCapabilities {
+        self.inner.capabilities()
+    }
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        self.inner.publish(message)
+    }
+    fn subscribe<'a>(
+        &'a self,
+        request: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+        let future = self.inner.subscribe(request);
+        let drops = self.drops.clone();
+        let closes = self.closes.clone();
+        Box::pin(async move {
+            let receiver = future.await?;
+            Ok(Box::new(DropPanicCloseReceiver {
+                inner: receiver,
+                drops,
+                closes,
+            }) as Box<dyn AsyncEventSubscriptionSpi>)
+        })
+    }
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        self.inner.shutdown(mode)
+    }
+}
+
+struct DropPanicCloseReceiver {
+    inner: Box<dyn AsyncEventSubscriptionSpi>,
+    drops: Arc<AtomicUsize>,
+    closes: Arc<AtomicUsize>,
+}
+
+impl AsyncEventSubscriptionSpi for DropPanicCloseReceiver {
+    fn receive<'a>(&'a mut self, timeout: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
+        self.inner.receive(timeout)
+    }
+    fn settle<'a>(
+        &'a mut self,
+        token: &SettlementToken,
+        disposition: DeliveryDisposition,
+    ) -> SpiFuture<'a, Result<(), SpiError>> {
+        self.inner.settle(token, disposition)
+    }
+    fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), SpiError>> {
+        if self.closes.fetch_add(1, Ordering::SeqCst) == 0 {
+            Box::pin(ReadyCloseDropPanic(self.drops.clone()))
+        } else {
+            self.inner.close()
+        }
+    }
+}
+
+struct ReadyCloseDropPanic(Arc<AtomicUsize>);
+impl Future for ReadyCloseDropPanic {
+    type Output = Result<(), SpiError>;
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        Poll::Ready(Ok(()))
+    }
+}
+impl Drop for ReadyCloseDropPanic {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        panic!("provider receiver close future cleanup panic");
+    }
+}
+
+#[test]
+fn test_finished_receiver_close_drop_panic_is_structured_and_retryable() {
+    let _hook = PanicHookGuard::suppress();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let closes = Arc::new(AtomicUsize::new(0));
+    let spi = Arc::new(DropPanicCloseSpi {
+        inner: FakeAsyncEventBusSpi::new(),
+        drops: drops.clone(),
+        closes: closes.clone(),
+    });
+    let bus = AsyncEventBus::from_spi(ProviderId::new("close-drop-panic").unwrap(), spi).unwrap();
+    let topic = Topic::<u32>::new("close.drop.panic").unwrap();
+    let mut subscription =
+        block_on(bus.subscribe(SubscribeRequest::new("close-drop-panic", topic).unwrap())).expect("subscription");
+
+    let first = block_on(subscription.close());
+    assert!(first.is_err(), "close destructor panic must become an error: {first:?}");
+    assert!(
+        format!("{first:?}").contains("provider_panicked"),
+        "structured close error retains panic kind"
+    );
+    assert_eq!(
+        drops.load(Ordering::SeqCst),
+        1,
+        "failed close future is dropped exactly once"
+    );
+    assert_eq!(closes.load(Ordering::SeqCst), 1);
+
+    assert!(
+        block_on(subscription.close()).is_ok(),
+        "receiver remains available for close retry"
+    );
+    assert_eq!(closes.load(Ordering::SeqCst), 2);
 }
 
 struct HandlerDropPanic {
