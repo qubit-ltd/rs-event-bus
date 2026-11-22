@@ -173,7 +173,8 @@ impl AsyncEventBus {
     /// before republishing. `DuplicateRiskPolicy` does not make
     /// cancellation a rollback.
     /// The same-bus shutdown check also covers destruction of the suspended
-    /// publication future when this operation is cancelled.
+    /// publication future and release of its selected diagnostic observer
+    /// snapshot when this operation is cancelled or completes.
     ///
     /// Publisher callbacks are polled in this bus's lifecycle context. A
     /// callback that directly waits for this bus to shut down receives
@@ -199,17 +200,19 @@ impl AsyncEventBus {
                 PublishError::Closed,
             ));
         };
-        let observers = self.observer_snapshot();
-        let result = BusContextFuture::new_with_drop_context(
-            Arc::as_ptr(&self.inner) as usize,
-            self.inner.publisher.publish_async(
-                self.inner.spi.as_ref(),
-                request,
-                self.inner.facade_config.global_publisher_interceptors(),
-                &observers,
-                self.inner.timer.clone(),
-            ),
-        )
+        let result = BusContextFuture::new_with_drop_context(Arc::as_ptr(&self.inner) as usize, async {
+            let observers = self.observer_snapshot();
+            self.inner
+                .publisher
+                .publish_async(
+                    self.inner.spi.as_ref(),
+                    request,
+                    self.inner.facade_config.global_publisher_interceptors(),
+                    &observers,
+                    self.inner.timer.clone(),
+                )
+                .await
+        })
         .await
         .map_err(|failure| {
             self.inner.publish_metrics.record_error();
