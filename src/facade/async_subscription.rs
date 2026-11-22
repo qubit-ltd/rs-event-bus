@@ -246,9 +246,9 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// the retained first terminal cause as `ReceiveError::Stopped`, or a
     /// receiver close failure when no earlier cause exists. Calling `run`
     /// recursively from this subscription's handler, receiver-close callback,
-    /// or protected cleanup destructor returns `ReceiveError::WouldDeadlock`
-    /// immediately. To run it again, return from the current callback and start
-    /// it from an independent caller.
+    /// protected cleanup destructor, or stop notification wake returns
+    /// `ReceiveError::WouldDeadlock` immediately. To run it again, return from
+    /// the current callback and start it from an independent caller.
     ///
     /// # Panics
     /// Panics if the session lease invariant is violated internally.
