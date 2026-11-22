@@ -318,6 +318,121 @@ fn test_filter_stop_cannot_authorize_handler_or_settlement() {
     }
 }
 
+struct PanickingDropPayload(Arc<AtomicUsize>);
+
+impl Drop for PanickingDropPayload {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        panic!("filter panic payload destructor panicked");
+    }
+}
+
+fn filter_panic_payload_stop(cancel_retry: bool) {
+    let case = if cancel_retry {
+        "filter-payload-cancel"
+    } else {
+        "filter-payload-shutdown"
+    };
+    let test = if cancel_retry {
+        "test_filter_panic_payload_drop_isolated_on_retry_cancellation"
+    } else {
+        "test_filter_panic_payload_drop_isolated_on_shutdown"
+    };
+    if std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok(case) {
+        support::isolated_process::run_case(test, case);
+        return;
+    }
+
+    let fake = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus = AsyncEventBus::from_spi(ProviderId::new("filter-payload").expect("provider"), fake.clone()).expect("bus");
+    let (entered_filter, filter_entered) = std::sync::mpsc::channel();
+    let (continue_filter, filter_continue) = std::sync::mpsc::channel();
+    let filter_continue = Arc::new(std::sync::Mutex::new(filter_continue));
+    let cancelled = Arc::new(AtomicUsize::new(0));
+    let payload_drops = Arc::new(AtomicUsize::new(0));
+    let handlers = Arc::new(AtomicUsize::new(0));
+    let failures = Arc::new(AtomicUsize::new(0));
+    let cancellation = RetryCancellationToken::new();
+    let mut builder = SubscribeOptions::builder().filter({
+        let filter_continue = filter_continue.clone();
+        let cancellation = cancellation.clone();
+        let cancelled = cancelled.clone();
+        let payload_drops = payload_drops.clone();
+        move |_| {
+            entered_filter.send(()).expect("test driver waits for filter");
+            filter_continue
+                .lock()
+                .expect("filter continuation lock")
+                .recv_timeout(Duration::from_secs(3))
+                .expect("test driver releases filter");
+            if cancel_retry {
+                cancellation.cancel();
+                cancelled.fetch_add(1, Ordering::SeqCst);
+            }
+            std::panic::panic_any(PanickingDropPayload(payload_drops.clone()));
+        }
+    });
+    if cancel_retry {
+        builder = builder
+            .retry_policy(RetryPolicy::builder().max_attempts(2).build().expect("retry policy"))
+            .retry_cancellation_token(cancellation.clone());
+    }
+    builder = builder.error_handler({
+        let failures = failures.clone();
+        move |_, _| {
+            failures.fetch_add(1, Ordering::SeqCst);
+            FailureDirective::Retry
+        }
+    });
+    let request = SubscribeRequest::new("filter-payload", Topic::<u32>::new("orders.created").expect("topic"))
+        .expect("request")
+        .with_options(builder.build());
+    let sub = block_on(bus.subscribe(request)).expect("subscribe");
+    fake.enqueue(inbound_message(Some(SettlementToken::new(sub.id(), "token"))));
+    let observed = handlers.clone();
+    let runner = std::thread::spawn(move || {
+        block_on(sub.run(move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            async { Ok(()) }
+        }))
+    });
+    filter_entered
+        .recv_timeout(Duration::from_secs(3))
+        .expect("filter entered");
+    if !cancel_retry {
+        let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+        assert!(poll_once(shutdown.as_mut()).is_pending());
+        continue_filter.send(()).expect("release filter");
+        let _ = block_on(shutdown).expect("external shutdown");
+    } else {
+        continue_filter.send(()).expect("release filter");
+        for _ in 0..300 {
+            if payload_drops.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(payload_drops.load(Ordering::SeqCst), 1);
+        let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("application shutdown");
+    }
+    runner.join().expect("runner thread").expect("stopped runner");
+    assert_eq!(payload_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(cancelled.load(Ordering::SeqCst), usize::from(cancel_retry));
+    assert_eq!(handlers.load(Ordering::SeqCst), 0);
+    assert_eq!(failures.load(Ordering::SeqCst), 0);
+    assert_eq!(fake.settlement_count(), 0);
+}
+
+#[test]
+fn test_filter_panic_payload_drop_isolated_on_shutdown() {
+    filter_panic_payload_stop(false);
+}
+
+#[test]
+fn test_filter_panic_payload_drop_isolated_on_retry_cancellation() {
+    filter_panic_payload_stop(true);
+}
+
 #[test]
 fn test_filter_reentrant_shutdown_is_rejected_in_isolated_process() {
     const CASE: &str = "filter-reentrant-shutdown";

@@ -109,6 +109,9 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
                     .retry_cancellation_token()
                     .is_some_and(|token| token.is_cancelled())
             {
+                if let Err(payload) = filtered {
+                    dispose_panic_payload(payload);
+                }
                 return;
             }
             match filtered {
