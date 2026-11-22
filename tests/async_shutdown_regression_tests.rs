@@ -13,6 +13,7 @@ use std::future::pending;
 use std::future::poll_fn;
 use std::io::Error;
 use std::io::ErrorKind;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Weak;
@@ -36,6 +37,8 @@ use qubit_event_bus::LifecycleError;
 use qubit_event_bus::error::ReceiveError;
 use qubit_event_bus::error::ShutdownError;
 use qubit_event_bus::error::SpiError;
+use qubit_event_bus::facade::DeliverySchedulingConfig;
+use qubit_event_bus::facade::EventBusFacadeConfig;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::PublishRequest;
@@ -740,6 +743,105 @@ fn test_cancelled_run_lease_return_wake_rejects_same_bus_shutdown() {
         "provider shutdown must run once"
     );
     *bus_slot.lock().expect("bus lock") = None;
+}
+
+#[test]
+fn test_scheduler_wake_rejects_same_bus_shutdown_when_disposing_subscription() {
+    let provider = Arc::new(FakeAsyncEventBusSpi::new());
+    let config = EventBusFacadeConfig::new().with_delivery_scheduling(
+        DeliverySchedulingConfig::new(
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(2).unwrap(),
+        )
+        .unwrap(),
+    );
+    let bus = AsyncEventBus::with_config(
+        ProviderId::new("scheduler-wake-reenter").expect("provider ID"),
+        provider.clone(),
+        config,
+    )
+    .expect("facade");
+    let topic_a = Topic::<u32>::new("scheduler-a").expect("topic A");
+    let topic_b = Topic::<u32>::new("scheduler-b").expect("topic B");
+    let sub_a =
+        block_on_shutdown(bus.subscribe(SubscribeRequest::new("scheduler-a", topic_a.clone()).expect("request A")))
+            .expect("subscription A");
+    let sub_b = Arc::new(
+        block_on_shutdown(bus.subscribe(SubscribeRequest::new("scheduler-b", topic_b.clone()).expect("request B")))
+            .expect("subscription B"),
+    );
+    let _ = block_on_shutdown(bus.publish(PublishRequest::new(topic_a, 1).expect("publish A")))
+        .expect("publish A succeeds");
+    let _ = block_on_shutdown(bus.publish(PublishRequest::new(topic_b, 2).expect("publish B")))
+        .expect("publish B succeeds");
+
+    let mut run_a = Box::pin(sub_a.run(|_| pending::<Result<(), qubit_event_bus::DeliveryError>>()));
+    assert!(
+        run_a
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    let bus_slot = Arc::new(Mutex::new(None));
+    let observed = Arc::new(Mutex::new(None));
+    let subscription_slot = Arc::new(Mutex::new(Some(Arc::downgrade(&sub_b))));
+    let run_observed = Arc::new(Mutex::new(None));
+    let handler_calls = Arc::new(AtomicUsize::new(0));
+    let reenter = Arc::new(ReenterOnWake {
+        bus: bus_slot.clone(),
+        observed: observed.clone(),
+        subscription: subscription_slot,
+        run_observed,
+        handler_calls: handler_calls.clone(),
+        used: std::sync::atomic::AtomicBool::new(false),
+    });
+    *bus_slot.lock().unwrap() = Some(bus.clone());
+    let handler_calls_for_b = handler_calls.clone();
+    let mut run_b = Box::pin(sub_b.run(move |_| {
+        let handler_calls = handler_calls_for_b.clone();
+        async move {
+            handler_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }));
+    assert!(
+        run_b
+            .as_mut()
+            .poll(&mut Context::from_waker(&Waker::from(reenter.clone())))
+            .is_pending()
+    );
+    assert_eq!(
+        handler_calls.load(Ordering::SeqCst),
+        0,
+        "A retains the only delivery slot"
+    );
+    reenter.used.store(false, Ordering::SeqCst);
+    *observed.lock().unwrap() = None;
+
+    drop(run_a);
+    assert!(
+        reenter.used.load(Ordering::SeqCst),
+        "releasing A's delivery synchronously wakes B"
+    );
+    assert!(matches!(
+        observed.lock().unwrap().as_ref(),
+        Some(Poll::Ready(Err(ShutdownError::Lifecycle(
+            LifecycleError::WouldDeadlock { operation: "shutdown" }
+        ))))
+    ));
+
+    for _ in 0..8 {
+        if run_b.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_ready() {
+            break;
+        }
+    }
+    assert_eq!(handler_calls.load(Ordering::SeqCst), 1, "B handles its queued message");
+    drop(run_b);
+    drop(sub_a);
+    assert!(block_on_shutdown(bus.shutdown(ShutdownMode::Immediate)).is_ok());
+    *bus_slot.lock().unwrap() = None;
 }
 
 struct PublishGateSpi {

@@ -211,7 +211,8 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
     /// Wakes the executor that currently drives this session.
     #[inline]
     fn notify(&self) {
-        self.signals.signal().notify();
+        let bus_key = self.bus.as_ptr() as usize;
+        with_subscription_scope(bus_key, self.id, || self.signals.signal().notify());
     }
     /// Stops the active or future runner.
     ///

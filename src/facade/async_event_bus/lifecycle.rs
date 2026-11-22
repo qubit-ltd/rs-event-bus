@@ -175,6 +175,9 @@ impl AsyncEventBus {
     /// session lease receive the same protection, including when a graceful
     /// timeout cancels that driver. A waker cannot reenter shutdown for this
     /// bus while the lease is being returned.
+    /// The same protection applies to scheduler wakers invoked synchronously
+    /// when delivery capacity is released or granted. A waker cannot reenter
+    /// shutdown for this bus until the notification returns.
     ///
     /// # Parameters
     /// - `mode`: Shutdown policy and, for graceful mode, its deadline.
