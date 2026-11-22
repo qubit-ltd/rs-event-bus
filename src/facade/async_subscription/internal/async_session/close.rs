@@ -24,7 +24,6 @@ use crate::facade::async_subscription::AsyncSession;
 use crate::facade::async_subscription::BusContextFuture;
 use crate::facade::async_subscription::BusState;
 use crate::facade::async_subscription::SubscriptionCloseErrors;
-use crate::facade::async_subscription::internal::owned_delivery_task::discard_unstarted_tasks;
 use crate::facade::async_subscription::with_subscription_scope;
 use crate::internal::panic_payload::dispose_panic_payload;
 use crate::spi::DurabilityCapability;
@@ -167,11 +166,8 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
 
     /// Counts and releases unresolved buffered and completed deliveries.
     pub(super) fn abandon_queued_and_completed(&mut self) {
-        let count = self.buffered.len() + self.completed.len() + self.completed_during_settlement.len();
-        for _ in 0..count {
-            self.record_abandoned_delivery();
-        }
         while let Some(mut delivery) = self.buffered.pop_front() {
+            self.record_abandoned_delivery();
             self.emit_failure_diagnostic(
                 delivery.failure_diagnostic.take(),
                 delivery.event_id,
@@ -179,6 +175,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             );
         }
         while let Some(mut delivery) = self.completed.pop_front() {
+            self.record_abandoned_delivery();
             self.emit_failure_diagnostic(
                 delivery.failure_diagnostic.take(),
                 delivery.event_id,
@@ -186,6 +183,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             );
         }
         while let Some(mut delivery) = self.completed_during_settlement.pop_front() {
+            self.record_abandoned_delivery();
             self.emit_failure_diagnostic(
                 delivery.failure_diagnostic.take(),
                 delivery.event_id,
@@ -197,12 +195,199 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     /// Drops queued handler futures that Immediate stop forbids from starting.
     pub(in crate::facade) fn discard_unstarted_tasks(&mut self) {
         let ephemeral = self.inner.capabilities.durability() == DurabilityCapability::Ephemeral;
-        let before = self.tasks.len();
-        discard_unstarted_tasks(&mut self.tasks, &self.inner.abandoned_deliveries, ephemeral);
-        if ephemeral {
-            for _ in self.tasks.len()..before {
-                self.metrics.record_abandoned_ephemeral();
+        let abandoned = &self.inner.abandoned_deliveries;
+        let metrics = &self.metrics;
+        self.tasks.retain(|task| {
+            let started = task.started.load(Ordering::Acquire);
+            if !started && ephemeral {
+                abandoned.fetch_add(1, Ordering::AcqRel);
+                metrics.record_abandoned_ephemeral();
+            }
+            started
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+    use std::task::Context;
+    use std::task::Poll;
+    use std::task::Waker;
+
+    use crate::facade::AsyncEventBus;
+    use crate::facade::async_subscription::SharedAsyncHandler;
+    use crate::facade::async_subscription::internal::owned_delivery_lease::OwnedDeliveryLease;
+    use crate::local::LocalEventBusConfig;
+    use crate::model::EventId;
+    use crate::model::SubscribeRequest;
+    use crate::model::Topic;
+    use crate::spi::InboundMessage;
+    use crate::spi::ShutdownMode;
+    use crate::spi::TransportPayload;
+
+    struct Payload {
+        panic_on_drop: AtomicBool,
+    }
+
+    impl Drop for Payload {
+        fn drop(&mut self) {
+            if self.panic_on_drop.swap(false, Ordering::AcqRel) {
+                panic!("abandoned payload probe");
             }
         }
+    }
+
+    fn block_on<F: Future>(future: F) -> F::Output {
+        let mut future = Box::pin(future);
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+        loop {
+            if let Poll::Ready(result) = Future::poll(Pin::as_mut(&mut future), &mut context) {
+                return result;
+            }
+        }
+    }
+
+    fn poll_once<F: Future + ?Sized>(future: Pin<&mut F>) -> Poll<F::Output> {
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+        future.poll(&mut context)
+    }
+
+    fn message(event_id: &str, panic_on_drop: bool) -> InboundMessage {
+        InboundMessage::new(
+            crate::spi::TopicAddress::new("close.test").expect("topic address"),
+            EventId::new(event_id).expect("event id"),
+            std::time::SystemTime::UNIX_EPOCH,
+            Default::default(),
+            None,
+            TransportPayload::Native(Arc::new(Payload {
+                panic_on_drop: AtomicBool::new(panic_on_drop),
+            })),
+            None,
+            Default::default(),
+        )
+    }
+
+    fn lease_receive<T: Send + Sync + 'static>(
+        session: &mut crate::facade::async_subscription::AsyncSession<T>,
+        event_id: &str,
+        panic_on_drop: bool,
+    ) {
+        session.inner.scheduler.request_receive(session.id);
+        let id = session
+            .inner
+            .scheduler
+            .take_receive_reservation(session.id)
+            .expect("receive reservation");
+        session.prepare_message(
+            message(event_id, panic_on_drop),
+            OwnedDeliveryLease::new(id, &session.inner),
+        );
+    }
+
+    fn setup() -> (AsyncEventBus, crate::facade::AsyncSubscription<Payload>) {
+        let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::default())).expect("local bus");
+        let subscription = block_on(bus.subscribe(
+            SubscribeRequest::new("close-probe", Topic::<Payload>::new("close.test").expect("topic")).expect("request"),
+        ))
+        .expect("subscription");
+        (bus, subscription)
+    }
+
+    #[test]
+    fn test_discard_unstarted_tasks_counts_removed_delivery_before_drop_panic() {
+        let (bus, subscription) = setup();
+        let mut lease = block_on(subscription.control.lease()).expect("session lease");
+        let session = lease.session.as_mut().expect("leased session");
+        session.inner.scheduler.set_dispatch_active(session.id, true);
+        lease_receive(session, "ordinary", false);
+        let id = session.inner.scheduler.take_ready(session.id).expect("dispatch grant");
+        let ordinary = session.buffered.pop_front().expect("ordinary delivery");
+        assert_eq!(ordinary.lease.id, id);
+        lease_receive(session, "panicking", true);
+        let id = session.inner.scheduler.take_ready(session.id).expect("dispatch grant");
+        let panicking = session.buffered.pop_front().expect("panicking delivery");
+        assert_eq!(panicking.lease.id, id);
+        let handler: SharedAsyncHandler<Payload> = Arc::new(|_| Box::pin(std::future::pending()));
+        session.start_pending_task(ordinary, handler.clone());
+        session.start_pending_task(panicking, handler);
+        assert!(poll_once(session.tasks[0].future.as_mut()).is_pending());
+        assert!(session.tasks[0].started.load(Ordering::Acquire));
+        session.signals.stop(ShutdownMode::Immediate);
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            session.discard_unstarted_tasks();
+        }))
+        .expect_err("the unstarted task owns a panicking payload");
+        assert_eq!(panic.downcast_ref::<&str>(), Some(&"abandoned payload probe"));
+        assert_eq!(session.tasks.len(), 1);
+        assert!(session.tasks[0].started.load(Ordering::Acquire));
+        assert_eq!(session.inner.abandoned_deliveries.load(Ordering::Acquire), 1);
+        assert_eq!(subscription.delivery_metrics().metrics.abandoned_ephemeral, 1);
+
+        session.discard_unstarted_tasks();
+        assert_eq!(session.tasks.len(), 1);
+        assert_eq!(session.inner.abandoned_deliveries.load(Ordering::Acquire), 1);
+        drop(lease);
+        drop(subscription);
+        let report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+        assert_eq!(report.known_abandoned_deliveries, 2);
+    }
+
+    #[test]
+    fn test_abandon_queued_and_completed_does_not_count_retained_deliveries_twice() {
+        let (bus, subscription) = setup();
+        let mut lease = block_on(subscription.control.lease()).expect("session lease");
+        let session = lease.session.as_mut().expect("leased session");
+        session.inner.scheduler.set_dispatch_active(session.id, true);
+        lease_receive(session, "panicking-queued", true);
+        let panicking_id = session
+            .inner
+            .scheduler
+            .take_ready(session.id)
+            .expect("first dispatch grant");
+        session.inner.scheduler.handler_finished(panicking_id);
+        lease_receive(session, "ordinary-completed", false);
+        let ordinary_id = session
+            .inner
+            .scheduler
+            .take_ready(session.id)
+            .expect("second dispatch grant");
+        session.inner.scheduler.handler_finished(ordinary_id);
+        // Put both deliveries in the queues processed by close, preserving a
+        // panicking front item and an ordinary retained item behind it.
+        let first = session.buffered.pop_front().expect("first delivery");
+        let second = session.buffered.pop_front().expect("second delivery");
+        assert_eq!(first.lease.id, panicking_id);
+        assert_eq!(second.lease.id, ordinary_id);
+        session.completed.push_back(first);
+        session.completed_during_settlement.push_back(second);
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            session.abandon_queued_and_completed();
+        }))
+        .expect_err("the popped delivery owns a panicking payload");
+        assert_eq!(panic.downcast_ref::<&str>(), Some(&"abandoned payload probe"));
+        assert!(session.completed.is_empty());
+        assert_eq!(session.completed_during_settlement.len(), 1);
+        assert_eq!(session.inner.abandoned_deliveries.load(Ordering::Acquire), 1);
+        assert_eq!(subscription.delivery_metrics().metrics.abandoned_ephemeral, 1);
+
+        session.abandon_queued_and_completed();
+        assert!(session.buffered.is_empty());
+        assert!(session.completed.is_empty());
+        assert!(session.completed_during_settlement.is_empty());
+        assert_eq!(session.inner.abandoned_deliveries.load(Ordering::Acquire), 2);
+        assert_eq!(subscription.delivery_metrics().metrics.abandoned_ephemeral, 2);
+        drop(lease);
+        drop(subscription);
+        let report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+        assert_eq!(report.known_abandoned_deliveries, 2);
     }
 }

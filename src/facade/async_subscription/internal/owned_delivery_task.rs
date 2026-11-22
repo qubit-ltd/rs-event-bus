@@ -11,8 +11,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 
 use super::PendingDelivery;
 
@@ -27,37 +25,4 @@ pub(in crate::facade) struct OwnedDeliveryTask<T: 'static> {
     pub(in crate::facade) future: Pin<Box<dyn Future<Output = PendingDelivery<T>> + Send>>,
     /// Marks whether user code started before an immediate stop.
     pub(in crate::facade) started: Arc<AtomicBool>,
-}
-
-/// Drops queued handlers that have not started, counting ephemeral deliveries.
-///
-/// # Type Parameters
-/// - `T`: Payload retained by each delivery task.
-///
-/// # Parameters
-///
-/// - `tasks`: Queued handler tasks to filter in place.
-/// - `abandoned`: Counter incremented for discarded ephemeral deliveries.
-/// - `ephemeral`: Whether discarded deliveries should contribute to the
-///   counter.
-///
-/// # Side Effects
-///
-/// Removes unstarted tasks from `tasks` and may increment `abandoned`.
-pub(in crate::facade) fn discard_unstarted_tasks<T: 'static>(
-    tasks: &mut Vec<OwnedDeliveryTask<T>>,
-    abandoned: &AtomicU64,
-    ephemeral: bool,
-) {
-    let mut unstarted = 0_u64;
-    tasks.retain(|task| {
-        let started = task.started.load(Ordering::Acquire);
-        if !started {
-            unstarted += 1;
-        }
-        started
-    });
-    if ephemeral && unstarted > 0 {
-        abandoned.fetch_add(unstarted, Ordering::AcqRel);
-    }
 }
