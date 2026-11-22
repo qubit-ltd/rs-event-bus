@@ -218,7 +218,8 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
     /// - `mode`: shutdown policy applied to this subscription.
     #[inline]
     fn stop(&self, mode: ShutdownMode) {
-        self.signals.stop(mode);
+        let bus_key = self.bus.as_ptr() as usize;
+        with_subscription_scope(bus_key, self.id, || self.signals.stop(mode));
         self.mark_stopped();
     }
 

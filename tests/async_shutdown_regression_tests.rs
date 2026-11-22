@@ -336,6 +336,9 @@ struct WakeCounter(AtomicUsize);
 struct ReenterOnWake {
     bus: Arc<Mutex<Option<AsyncEventBus>>>,
     observed: ShutdownReentryObservation,
+    subscription: Arc<Mutex<Option<Weak<qubit_event_bus::AsyncSubscription<u32>>>>>,
+    run_observed: Arc<Mutex<Option<Poll<Result<(), ReceiveError>>>>>,
+    handler_calls: Arc<AtomicUsize>,
     used: std::sync::atomic::AtomicBool,
 }
 
@@ -357,6 +360,21 @@ impl Wake for ReenterOnWake {
             .poll(&mut Context::from_waker(Waker::noop()))
             .map(|result| result.map(|_| ()));
         *self.observed.lock().expect("observation lock") = Some(result);
+        let subscription = self
+            .subscription
+            .lock()
+            .expect("subscription slot")
+            .as_ref()
+            .and_then(Weak::upgrade);
+        if let Some(subscription) = subscription {
+            let handler_calls = self.handler_calls.clone();
+            let mut nested = Box::pin(subscription.run(move |_| {
+                handler_calls.fetch_add(1, Ordering::SeqCst);
+                async { Ok::<(), qubit_event_bus::DeliveryError>(()) }
+            }));
+            let result = nested.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+            *self.run_observed.lock().expect("run observation") = Some(result);
+        }
     }
 }
 
@@ -520,6 +538,9 @@ fn test_immediate_escalation_wake_rejects_same_bus_shutdown() {
     let waker = Waker::from(Arc::new(ReenterOnWake {
         bus: bus_slot.clone(),
         observed: observed.clone(),
+        subscription: Arc::new(Mutex::new(None)),
+        run_observed: Arc::new(Mutex::new(None)),
+        handler_calls: Arc::new(AtomicUsize::new(0)),
         used: std::sync::atomic::AtomicBool::new(false),
     }));
 
@@ -577,6 +598,9 @@ fn test_subscription_stop_wake_rejects_same_bus_shutdown() {
     let provider = Arc::new(FakeAsyncEventBusSpi::new());
     let bus_slot = Arc::new(Mutex::new(None));
     let observed = Arc::new(Mutex::new(None));
+    let subscription_slot = Arc::new(Mutex::new(None));
+    let run_observed = Arc::new(Mutex::new(None));
+    let handler_calls = Arc::new(AtomicUsize::new(0));
     let bus = AsyncEventBus::with_timer(
         ProviderId::new("stop-wake-reenter").expect("provider ID"),
         provider,
@@ -584,12 +608,16 @@ fn test_subscription_stop_wake_rejects_same_bus_shutdown() {
     )
     .expect("facade");
     let topic = Topic::<u32>::new("stop-wake-reenter").expect("topic");
-    let subscription =
+    let subscription = Arc::new(
         block_on_shutdown(bus.subscribe(SubscribeRequest::new("stop-wake-reenter", topic).expect("request")))
-            .expect("subscription");
+            .expect("subscription"),
+    );
     let reenter = Arc::new(ReenterOnWake {
         bus: bus_slot.clone(),
         observed: observed.clone(),
+        subscription: subscription_slot.clone(),
+        run_observed: run_observed.clone(),
+        handler_calls: handler_calls.clone(),
         used: std::sync::atomic::AtomicBool::new(false),
     });
     let waker = Waker::from(reenter.clone());
@@ -600,6 +628,7 @@ fn test_subscription_stop_wake_rejects_same_bus_shutdown() {
     // waker.
     reenter.used.store(false, Ordering::SeqCst);
     *bus_slot.lock().expect("bus slot") = Some(bus.clone());
+    *subscription_slot.lock().expect("subscription slot") = Some(Arc::downgrade(&subscription));
 
     let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
     assert!(
@@ -618,6 +647,15 @@ fn test_subscription_stop_wake_rejects_same_bus_shutdown() {
         "nested shutdown observation: {:?}",
         observed.lock().expect("observation lock")
     );
+    assert!(
+        matches!(
+            run_observed.lock().expect("run observation").as_ref(),
+            Some(Poll::Ready(Err(ReceiveError::WouldDeadlock)))
+        ),
+        "nested run must be rejected during stop wake: {:?}",
+        run_observed.lock().expect("run observation")
+    );
+    assert_eq!(handler_calls.load(Ordering::SeqCst), 0, "nested handler must not run");
 
     assert!(runner.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_ready());
     let Poll::Ready(Ok(report)) = shutdown.as_mut().poll(&mut Context::from_waker(Waker::noop())) else {
