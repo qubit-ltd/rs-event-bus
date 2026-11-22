@@ -44,6 +44,7 @@ use crate::pipeline::SubscriberPipeline;
 use crate::pipeline::dead_letter_envelope;
 use crate::pipeline::dead_letter_retry_config;
 use crate::pipeline::dead_letter_was_accepted;
+use crate::pipeline::format_diagnostic_error;
 use crate::spi::DeliveryDisposition;
 use crate::spi::DurabilityCapability;
 use crate::spi::SettlementCapabilities;
@@ -165,7 +166,7 @@ pub(in crate::facade) fn finish_failed_delivery<T>(
         subscription_id,
         subscriber_id: subscriber_id.clone(),
         attempts,
-        error: error.to_string().into(),
+        error: format_diagnostic_error(&error, "handler error formatting panicked").into(),
     });
 }
 
@@ -397,9 +398,11 @@ pub(in crate::facade) fn publish_dead_letter_sync<T: Send + Sync + 'static>(
         }
     };
     let Some(policy) = retry_policy else {
-        return publish_once().map_err(|error| error.to_string());
+        return publish_once()
+            .map_err(|error| format_diagnostic_error(&error, "dead-letter error formatting panicked"));
     };
-    let config = dead_letter_retry_config(policy).map_err(|error| error.to_string())?;
+    let config = dead_letter_retry_config(policy)
+        .map_err(|error| format_diagnostic_error(&error, "dead-letter error formatting panicked"))?;
     let mut retry = Retry::new(&config);
     if let Some(cancellation) = cancellation {
         retry = retry.cancellation_token(cancellation.clone());
@@ -407,7 +410,7 @@ pub(in crate::facade) fn publish_dead_letter_sync<T: Send + Sync + 'static>(
     retry
         .run(&mut publish_once)
         .map(|success| success.value().clone())
-        .map_err(|error| error.to_string())
+        .map_err(|error| format_diagnostic_error(&error, "dead-letter error formatting panicked"))
 }
 
 /// Stops receiving after forwarding exhausts its budget, retaining the source

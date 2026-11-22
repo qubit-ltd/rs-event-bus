@@ -38,6 +38,31 @@ impl Drop for PanicPayload {
     }
 }
 
+struct PanicOnDrop(Arc<AtomicUsize>);
+impl Drop for PanicOnDrop {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        panic!("injected diagnostic panic payload drop panic");
+    }
+}
+
+struct PanicOnDisplay {
+    displays: Arc<AtomicUsize>,
+    drops: Arc<AtomicUsize>,
+}
+impl std::fmt::Display for PanicOnDisplay {
+    fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.displays.fetch_add(1, Ordering::SeqCst);
+        panic_any(PanicOnDrop(self.drops.clone()));
+    }
+}
+impl std::fmt::Debug for PanicOnDisplay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PanicOnDisplay")
+    }
+}
+impl Error for PanicOnDisplay {}
+
 use qubit_event_bus::codec::CodecRegistry;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::CapabilityError;
@@ -62,6 +87,7 @@ use qubit_event_bus::model::AdmissionStatus;
 use qubit_event_bus::model::AsyncSubscriberNext;
 use qubit_event_bus::model::ConsumerGroup;
 use qubit_event_bus::model::ContentType;
+use qubit_event_bus::model::DeadLetterEvent;
 use qubit_event_bus::model::DeadLetterPolicy;
 use qubit_event_bus::model::Delivery;
 use qubit_event_bus::model::DestinationAdmission;
@@ -375,6 +401,7 @@ struct TestBackendState {
     settlement_retryability: Option<bool>,
     published_topics: Vec<Box<str>>,
     attempted_event_ids: Vec<EventId>,
+    operations: Vec<(&'static str, Option<DeliveryDisposition>)>,
 }
 
 /// Provides controllable capabilities, failures, and blocking SPI gates.
@@ -387,6 +414,9 @@ struct TestBackend {
     shutdown: AtomicBool,
     publish_calls: AtomicUsize,
     fail_publish_call: AtomicUsize,
+    panic_on_failed_publish_display: AtomicBool,
+    publish_error_displays: Arc<AtomicUsize>,
+    publish_error_drops: Arc<AtomicUsize>,
     partial_publish_call: AtomicUsize,
     unconfirmed_publish_call: AtomicUsize,
     settlement_capability: AtomicUsize,
@@ -422,6 +452,9 @@ impl TestBackend {
             shutdown: AtomicBool::new(false),
             publish_calls: AtomicUsize::new(0),
             fail_publish_call: AtomicUsize::new(0),
+            panic_on_failed_publish_display: AtomicBool::new(false),
+            publish_error_displays: Arc::new(AtomicUsize::new(0)),
+            publish_error_drops: Arc::new(AtomicUsize::new(0)),
             partial_publish_call: AtomicUsize::new(0),
             unconfirmed_publish_call: AtomicUsize::new(0),
             settlement_capability: AtomicUsize::new(2),
@@ -487,8 +520,16 @@ impl TestBackend {
         self.state.lock().expect("test state lock").attempted_event_ids.clone()
     }
 
+    fn operations(&self) -> Vec<(&'static str, Option<DeliveryDisposition>)> {
+        self.state.lock().expect("test state lock").operations.clone()
+    }
+
     fn fail_publish_call(&self, call: usize) {
         self.fail_publish_call.store(call, Ordering::Release);
+    }
+
+    fn panic_on_failed_publish_display(&self) {
+        self.panic_on_failed_publish_display.store(true, Ordering::Release);
     }
 
     fn partial_publish_call(&self, call: usize) {
@@ -754,12 +795,25 @@ impl EventBusSpi for TestBackend {
     fn publish(&self, message: OutboundMessage) -> Result<PublishAcknowledgement, SpiError> {
         let call = self.publish_calls.fetch_add(1, Ordering::AcqRel) + 1;
         Self::wait_at_gate(&self.publish_gate, "publish");
-        self.state
-            .lock()
-            .expect("test state lock")
-            .attempted_event_ids
-            .push(message.id().clone());
+        {
+            let mut state = self.state.lock().expect("test state lock");
+            state.operations.push(("publish", None));
+            state.attempted_event_ids.push(message.id().clone());
+        }
         if self.fail_publish_call.load(Ordering::Acquire) == call {
+            if self.panic_on_failed_publish_display.swap(false, Ordering::AcqRel) {
+                return Err(SpiError::Operation {
+                    provider_id: "sync-test".into(),
+                    operation: "publish",
+                    resource: None,
+                    kind: "dead_letter_display_panicked",
+                    retryable: Some(false),
+                    source: Box::new(PanicOnDisplay {
+                        displays: self.publish_error_displays.clone(),
+                        drops: self.publish_error_drops.clone(),
+                    }),
+                });
+            }
             return Err(test_spi_error("publish"));
         }
         let state = self.state.lock().expect("test state lock");
@@ -934,6 +988,7 @@ impl EventSubscriptionSpi for TestSubscription {
             return Err(test_spi_error("settle"));
         }
         let mut state = self.backend_state.lock().expect("test state lock");
+        state.operations.push(("settle", Some(disposition)));
         state.settlement_calls += 1;
         if state.fail_settle_always {
             return Err(SpiError::Operation {
@@ -4792,6 +4847,151 @@ fn test_dead_letter_forward_exhaustion_leaves_the_source_token_unsettled() {
     let report = bus
         .shutdown(ShutdownMode::Immediate)
         .expect("shutdown closes the stopped subscription");
+    assert_eq!(report.known_abandoned_deliveries, 1);
+}
+
+#[test]
+fn test_sync_dead_letter_record_survives_handler_error_display_panic() {
+    let (bus, backend) = create_bus();
+    let displays = Arc::new(AtomicUsize::new(0));
+    let drops = Arc::new(AtomicUsize::new(0));
+    let (record_tx, record_rx) = mpsc::channel();
+    let dead_letter_topic = Topic::<DeadLetterEvent<String>>::new("dead-letters").expect("valid topic");
+    let dead_letter_subscription = bus
+        .subscribe(
+            SubscribeRequest::new("dead-letter-inspector", dead_letter_topic).expect("valid request"),
+            move |delivery: Delivery<DeadLetterEvent<String>>| {
+                record_tx
+                    .send((
+                        delivery.payload().reason().to_owned(),
+                        delivery.payload().original_event().id().clone(),
+                        delivery.payload().subscriber_id().clone(),
+                    ))
+                    .expect("test receiver remains alive");
+                Ok::<(), DeliveryError>(())
+            },
+        )
+        .expect("dead-letter subscription starts");
+    let options = SubscribeOptions::builder()
+        .error_handler(|_, _| FailureDirective::DeadLetter)
+        .dead_letter(DeadLetterPolicy::with_topic_name("dead-letters").expect("valid topic"))
+        .build();
+    let source_subscription = bus
+        .subscribe(
+            SubscribeRequest::new("panic-handler", topic())
+                .expect("valid request")
+                .with_options(options),
+            {
+                let displays = displays.clone();
+                let drops = drops.clone();
+                move |_| {
+                    Err(DeliveryError::Handler {
+                        source: Box::new(PanicOnDisplay {
+                            displays: displays.clone(),
+                            drops: drops.clone(),
+                        }),
+                    })
+                }
+            },
+        )
+        .expect("source subscription starts");
+    let _ = bus.publish(request("source-event".into())).expect("publish source");
+    let (reason, original_event_id, subscriber_id) = record_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("dead-letter record is published");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while backend.settlement_dispositions().is_empty() && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert_eq!(reason, "handler error formatting panicked");
+    assert_eq!(original_event_id, backend.attempted_event_ids()[0]);
+    assert_eq!(subscriber_id.as_str(), "panic-handler");
+    assert_eq!(backend.publish_calls(), 2);
+    assert_eq!(
+        backend
+            .settlement_dispositions()
+            .iter()
+            .filter(|disposition| **disposition == DeliveryDisposition::Reject)
+            .count(),
+        1
+    );
+    let operations = backend.operations();
+    let dead_letter_publish = operations
+        .iter()
+        .rposition(|(operation, _)| *operation == "publish")
+        .unwrap();
+    let source_reject = operations
+        .iter()
+        .position(|(operation, disposition)| {
+            *operation == "settle" && *disposition == Some(DeliveryDisposition::Reject)
+        })
+        .unwrap();
+    assert!(
+        dead_letter_publish < source_reject,
+        "publish precedes source settlement"
+    );
+    assert_eq!(displays.load(Ordering::SeqCst), 2);
+    assert_eq!(drops.load(Ordering::SeqCst), 2);
+    source_subscription.cancel().expect("cancel source");
+    dead_letter_subscription.cancel().expect("cancel inspector");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+}
+
+#[test]
+fn test_sync_dead_letter_publish_display_panic_preserves_forward_failure_path() {
+    let (bus, backend) = create_bus();
+    backend.fail_publish_call(2);
+    backend.panic_on_failed_publish_display();
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let observed_by_callback = observed.clone();
+    let _observer = bus.observe_diagnostics(move |entry| {
+        if let Diagnostic::InternalFailure { origin, message } = entry {
+            observed_by_callback
+                .lock()
+                .expect("diagnostic lock")
+                .push((origin.to_string(), message.to_string()));
+        }
+    });
+    let options = SubscribeOptions::builder()
+        .error_handler(|_, _| FailureDirective::DeadLetter)
+        .dead_letter(DeadLetterPolicy::with_topic_name("dead-letters").expect("valid topic"))
+        .build();
+    let _subscription = bus
+        .subscribe(
+            SubscribeRequest::new("failed-forward", topic())
+                .expect("valid request")
+                .with_options(options),
+            |_| {
+                Err(DeliveryError::Handler {
+                    source: Box::new(IoError::other("handler failed")),
+                })
+            },
+        )
+        .expect("subscription starts");
+    let _ = bus.publish(request("source-event".into())).expect("publish source");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while backend.close_calls() == 0 && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert_eq!(backend.publish_calls(), 2);
+    assert!(
+        backend.settlement_dispositions().is_empty(),
+        "source token stays unsettled"
+    );
+    assert!(observed.lock().expect("diagnostic lock").contains(&(
+        "dead_letter_publish".to_owned(),
+        "dead-letter error formatting panicked".to_owned(),
+    )));
+    assert!(
+        !observed
+            .lock()
+            .expect("diagnostic lock")
+            .iter()
+            .any(|(origin, _)| origin == "owner_panicked")
+    );
+    assert_eq!(backend.publish_error_displays.load(Ordering::SeqCst), 1);
+    assert_eq!(backend.publish_error_drops.load(Ordering::SeqCst), 1);
+    let report = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
     assert_eq!(report.known_abandoned_deliveries, 1);
 }
 

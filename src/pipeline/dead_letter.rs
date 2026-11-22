@@ -19,6 +19,7 @@ use crate::model::EventEnvelope;
 use crate::model::EventId;
 use crate::model::SubscriberId;
 use crate::model::Topic;
+use crate::pipeline::format_diagnostic_error;
 
 /// Builds a dead-letter record without mutating or cloning the original event.
 ///
@@ -48,7 +49,7 @@ pub(crate) fn dead_letter_envelope<T: 'static>(
     let record = DeadLetterEvent::new(
         delivery.event_arc(),
         delivery.context().subscriber_id().clone(),
-        error.to_string().into_boxed_str(),
+        format_diagnostic_error(error, "handler error formatting panicked").into_boxed_str(),
     );
     let topic = Topic::<DeadLetterEvent<T>>::new(topic)?;
     let id = dead_letter_id(delivery.event().id(), delivery.context().subscriber_id());

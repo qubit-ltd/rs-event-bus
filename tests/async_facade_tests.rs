@@ -61,6 +61,7 @@ use qubit_event_bus::model::AdmissionRequirement;
 use qubit_event_bus::model::AsyncSubscriberNext;
 use qubit_event_bus::model::ConsumerGroup;
 use qubit_event_bus::model::ContentType;
+use qubit_event_bus::model::DeadLetterEvent;
 use qubit_event_bus::model::DeadLetterPolicy;
 use qubit_event_bus::model::Delivery;
 use qubit_event_bus::model::EventId;
@@ -4327,6 +4328,117 @@ fn test_async_handler_error_display_panic_preserves_settlement() {
             Some(("event-test".to_owned(), "handler error formatting panicked".to_owned()))
         );
     }
+}
+
+#[test]
+fn test_async_dead_letter_record_survives_handler_error_display_panic() {
+    struct PanicOnDrop(Arc<AtomicUsize>);
+    impl Drop for PanicOnDrop {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            panic!("injected handler panic payload drop panic");
+        }
+    }
+    struct PanicOnDisplay {
+        displays: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+    }
+    impl std::fmt::Display for PanicOnDisplay {
+        fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            self.displays.fetch_add(1, Ordering::SeqCst);
+            std::panic::panic_any(PanicOnDrop(self.drops.clone()));
+        }
+    }
+    impl std::fmt::Debug for PanicOnDisplay {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("PanicOnDisplay")
+        }
+    }
+    impl std::error::Error for PanicOnDisplay {}
+
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
+    let displays = Arc::new(AtomicUsize::new(0));
+    let drops = Arc::new(AtomicUsize::new(0));
+    let (record_tx, record_rx) = std::sync::mpsc::channel();
+    let mut source_run = None;
+    let mut dead_letter_run = None;
+
+    block_on(async {
+        let options = SubscribeOptions::<u32>::builder()
+            .error_handler(|_, _| FailureDirective::DeadLetter)
+            .dead_letter(DeadLetterPolicy::with_topic_name("test.dead").unwrap())
+            .build();
+        let source_subscription = bus
+            .subscribe(
+                SubscribeRequest::new("panic-handler", Topic::new("test.topic").unwrap())
+                    .unwrap()
+                    .with_options(options),
+            )
+            .await
+            .unwrap();
+        let source_subscription_id = source_subscription.id();
+        spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+            source_subscription_id,
+            "source-panic-token",
+        ))));
+        let dead_letter_topic = Topic::<DeadLetterEvent<u32>>::new("test.dead").unwrap();
+        let dead_letter_subscription = bus
+            .subscribe(SubscribeRequest::new("dead-letter-inspector", dead_letter_topic).unwrap())
+            .await
+            .unwrap();
+        dead_letter_run = Some(std::thread::spawn(move || {
+            block_on(dead_letter_subscription.run(move |delivery| {
+                let observed = (
+                    delivery.payload().reason().to_owned(),
+                    delivery.payload().original_event().id().as_str().to_owned(),
+                    delivery.payload().subscriber_id().as_str().to_owned(),
+                );
+                let record_tx = record_tx.clone();
+                async move {
+                    record_tx.send(observed).expect("test receiver remains alive");
+                    Ok::<(), DeliveryError>(())
+                }
+            }))
+        }));
+        let displays_in_handler = displays.clone();
+        let drops_in_handler = drops.clone();
+        source_run = Some(std::thread::spawn(move || {
+            block_on(source_subscription.run(move |_| {
+                let source = PanicOnDisplay {
+                    displays: displays_in_handler.clone(),
+                    drops: drops_in_handler.clone(),
+                };
+                async move {
+                    Err(DeliveryError::Handler {
+                        source: Box::new(source),
+                    })
+                }
+            }))
+        }));
+    });
+    let record = record_rx.recv_timeout(Duration::from_secs(2));
+    assert!(
+        record.is_ok(),
+        "dead-letter record is delivered; source finished={}, dead-letter finished={}, operations={:?}",
+        source_run.as_ref().is_some_and(std::thread::JoinHandle::is_finished),
+        dead_letter_run
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished),
+        spi.operation_log()
+    );
+    let (reason, original_event_id, subscriber_id) = record.unwrap();
+    assert_eq!(reason, "handler error formatting panicked");
+    assert_eq!(original_event_id, "event-test");
+    assert_eq!(subscriber_id, "panic-handler");
+    assert_eq!(spi.operation_log().iter().filter(|call| **call == "publish").count(), 1);
+    assert!(spi.settlement_dispositions().contains(&DeliveryDisposition::Reject));
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+    source_run.unwrap().join().unwrap().unwrap();
+    dead_letter_run.unwrap().join().unwrap().unwrap();
+    assert_eq!(displays.load(Ordering::SeqCst), 2);
+    assert_eq!(drops.load(Ordering::SeqCst), 2);
 }
 
 #[test]

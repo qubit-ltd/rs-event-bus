@@ -167,6 +167,8 @@ impl<T: 'static> DeadLetterEvent<T> {
     ///
     /// Treat this text as untrusted diagnostic content when rendering it in
     /// logs or other externally visible sinks.
+    /// If formatting the original error unwinds, this returns the fixed
+    /// fallback message `handler error formatting panicked`.
     ///
     /// # Returns
     /// The retained failure description.
