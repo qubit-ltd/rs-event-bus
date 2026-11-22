@@ -70,7 +70,9 @@ type RetryFailure = (Box<DeliveryError>, u32, FailureDirective);
 /// A typed subscription whose receive loop is driven by the caller's executor.
 ///
 /// Dropping this handle synchronously disposes its control and cannot await
-/// provider receiver close. An unstarted receiver is released locally.
+/// provider receiver close. Same-bus shutdown reentrancy checks also apply to
+/// the synchronous stop notification. An unstarted receiver is released
+/// locally.
 /// Disposal removes the control from the bus, so deterministic receiver close
 /// and error reporting require calling [`Self::close`] before dropping the
 /// handle. An ephemeral provider may discard unsettled work on receiver drop.

@@ -17,6 +17,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -743,6 +744,134 @@ fn test_cancelled_run_lease_return_wake_rejects_same_bus_shutdown() {
         "provider shutdown must run once"
     );
     *bus_slot.lock().expect("bus lock") = None;
+}
+
+#[test]
+fn test_dropping_subscription_during_shutdown_takeover_rejects_same_bus_shutdown() {
+    let provider = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("drop-takeover-reenter").unwrap(), provider.clone()).expect("facade");
+    let bus_slot = Arc::new(Mutex::new(None));
+    let observed = Arc::new(Mutex::new(None));
+    let gate = Arc::new(AtomicBool::new(false));
+    let started = Arc::new(AtomicBool::new(false));
+    let handler_polls = Arc::new(AtomicUsize::new(0));
+    let subscription = block_on_shutdown(
+        bus.subscribe(
+            SubscribeRequest::new(
+                "drop-takeover-reenter",
+                Topic::<u32>::new("drop-takeover-reenter").unwrap(),
+            )
+            .unwrap(),
+        ),
+    )
+    .expect("subscription");
+    provider.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+        subscription.id(),
+        "drop-takeover-reenter",
+    ))));
+
+    let gate_for_handler = gate.clone();
+    let started_for_handler = started.clone();
+    let polls_for_handler = handler_polls.clone();
+    let mut run = Box::pin(subscription.run(move |_| {
+        let gate = gate_for_handler.clone();
+        let started = started_for_handler.clone();
+        let polls = polls_for_handler.clone();
+        async move {
+            started.store(true, Ordering::SeqCst);
+            poll_fn(move |_| {
+                polls.fetch_add(1, Ordering::SeqCst);
+                if gate.load(Ordering::SeqCst) {
+                    Poll::Ready(Ok(()))
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await
+        }
+    }));
+    for _ in 0..100 {
+        let _ = run.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+        if started.load(Ordering::SeqCst) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        started.load(Ordering::SeqCst),
+        "handler must start before shutdown takeover"
+    );
+    drop(run);
+
+    let reenter = Arc::new(ReenterOnWake {
+        bus: bus_slot.clone(),
+        observed: observed.clone(),
+        subscription: Arc::new(Mutex::new(None)),
+        run_observed: Arc::new(Mutex::new(None)),
+        handler_calls: Arc::new(AtomicUsize::new(0)),
+        used: AtomicBool::new(false),
+    });
+    let waker = Waker::from(reenter.clone());
+    let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+    assert!(shutdown.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+    assert!(
+        handler_polls.load(Ordering::SeqCst) >= 2,
+        "shutdown must repoll the active handler"
+    );
+    assert_eq!(0, provider.close_call_count(), "shutdown waits for the active handler");
+    assert!(
+        observed.lock().unwrap().is_none(),
+        "the probe bus is not installed during takeover"
+    );
+    *bus_slot.lock().unwrap() = Some(bus.clone());
+    reenter.used.store(false, Ordering::SeqCst);
+    assert!(shutdown.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+    *observed.lock().unwrap() = None;
+    reenter.used.store(false, Ordering::SeqCst);
+    drop(subscription);
+    assert!(
+        reenter.used.load(Ordering::SeqCst),
+        "subscription stop must wake the takeover waker"
+    );
+
+    assert!(
+        matches!(
+            observed.lock().unwrap().as_ref(),
+            Some(Poll::Ready(Err(ShutdownError::Lifecycle(
+                LifecycleError::WouldDeadlock { operation: "shutdown" }
+            ))))
+        ),
+        "subscription drop must reject nested shutdown: {:?}",
+        observed.lock().unwrap()
+    );
+
+    gate.store(true, Ordering::SeqCst);
+    let mut result = Poll::Pending;
+    for _ in 0..100 {
+        result = shutdown.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+        if result.is_ready() {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    assert!(matches!(result, Poll::Ready(Ok(_))), "shutdown result: {result:?}");
+    assert_eq!(
+        1,
+        provider.settlement_count(),
+        "the active handler settles its delivery once"
+    );
+    assert_eq!(
+        1,
+        provider.close_call_count(),
+        "the original shutdown closes the receiver"
+    );
+    assert_eq!(
+        1,
+        provider.shutdown_transition_count(),
+        "the original shutdown stops the provider once"
+    );
+    *bus_slot.lock().unwrap() = None;
 }
 
 #[test]

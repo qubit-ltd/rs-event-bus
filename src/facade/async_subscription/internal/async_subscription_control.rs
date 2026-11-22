@@ -189,7 +189,8 @@ impl<T: 'static> AsyncSubscriptionControl<T> {
     /// before dropping the handle. Disposal removes this control from the bus;
     /// later bus shutdown does not provide receiver-close cleanup for it.
     pub(in crate::facade::async_subscription) fn dispose(&self) {
-        self.signals.stop(ShutdownMode::Immediate);
+        let bus_key = self.bus.as_ptr() as usize;
+        with_subscription_scope(bus_key, self.id, || self.signals.stop(ShutdownMode::Immediate));
         self.mark_stopped();
         let session = {
             let mut slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
