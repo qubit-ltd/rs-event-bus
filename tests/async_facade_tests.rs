@@ -4570,6 +4570,78 @@ fn test_paused_subscription_payload_drop_panic_releases_registration() {
 }
 
 #[test]
+fn test_immediate_close_counts_buffered_delivery_when_payload_drop_panics() {
+    struct DropProbe(bool);
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            if self.0 {
+                panic!("buffered payload drop probe");
+            }
+        }
+    }
+
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let config = EventBusFacadeConfig::new().with_delivery_scheduling(
+        DeliverySchedulingConfig::new(
+            std::num::NonZeroUsize::new(1).unwrap(),
+            std::num::NonZeroUsize::new(2).unwrap(),
+            std::num::NonZeroUsize::new(2).unwrap(),
+            std::num::NonZeroUsize::new(1).unwrap(),
+        )
+        .unwrap(),
+    );
+    let bus = AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi.clone(), config).unwrap();
+    let payload_topic = Topic::<DropProbe>::new("immediate-close-drop.topic").unwrap();
+    let mut subscription = block_on(
+        bus.subscribe(
+            SubscribeRequest::new("immediate-close-drop", payload_topic)
+                .unwrap()
+                .with_options(
+                    SubscribeOptions::builder()
+                        .durability(SubscriptionDurability::Ephemeral)
+                        .build(),
+                ),
+        ),
+    )
+    .unwrap();
+    for (event_id, panic_on_drop) in [("ordinary", false), ("panic", true)] {
+        spi.enqueue(InboundMessage::new(
+            TopicAddress::new("immediate-close-drop.topic").unwrap(),
+            EventId::new(event_id).unwrap(),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            TransportPayload::Native(Arc::new(DropProbe(panic_on_drop))),
+            None,
+            Default::default(),
+        ));
+    }
+    let mut runner = Box::pin(subscription.run(|_| std::future::pending::<Result<(), DeliveryError>>()));
+    let mut metrics = subscription.delivery_metrics().metrics;
+    for _ in 0..1024 {
+        let _ = crate::support::manual_async::poll_once(runner.as_mut());
+        metrics = subscription.delivery_metrics().metrics;
+        if metrics.running_handlers == 1 && metrics.queued == 1 {
+            break;
+        }
+    }
+    assert_eq!(metrics.running_handlers, 1);
+    assert_eq!(metrics.queued, 1);
+    drop(runner);
+    assert_eq!(subscription.run_state(), AsyncSubscriptionRunState::Paused);
+    assert_eq!(subscription.delivery_metrics().metrics.abandoned_ephemeral, 0);
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| block_on(subscription.close())))
+        .expect_err("queued payload destructor must panic during immediate close");
+    assert_eq!(panic.downcast_ref::<&str>(), Some(&"buffered payload drop probe"));
+    assert_eq!(subscription.delivery_metrics().metrics.queued, 0);
+    assert_eq!(subscription.delivery_metrics().metrics.abandoned_ephemeral, 1);
+    drop(subscription);
+    let report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
+    assert_eq!(report.known_abandoned_deliveries, 2);
+}
+
+#[test]
 fn test_dropping_subscription_during_shutdown_takeover_releases_the_active_session() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =

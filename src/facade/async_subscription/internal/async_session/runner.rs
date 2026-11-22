@@ -236,11 +236,10 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 .await;
             }
             if self.signals.is_stopped() && !self.signals.stopping_gracefully() {
-                let count = self.buffered.len();
-                self.buffered.clear();
-                for _ in 0..count {
+                for _ in 0..self.buffered.len() {
                     self.record_abandoned_delivery();
                 }
+                self.buffered.clear();
                 self.discard_unstarted_tasks();
                 self.inner.scheduler.stop_subscription(self.id);
                 if self.signals.terminal_failure().is_some() {

@@ -9,6 +9,9 @@
 
 use std::future::Future;
 use std::future::poll_fn;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
+use std::panic::resume_unwind;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::PoisonError;
@@ -35,6 +38,7 @@ use crate::facade::async_event_bus::waiting::wait_until_deadline;
 use crate::facade::async_subscription::BusContextFuture;
 use crate::facade::async_subscription::is_current_bus_poll;
 use crate::facade::async_subscription::with_bus_scope;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::Topic;
 use crate::spi::DurabilityCapability;
 use crate::spi::ShutdownMode;
@@ -242,6 +246,9 @@ impl AsyncEventBus {
     /// whose receiver close failed runs in this bus context. A shutdown
     /// requested from those destructors returns
     /// [`LifecycleError::WouldDeadlock`].
+    /// If the first final receiver destructor panics, the remaining
+    /// subscriptions are still disposed and the closed state and report are
+    /// published before that panic is propagated.
     /// The same error is returned if a synchronous waker invoked while an
     /// immediate shutdown escalates an active graceful shutdown requests
     /// shutdown of this bus again.
@@ -399,10 +406,18 @@ impl AsyncEventBus {
             .cloned()
             .collect();
         let bus_key = Arc::as_ptr(&self.inner) as usize;
-        with_bus_scope(bus_key, || {
+        let first_panic = with_bus_scope(bus_key, || {
+            let mut first_panic = None;
             for control in remaining_controls {
-                control.dispose();
+                if let Err(payload) = catch_unwind(AssertUnwindSafe(move || control.dispose())) {
+                    if first_panic.is_none() {
+                        first_panic = Some(payload);
+                    } else {
+                        dispose_panic_payload(payload);
+                    }
+                }
             }
+            first_panic
         });
         let report = ShutdownReport::new(
             outcome,
@@ -416,6 +431,9 @@ impl AsyncEventBus {
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(report);
         *self.inner.state.lock().unwrap_or_else(PoisonError::into_inner) = BusState::Closed;
+        if let Some(payload) = first_panic {
+            resume_unwind(payload);
+        }
         if let Some(errors) = self.inner.close_errors_snapshot() {
             return Err(ShutdownError::SubscriptionClose(errors));
         }

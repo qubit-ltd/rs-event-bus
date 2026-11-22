@@ -827,6 +827,7 @@ struct CloseFailingSpi {
     receiver_drops: Arc<AtomicUsize>,
     receive_future_drops: Arc<AtomicUsize>,
     fail_every_close: bool,
+    panic_on_first_receiver_drop: bool,
     close_succeeds_immediately: bool,
     drop_source_on_close_attempt: DropSourceOnCloseAttempt,
     drop_probe: Arc<Mutex<Option<DropShutdownProbe>>>,
@@ -874,6 +875,7 @@ impl AsyncEventBusSpi for CloseFailingSpi {
         let receiver_drops = self.receiver_drops.clone();
         let receive_future_drops = self.receive_future_drops.clone();
         let fail_every_close = self.fail_every_close;
+        let panic_on_first_receiver_drop = self.panic_on_first_receiver_drop;
         let close_succeeds_immediately = self.close_succeeds_immediately;
         let drop_source_on_close_attempt = self.drop_source_on_close_attempt.lock().expect("probe mutex").clone();
         let drop_probe = self.drop_probe.lock().expect("probe mutex").clone();
@@ -888,6 +890,7 @@ impl AsyncEventBusSpi for CloseFailingSpi {
                 receiver_drops,
                 receive_future_drops,
                 fail_every_close,
+                panic_on_first_receiver_drop,
                 close_succeeds_immediately,
                 drop_source_on_close_attempt,
                 drop_probe,
@@ -927,6 +930,7 @@ struct CloseFailingReceiver {
     receiver_drops: Arc<AtomicUsize>,
     receive_future_drops: Arc<AtomicUsize>,
     fail_every_close: bool,
+    panic_on_first_receiver_drop: bool,
     close_succeeds_immediately: bool,
     drop_source_on_close_attempt: Option<(DropShutdownProbe, Arc<AtomicUsize>)>,
     drop_probe: Option<DropShutdownProbe>,
@@ -1033,7 +1037,10 @@ impl Drop for CancellableReceive {
 
 impl Drop for CloseFailingReceiver {
     fn drop(&mut self) {
-        self.receiver_drops.fetch_add(1, Ordering::AcqRel);
+        let previous = self.receiver_drops.fetch_add(1, Ordering::AcqRel);
+        if self.panic_on_first_receiver_drop && previous == 0 {
+            panic!("terminal receiver drop probe");
+        }
         if let Some(probe) = &self.drop_probe {
             probe.check_nested_shutdown();
         }
@@ -1470,6 +1477,50 @@ fn test_shutdown_disposes_unstarted_failed_close_session_after_provider_terminat
     assert_eq!(repeated_errors.len(), 1);
     assert_eq!(spi.provider_shutdown_attempts.load(Ordering::Acquire), 1);
     assert_eq!(spi.receiver_drops.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn test_shutdown_finishes_terminal_disposal_after_receiver_drop_panic() {
+    let spi = Arc::new(CloseFailingSpi {
+        fail_every_close: true,
+        panic_on_first_receiver_drop: true,
+        ..CloseFailingSpi::default()
+    });
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("close-failing").expect("static test provider ID must be valid"),
+        spi.clone(),
+    )
+    .expect("valid provider capabilities");
+    let first = block_on(async {
+        bus.subscribe(SubscribeRequest::new("terminal-panic-first", topic()).expect("valid subscriber ID"))
+            .await
+            .expect("first subscription")
+    });
+    let second = block_on(async {
+        bus.subscribe(SubscribeRequest::new("terminal-panic-second", topic()).expect("valid subscriber ID"))
+            .await
+            .expect("second subscription")
+    });
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        block_on(bus.shutdown(ShutdownMode::Immediate))
+    }))
+    .expect_err("terminal receiver destructor must propagate its panic");
+    assert_eq!(panic.downcast_ref::<&str>(), Some(&"terminal receiver drop probe"));
+    assert_eq!(spi.receiver_drops.load(Ordering::Acquire), 2);
+    let report = bus.shutdown_report().expect("terminal report");
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+
+    let Err(ShutdownError::SubscriptionClose(errors)) = block_on(bus.shutdown(ShutdownMode::Immediate)) else {
+        panic!("both canonical close failures must remain available");
+    };
+    assert_eq!(errors.total_count(), 2);
+    let mut subscriber_ids: Vec<_> = errors.iter().map(|failure| failure.subscriber_id().as_str()).collect();
+    subscriber_ids.sort_unstable();
+    assert_eq!(subscriber_ids, ["terminal-panic-first", "terminal-panic-second"]);
+    assert_eq!(spi.provider_shutdown_attempts.load(Ordering::Acquire), 1);
+    assert_eq!(bus.shutdown_report(), Some(report));
+    drop((first, second));
 }
 
 #[test]
