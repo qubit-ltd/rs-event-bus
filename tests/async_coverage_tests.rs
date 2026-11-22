@@ -817,6 +817,8 @@ fn test_async_terminal_failure_handler_reads_non_clone_payload_and_ordering_meta
 }
 
 /// Provider double whose first receiver close fails and later attempts succeed.
+type DropSourceOnCloseAttempt = Arc<Mutex<Option<(DropShutdownProbe, Arc<AtomicUsize>)>>>;
+
 #[derive(Default)]
 struct CloseFailingSpi {
     receives: Arc<AtomicUsize>,
@@ -826,7 +828,7 @@ struct CloseFailingSpi {
     receive_future_drops: Arc<AtomicUsize>,
     fail_every_close: bool,
     close_succeeds_immediately: bool,
-    drop_source_on_close_attempt: Arc<Mutex<Option<(DropShutdownProbe, Arc<AtomicUsize>)>>>,
+    drop_source_on_close_attempt: DropSourceOnCloseAttempt,
     drop_probe: Arc<Mutex<Option<DropShutdownProbe>>>,
     fail_provider_shutdown_once: bool,
     pending_provider_shutdown_once: bool,
@@ -1256,7 +1258,11 @@ fn test_cancelled_shutdown_retry_preserves_one_canonical_close_failure() {
         "successful provider retry disposes the receiver"
     );
     assert_one_nested_shutdown_rejected(&drop_probe);
-    assert_eq!(source_drops.load(Ordering::Acquire), 1, "discarded retry source drops once");
+    assert_eq!(
+        source_drops.load(Ordering::Acquire),
+        1,
+        "discarded retry source drops once"
+    );
     drop(subscription);
 }
 
