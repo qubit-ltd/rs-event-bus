@@ -11,6 +11,8 @@ use std::any::TypeId;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::error::Error;
+use std::fmt;
 use std::future::Future;
 use std::future::pending;
 use std::future::poll_fn;
@@ -174,6 +176,24 @@ fn spi_error(operation: &'static str) -> SpiError {
         kind: "fake_failure",
         retryable: Some(false),
         source: Box::new(IoError::other("injected fake SPI failure")),
+    }
+}
+
+#[derive(Debug)]
+struct DropPanicPublishError(Arc<AtomicUsize>);
+
+impl fmt::Display for DropPanicPublishError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("drop-panic provider error")
+    }
+}
+
+impl Error for DropPanicPublishError {}
+
+impl Drop for DropPanicPublishError {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::AcqRel);
+        panic!("injected provider error drop panic");
     }
 }
 
@@ -655,6 +675,7 @@ pub(crate) struct FakeAsyncEventBusSpi {
     shutdown_transitions: Arc<Mutex<usize>>,
     calls: Arc<Mutex<Vec<&'static str>>>,
     fail_next_publish: Arc<Mutex<bool>>,
+    drop_panic_publish_error: Arc<Mutex<Option<Arc<AtomicUsize>>>>,
     publish_paused: Arc<AtomicBool>,
     publish_wakers: Arc<Mutex<Vec<Waker>>>,
     unconfirmed_next_publish: Arc<Mutex<bool>>,
@@ -701,6 +722,7 @@ impl FakeAsyncEventBusSpi {
             shutdown_transitions: Arc::default(),
             calls: Arc::default(),
             fail_next_publish: Arc::default(),
+            drop_panic_publish_error: Arc::default(),
             publish_paused: Arc::new(AtomicBool::new(false)),
             publish_wakers: Arc::default(),
             unconfirmed_next_publish: Arc::default(),
@@ -814,6 +836,10 @@ impl FakeAsyncEventBusSpi {
         self.settle_panics.store(true, Ordering::Release);
     }
     pub(crate) fn fail_next_publish(&self) {
+        *self.fail_next_publish.lock().unwrap() = true;
+    }
+    pub(crate) fn fail_next_publish_with_drop_panic(&self, drops: Arc<AtomicUsize>) {
+        *self.drop_panic_publish_error.lock().unwrap() = Some(drops);
         *self.fail_next_publish.lock().unwrap() = true;
     }
     pub(crate) fn pause_publishes(&self) {
@@ -963,6 +989,7 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
     fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         self.calls.lock().unwrap().push("publish");
         if take(&mut *self.fail_next_publish.lock().unwrap()) {
+            let drop_panic_error = self.drop_panic_publish_error.lock().unwrap().take();
             let paused = self.publish_paused.clone();
             let wakers = self.publish_wakers.clone();
             return Box::pin(async move {
@@ -977,7 +1004,18 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
                     Poll::Pending
                 })
                 .await;
-                Err(spi_error("publish"))
+                if let Some(drops) = drop_panic_error {
+                    Err(SpiError::Publish {
+                        provider_id: "fake".into(),
+                        resource: None,
+                        kind: "fake_failure",
+                        retryable: Some(false),
+                        effect: PublishEffect::NotAccepted,
+                        source: Box::new(DropPanicPublishError(drops)),
+                    })
+                } else {
+                    Err(spi_error("publish"))
+                }
             });
         }
         let unconfirmed = take(&mut *self.unconfirmed_next_publish.lock().unwrap());

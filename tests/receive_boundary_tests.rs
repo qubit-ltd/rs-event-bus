@@ -10,6 +10,7 @@
 mod support;
 
 use std::error::Error as StdError;
+use std::fmt;
 use std::future::poll_fn;
 use std::io::Error as IoError;
 use std::num::NonZeroUsize;
@@ -85,6 +86,17 @@ struct Probe {
     decode: AtomicUsize,
     mode: usize,
 }
+
+#[derive(Debug)]
+struct PanicDisplay;
+
+impl fmt::Display for PanicDisplay {
+    fn fmt(&self, _: &mut fmt::Formatter<'_>) -> fmt::Result {
+        panic!("injected codec error formatting panic")
+    }
+}
+
+impl StdError for PanicDisplay {}
 impl Probe {
     /// Creates a codec with independent callback counters.
     fn new() -> Arc<Self> {
@@ -136,8 +148,72 @@ impl EventCodec<u32> for Probe {
                 source: Box::new(IoError::other("malformed message")),
             });
         }
+        if self.mode == 5 {
+            return Err(CodecError::Encode {
+                source: Box::new(PanicDisplay),
+            });
+        }
         Ok(1)
     }
+}
+
+#[test]
+fn test_sync_codec_stop_display_panic_preserves_cause_and_abandonment() {
+    let mut source_value = Source::new(1, Some(SchemaId::new("v1").expect("schema")));
+    source_value.ephemeral = true;
+    let source = Arc::new(source_value);
+    let bus =
+        EventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config()).expect("bus");
+    let (diagnostic_sender, diagnostic_receiver) = mpsc::channel();
+    let _observer = bus.observe_diagnostics(move |diagnostic| {
+        if let Diagnostic::InternalFailure { origin, message } = diagnostic
+            && origin.as_ref() == "receive_boundary"
+        {
+            let _ = diagnostic_sender.send(message.clone());
+        }
+    });
+    let handled = Arc::new(AtomicUsize::new(0));
+    let handled_by_callback = handled.clone();
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new(
+                "codec-format-panic",
+                Topic::new("boundary").expect("topic").with_shared_codec(panic_probe(5)),
+            )
+            .expect("request"),
+            move |_| {
+                handled_by_callback.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .expect("subscription");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while subscription.terminal_failure().is_none() {
+        assert!(Instant::now() < deadline, "codec stop reaches terminal state");
+        thread::yield_now();
+    }
+    let reason = subscription.terminal_failure().expect("structured stop reason");
+    let SubscriptionStopReason::Codec { event_id, error } = reason.as_ref() else {
+        panic!("codec failure remains structured")
+    };
+    assert_eq!(event_id.as_str(), "source-record");
+    let source_error = StdError::source(error.as_ref()).expect("original codec error retained");
+    assert!(source_error.downcast_ref::<PanicDisplay>().is_some());
+    assert_eq!(handled.load(Ordering::SeqCst), 0);
+    assert_eq!(source.settled.load(Ordering::SeqCst), 0);
+    assert!(source.dispositions.lock().expect("disposition log").is_empty());
+    assert_eq!(
+        diagnostic_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("fallback diagnostic emitted")
+            .as_ref(),
+        "codec error formatting panicked",
+    );
+    assert!(
+        diagnostic_receiver.try_recv().is_err(),
+        "stop diagnostic is emitted once"
+    );
+    let report = bus.shutdown(ShutdownMode::Immediate).expect("shutdown completes");
+    assert_eq!(report.known_abandoned_deliveries, 1);
 }
 #[derive(Clone)]
 struct Source {

@@ -73,6 +73,7 @@ mod spawn_failure_tests {
     //! Tests cleanup behavior when provider or scheduler worker creation fails.
 
     use std::error::Error;
+    use std::fmt;
     use std::io::Error as IoError;
     use std::num::NonZeroUsize;
     use std::sync::Arc;
@@ -145,7 +146,19 @@ mod spawn_failure_tests {
     struct CloseCounter {
         calls: Arc<AtomicUsize>,
         fail: bool,
+        panic_display: bool,
     }
+
+    #[derive(Debug)]
+    struct PanicDisplayError;
+
+    impl fmt::Display for PanicDisplayError {
+        fn fmt(&self, _: &mut fmt::Formatter<'_>) -> fmt::Result {
+            panic!("injected close error formatting panic")
+        }
+    }
+
+    impl Error for PanicDisplayError {}
 
     impl EventSubscriptionSpi for CloseCounter {
         fn receive(&mut self, _: Duration) -> Result<ReceiveOutcome, SpiError> {
@@ -165,7 +178,11 @@ mod spawn_failure_tests {
                     resource: None,
                     kind: "close_failed",
                     retryable: None,
-                    source: Box::new(IoError::other("synthetic close failure")),
+                    source: if self.panic_display {
+                        Box::new(PanicDisplayError)
+                    } else {
+                        Box::new(IoError::other("synthetic close failure"))
+                    },
                 })
             } else {
                 Ok(())
@@ -184,6 +201,7 @@ mod spawn_failure_tests {
         let receiver: Box<dyn EventSubscriptionSpi> = Box::new(CloseCounter {
             calls: close_calls.clone(),
             fail: false,
+            panic_display: false,
         });
         let error = super::cleanup_failed_worker_spawn(
             &bus.inner,
@@ -214,6 +232,7 @@ mod spawn_failure_tests {
             Ok(Box::new(CloseCounter {
                 calls: self.close_calls.clone(),
                 fail: true,
+                panic_display: false,
             }))
         }
 
@@ -272,5 +291,59 @@ mod spawn_failure_tests {
             .expect_err("cleanup close failure remains observable");
         assert!(matches!(shutdown_error, ShutdownError::SubscriptionClose(errors) if errors.len() == 2));
         assert_eq!(close_calls.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn test_scheduler_spawn_failure_records_close_error_before_safe_diagnostic_formatting() {
+        let close_calls = Arc::new(AtomicUsize::new(0));
+        let bus = EventBus::from_spi(
+            ProviderId::new("spawn-test").expect("valid provider ID"),
+            Arc::new(SpawnFailureSpi {
+                close_calls: close_calls.clone(),
+            }),
+        )
+        .expect("valid provider capabilities");
+        let (sender, diagnostic_receiver) = std::sync::mpsc::channel();
+        let _observer = bus.observe_diagnostics(move |diagnostic| {
+            if let crate::Diagnostic::InternalFailure { origin, message } = diagnostic
+                && origin.as_ref() == "subscription_spawn_close"
+            {
+                let _ = sender.send(message.clone());
+            }
+        });
+        let receiver: Box<dyn EventSubscriptionSpi> = Box::new(CloseCounter {
+            calls: close_calls.clone(),
+            fail: true,
+            panic_display: true,
+        });
+        let error = super::cleanup_failed_worker_spawn(
+            &bus.inner,
+            &SubscriberId::new("spawn-format-panic").expect("valid ID"),
+            Some(receiver),
+            IoError::other("synthetic worker spawn failure"),
+        );
+        assert!(matches!(
+            error,
+            SubscribeError::Spi(SpiError::Operation {
+                kind: "worker_spawn_failed",
+                ..
+            })
+        ));
+        assert_eq!(
+            Error::source(&error).expect("spawn source retained").to_string(),
+            "synthetic worker spawn failure"
+        );
+        assert_eq!(close_calls.load(Ordering::Acquire), 1);
+        assert_eq!(
+            diagnostic_receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("fallback diagnostic emitted")
+                .as_ref(),
+            "subscription close error formatting panicked",
+        );
+        let shutdown_error = bus
+            .shutdown(ShutdownMode::Immediate)
+            .expect_err("close failure retained for shutdown");
+        assert!(matches!(shutdown_error, ShutdownError::SubscriptionClose(errors) if errors.len() == 1));
     }
 }

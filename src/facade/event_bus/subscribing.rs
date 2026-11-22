@@ -45,6 +45,7 @@ use crate::model::SubscribeOptions;
 use crate::model::SubscribeRequest;
 use crate::model::Topic;
 use crate::pipeline::SubscriberPipeline;
+use crate::pipeline::format_diagnostic_error;
 use crate::spi::EventSubscriptionSpi;
 use crate::spi::PayloadModes;
 use crate::spi::PublishVisibility;
@@ -421,9 +422,12 @@ pub(in crate::facade) fn cleanup_failed_worker_spawn(
     if let Some(mut spi_subscription) = spi_subscription
         && let Err(close_error) = close_spi_subscription(inner, subscriber_id, &mut *spi_subscription)
     {
-        inner.emit_internal("subscription_spawn_close", close_error.to_string());
         let failure = Arc::new(SubscriptionCloseFailure::new(subscriber_id.clone(), close_error));
         inner.record_close_failure(&failure);
+        inner.emit_internal(
+            "subscription_spawn_close",
+            format_diagnostic_error(failure.as_ref(), "subscription close error formatting panicked"),
+        );
     }
     SubscribeError::Spi(SpiError::Operation {
         provider_id: inner.provider_id.as_str().into(),

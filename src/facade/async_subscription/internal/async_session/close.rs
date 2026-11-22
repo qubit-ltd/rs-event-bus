@@ -26,11 +26,30 @@ use crate::facade::async_subscription::BusState;
 use crate::facade::async_subscription::SubscriptionCloseErrors;
 use crate::facade::async_subscription::with_subscription_scope;
 use crate::internal::panic_payload::dispose_panic_payload;
+use crate::pipeline::format_diagnostic_error;
 use crate::spi::DurabilityCapability;
 use crate::spi::ShutdownMode;
 use crate::spi::panic_boundary::catch_spi_call;
 
 impl<T: Send + Sync + 'static> AsyncSession<T> {
+    /// Reports an error left by a resumed runner and safely releases it.
+    ///
+    /// # Parameters
+    /// - `origin`: diagnostic origin associated with the recovery path.
+    /// - `error`: one-shot receive error returned by the resumed runner.
+    pub(in crate::facade) fn report_resume_error(&self, origin: &'static str, error: ReceiveError) {
+        let bus_key = Arc::as_ptr(&self.inner) as usize;
+        with_subscription_scope(bus_key, self.id, || {
+            self.inner.emit(&Diagnostic::InternalFailure {
+                origin: origin.into(),
+                message: format_diagnostic_error(&error, "resume error formatting panicked").into(),
+            });
+            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(error))) {
+                dispose_panic_payload(payload);
+            }
+        });
+    }
+
     /// Stops this receiver and asynchronously releases provider resources.
     ///
     /// # Parameters
@@ -54,14 +73,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             && let Err(error) = self.run_loop(handler).await
             && !matches!(error, ReceiveError::Stopped(_))
         {
-            let bus_key = Arc::as_ptr(&self.inner) as usize;
-            with_subscription_scope(bus_key, self.id, || {
-                self.inner.emit(&Diagnostic::InternalFailure {
-                    origin: "close_resume".into(),
-                    message: error.to_string().into(),
-                });
-                drop(error);
-            });
+            self.report_resume_error("close_resume", error);
         }
         match self.close_inner(control).await {
             Ok(()) => Ok(()),

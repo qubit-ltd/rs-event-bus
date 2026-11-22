@@ -434,7 +434,8 @@ fn run_subscription_worker_body<T>(
                                     == crate::codec::ReceiveFailureAction::StopUnsettled
                             {
                                 let error = decoded.err().expect("matched decode error");
-                                let text = error.to_string();
+                                let text =
+                                    crate::pipeline::format_diagnostic_error(&error, "codec error formatting panicked");
                                 let first = control.fail_receive(SubscriptionStopReason::Codec {
                                     event_id,
                                     error: Arc::new(error),

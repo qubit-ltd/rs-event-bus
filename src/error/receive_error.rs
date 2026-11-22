@@ -68,12 +68,13 @@ pub enum ReceiveError {
     /// exclusive session lease.
     #[error("cannot run a subscription recursively from its own execution context")]
     WouldDeadlock,
-    /// Dead-letter construction or forwarding failed. The original provider
-    /// token, if present, remains unsettled for provider recovery.
-    /// Inspect the source error for the cause and any available retry details.
+    /// Dead-letter construction or forwarding failed. Admission may be
+    /// unknown; inspect a chained [`PublishFailure`](super::PublishFailure)'s
+    /// [`effect`](super::PublishFailure::effect) for admission evidence. The
+    /// original provider token, if present, remains unsettled for recovery.
     #[error("dead-letter forwarding failed for event {event_id:?}: {message}")]
     DeadLetterForwardFailed {
-        /// Source event whose dead-letter envelope could not be admitted.
+        /// ID of the source event associated with this dead-letter failure.
         event_id: EventId,
         /// Diagnostic summary of the dead-letter failure.
         message: Box<str>,

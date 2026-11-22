@@ -459,6 +459,7 @@ fn test_receive_failure_finalizes_all_completed_handler_failures_once() {
 fn test_resume_diagnostics_reject_reentrant_shutdown() {
     for shutdown_takeover in [false, true] {
         let spi = Arc::new(support::fake_spi::FakeAsyncEventBusSpi::new());
+        let source_drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let bus = AsyncEventBus::from_spi(ProviderId::new("resume-diagnostic-reentry").unwrap(), spi.clone()).unwrap();
         let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
         let observed_diagnostics = observed.clone();
@@ -505,7 +506,7 @@ fn test_resume_diagnostics_reject_reentrant_shutdown() {
                 )
                 .await
                 .unwrap();
-            spi.fail_next_publish();
+            spi.fail_next_publish_with_drop_panic(source_drops.clone());
             spi.pause_publishes();
             spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
                 subscription.id(),
@@ -540,6 +541,10 @@ fn test_resume_diagnostics_reject_reentrant_shutdown() {
                     .unwrap();
             } else {
                 subscription.close().await.unwrap();
+                let _ = bus
+                    .shutdown(qubit_event_bus::spi::ShutdownMode::Immediate)
+                    .await
+                    .unwrap();
             }
             let observed = observed.lock().unwrap();
             assert_eq!(observed.len(), 1, "one recovery diagnostic is delivered");
@@ -560,6 +565,18 @@ fn test_resume_diagnostics_reject_reentrant_shutdown() {
                 spi.settlement_dispositions().is_empty(),
                 "the source delivery remains unsettled"
             );
+            assert_eq!(source_drops.load(std::sync::atomic::Ordering::Acquire), 1);
+            assert_eq!(spi.close_call_count(), 1, "receiver close completes exactly once");
+            let operations = spi.operation_log();
+            let close_index = operations
+                .iter()
+                .position(|operation| *operation == "close")
+                .expect("receiver close logged");
+            let shutdown_index = operations
+                .iter()
+                .position(|operation| *operation == "shutdown")
+                .expect("provider shutdown logged");
+            assert!(close_index < shutdown_index, "provider shutdown follows receiver close");
         });
     }
 }
