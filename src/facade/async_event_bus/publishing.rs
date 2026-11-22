@@ -200,9 +200,10 @@ impl AsyncEventBus {
                 PublishError::Closed,
             ));
         };
-        let result = BusContextFuture::new_with_drop_context(Arc::as_ptr(&self.inner) as usize, async {
+        BusContextFuture::new_with_drop_context(Arc::as_ptr(&self.inner) as usize, async {
             let observers = self.observer_snapshot();
-            self.inner
+            let result = self
+                .inner
                 .publisher
                 .publish_async(
                     self.inner.spi.as_ref(),
@@ -212,17 +213,18 @@ impl AsyncEventBus {
                     self.inner.timer.clone(),
                 )
                 .await
+                .map_err(|failure| {
+                    self.inner.publish_metrics.record_error();
+                    publish_pipeline_error(event_id, failure)
+                })
+                .inspect(|receipt| {
+                    self.inner.publish_metrics.record_receipt(receipt);
+                });
+            completion.complete();
+            drop(observers);
+            result
         })
         .await
-        .map_err(|failure| {
-            self.inner.publish_metrics.record_error();
-            publish_pipeline_error(event_id, failure)
-        })
-        .inspect(|receipt| {
-            self.inner.publish_metrics.record_receipt(receipt);
-        });
-        completion.complete();
-        result
     }
 
     /// Publishes each request in order and retains each independent result.

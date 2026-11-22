@@ -175,6 +175,7 @@ struct GatedPublishSpi {
     inner: FakeAsyncEventBusSpi,
     released: Arc<AtomicBool>,
     accepted: Arc<AtomicUsize>,
+    fail: bool,
 }
 
 impl AsyncEventBusSpi for GatedPublishSpi {
@@ -193,7 +194,18 @@ impl AsyncEventBusSpi for GatedPublishSpi {
                 }
             })
             .await;
-            self.inner.publish(message).await
+            if self.fail {
+                Err(SpiError::Operation {
+                    provider_id: "gated".into(),
+                    operation: "publish",
+                    resource: None,
+                    kind: "test_failure",
+                    retryable: None,
+                    source: Box::new(std::io::Error::other("gated publish failure")),
+                })
+            } else {
+                self.inner.publish(message).await
+            }
         })
     }
 
@@ -213,11 +225,14 @@ struct ShutdownOnDropProbe {
     bus: AsyncEventBus,
     nested_shutdown_was_rejected: Arc<AtomicBool>,
     drops: Arc<AtomicUsize>,
+    metrics_on_drop: Arc<Mutex<Option<qubit_event_bus::facade::PublishMetricsSnapshot>>>,
+    panic_on_drop: bool,
 }
 
 impl Drop for ShutdownOnDropProbe {
     fn drop(&mut self) {
         self.drops.fetch_add(1, Ordering::AcqRel);
+        *self.metrics_on_drop.lock().unwrap() = Some(self.bus.publish_metrics());
         let mut shutdown = Box::pin(self.bus.shutdown(ShutdownMode::Immediate));
         let mut context = Context::from_waker(Waker::noop());
         self.nested_shutdown_was_rejected.store(
@@ -229,6 +244,7 @@ impl Drop for ShutdownOnDropProbe {
             ),
             Ordering::Release,
         );
+        assert!(!self.panic_on_drop, "observer drop panic");
     }
 }
 
@@ -239,15 +255,19 @@ fn assert_observer_snapshot_drops_in_publish_context(cancel: bool) {
         inner: FakeAsyncEventBusSpi::new(),
         released: released.clone(),
         accepted: accepted.clone(),
+        fail: false,
     });
     let bus = AsyncEventBus::from_spi(ProviderId::new("observer-drop-context").unwrap(), spi)
         .expect("valid provider capabilities");
     let nested_shutdown_was_rejected = Arc::new(AtomicBool::new(false));
     let drops = Arc::new(AtomicUsize::new(0));
+    let metrics_on_drop = Arc::new(Mutex::new(None));
     let probe = ShutdownOnDropProbe {
         bus: bus.clone(),
         nested_shutdown_was_rejected: nested_shutdown_was_rejected.clone(),
         drops: drops.clone(),
+        metrics_on_drop: metrics_on_drop.clone(),
+        panic_on_drop: false,
     };
     let observer = bus.observe_diagnostics(move |_| {
         let _probe = &probe;
@@ -270,10 +290,92 @@ fn assert_observer_snapshot_drops_in_publish_context(cancel: bool) {
         };
         assert_eq!("observer-drop-context", receipt.provider_id().as_str());
         assert_eq!(1, bus.publish_metrics().opaque_accepted);
+        assert_eq!(1, metrics_on_drop.lock().unwrap().unwrap().opaque_accepted);
+        assert_eq!(0, metrics_on_drop.lock().unwrap().unwrap().cancelled);
     }
 
     assert_eq!(1, drops.load(Ordering::Acquire));
+    let metrics_at_drop = metrics_on_drop.lock().unwrap().unwrap();
+    if cancel {
+        assert_eq!(0, metrics_at_drop.cancelled);
+        assert_eq!(0, metrics_at_drop.opaque_accepted);
+        assert_eq!(0, metrics_at_drop.errors);
+    }
     assert!(nested_shutdown_was_rejected.load(Ordering::Acquire));
+    let _report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("external shutdown succeeds");
+}
+
+#[test]
+fn test_async_publish_observer_drop_observes_provider_error_before_release() {
+    let released = Arc::new(AtomicBool::new(false));
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let spi = Arc::new(GatedPublishSpi {
+        inner: FakeAsyncEventBusSpi::new(),
+        released: released.clone(),
+        accepted: accepted.clone(),
+        fail: true,
+    });
+    let bus = AsyncEventBus::from_spi(ProviderId::new("observer-drop-error").unwrap(), spi)
+        .expect("valid provider capabilities");
+    let metrics_on_drop = Arc::new(Mutex::new(None));
+    let probe = ShutdownOnDropProbe {
+        bus: bus.clone(),
+        nested_shutdown_was_rejected: Arc::new(AtomicBool::new(false)),
+        drops: Arc::new(AtomicUsize::new(0)),
+        metrics_on_drop: metrics_on_drop.clone(),
+        panic_on_drop: false,
+    };
+    let observer = bus.observe_diagnostics(move |_| {
+        let _probe = &probe;
+    });
+    let mut publishing = Box::pin(bus.publish(PublishRequest::new(topic(), 11).unwrap()));
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(publishing.as_mut().poll(&mut context).is_pending());
+    drop(observer);
+    released.store(true, Ordering::Release);
+    assert!(matches!(publishing.as_mut().poll(&mut context), Poll::Ready(Err(_))));
+    let metrics = metrics_on_drop.lock().unwrap().unwrap();
+    assert_eq!(1, metrics.errors);
+    assert_eq!(0, metrics.cancelled);
+    let _report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("external shutdown succeeds");
+}
+
+#[test]
+fn test_async_publish_observer_drop_panics_after_receipt_is_recorded() {
+    let released = Arc::new(AtomicBool::new(false));
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let spi = Arc::new(GatedPublishSpi {
+        inner: FakeAsyncEventBusSpi::new(),
+        released: released.clone(),
+        accepted: accepted.clone(),
+        fail: false,
+    });
+    let bus = AsyncEventBus::from_spi(ProviderId::new("observer-drop-panic").unwrap(), spi)
+        .expect("valid provider capabilities");
+    let metrics_on_drop = Arc::new(Mutex::new(None));
+    let probe = ShutdownOnDropProbe {
+        bus: bus.clone(),
+        nested_shutdown_was_rejected: Arc::new(AtomicBool::new(false)),
+        drops: Arc::new(AtomicUsize::new(0)),
+        metrics_on_drop: metrics_on_drop.clone(),
+        panic_on_drop: true,
+    };
+    let observer = bus.observe_diagnostics(move |_| {
+        let _probe = &probe;
+    });
+    let mut publishing = Box::pin(bus.publish(PublishRequest::new(topic(), 10).unwrap()));
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(publishing.as_mut().poll(&mut context).is_pending());
+    drop(observer);
+    released.store(true, Ordering::Release);
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = publishing.as_mut().poll(&mut context);
+    }));
+    assert!(panic.is_err());
+    drop(publishing);
+    let metrics = metrics_on_drop.lock().unwrap().unwrap();
+    assert_eq!(1, metrics.opaque_accepted);
+    assert_eq!(0, metrics.cancelled);
     let _report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("external shutdown succeeds");
 }
 
