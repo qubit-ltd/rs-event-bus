@@ -21,10 +21,14 @@ use std::time::Instant;
 
 use qubit_id::Id;
 
+use self::worker_join_state::WorkerJoinState;
 use crate::error::SubscriptionCloseFailure;
 use crate::facade::internal::DeliveryMetrics;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::SubscriberId;
 use crate::model::SubscriptionStopReason;
+
+mod worker_join_state;
 
 /// Coordination state shared by a subscription handle and its worker.
 pub(crate) struct SubscriptionControl {
@@ -40,8 +44,10 @@ pub(crate) struct SubscriptionControl {
     terminal_failure: Mutex<Option<Arc<SubscriptionStopReason>>>,
     /// Linearizes new delivery work against terminal receive failure.
     start_gate: Mutex<()>,
-    /// Worker thread handle retained until one caller joins it.
-    pub(in crate::facade) worker: Mutex<Option<JoinHandle<()>>>,
+    /// Shared worker join state and cached exit classification.
+    worker: Mutex<WorkerJoinState>,
+    /// Wakes callers waiting for another caller to join the worker.
+    worker_joined: Condvar,
     /// Canonical provider receiver close failure.
     pub(in crate::facade) close_error: Mutex<Option<Arc<SubscriptionCloseFailure>>>,
     /// Whether receiver close and worker cleanup have completed.
@@ -110,7 +116,8 @@ impl SubscriptionControl {
             cancelled: AtomicBool::new(false),
             terminal_failure: Mutex::new(None),
             start_gate: Mutex::new(()),
-            worker: Mutex::new(None),
+            worker: Mutex::new(WorkerJoinState::Unregistered),
+            worker_joined: Condvar::new(),
             close_error: Mutex::new(None),
             finished: Mutex::new(false),
             finished_changed: Condvar::new(),
@@ -197,7 +204,46 @@ impl SubscriptionControl {
     /// # Parameters
     /// - `worker`: running worker thread to join during cancellation.
     pub(in crate::facade) fn set_worker(&self, worker: JoinHandle<()>) {
-        *self.worker.lock().unwrap_or_else(PoisonError::into_inner) = Some(worker);
+        *self.worker.lock().unwrap_or_else(PoisonError::into_inner) = WorkerJoinState::Ready { worker };
+    }
+
+    /// Joins the worker once and shares its panic classification with every
+    /// caller.
+    pub(in crate::facade) fn join_worker_panicked(&self) -> bool {
+        let worker = loop {
+            let mut state = self.worker.lock().unwrap_or_else(PoisonError::into_inner);
+            match &mut *state {
+                WorkerJoinState::Unregistered => return false,
+                WorkerJoinState::Ready { .. } => {
+                    let WorkerJoinState::Ready { worker } = std::mem::replace(&mut *state, WorkerJoinState::Joining)
+                    else {
+                        unreachable!("worker state was checked while locked");
+                    };
+                    #[cfg(test)]
+                    crate::internal::test_wait_probe::announce("subscription_worker_join");
+                    break worker;
+                }
+                WorkerJoinState::Joining => {
+                    #[cfg(test)]
+                    crate::internal::test_wait_probe::announce("subscription_worker_join_waiting");
+                    state = self.worker_joined.wait(state).unwrap_or_else(PoisonError::into_inner);
+                    drop(state);
+                }
+                WorkerJoinState::Joined { panicked } => return *panicked,
+            }
+        };
+
+        let result = worker.join();
+        let panicked = result.is_err();
+        {
+            let mut state = self.worker.lock().unwrap_or_else(PoisonError::into_inner);
+            *state = WorkerJoinState::Joined { panicked };
+            self.worker_joined.notify_all();
+        }
+        if let Err(payload) = result {
+            dispose_panic_payload(payload);
+        }
+        panicked
     }
 
     /// Requests worker cancellation without waiting for an executing handler.
@@ -324,5 +370,101 @@ impl SubscriptionControl {
                 .wait(finished)
                 .unwrap_or_else(PoisonError::into_inner);
         }
+    }
+}
+
+#[cfg(test)]
+mod worker_join_tests {
+    use std::panic::AssertUnwindSafe;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    use qubit_id::Id;
+
+    use super::SubscriptionControl;
+    use crate::model::SubscriberId;
+
+    fn control() -> Arc<SubscriptionControl> {
+        SubscriptionControl::new(
+            Id::new(1),
+            SubscriberId::new("worker-join-test").expect("valid subscriber ID"),
+        )
+    }
+
+    #[test]
+    fn test_concurrent_joiners_share_worker_panic() {
+        let control = control();
+        let (release_tx, release_rx) = mpsc::channel();
+        control.set_worker(thread::spawn(move || {
+            release_rx.recv().expect("test releases worker");
+            panic!("controlled worker panic");
+        }));
+
+        let join_owner = crate::internal::test_wait_probe::install("subscription_worker_join");
+        let owner_control = control.clone();
+        let (results_tx, results_rx) = mpsc::channel();
+        let owner = thread::spawn(move || {
+            results_tx
+                .send(owner_control.join_worker_panicked())
+                .expect("results receiver is active");
+        });
+        join_owner
+            .recv_timeout(Duration::from_secs(2))
+            .expect("first caller took the join handle");
+
+        let joining_waiter = crate::internal::test_wait_probe::install("subscription_worker_join_waiting");
+        let waiting_control = control.clone();
+        let (waiting_result_tx, waiting_result_rx) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            waiting_result_tx
+                .send(waiting_control.join_worker_panicked())
+                .expect("waiter result receiver is active");
+        });
+        joining_waiter
+            .recv_timeout(Duration::from_secs(2))
+            .expect("second caller waits for the active join");
+
+        release_tx.send(()).expect("worker remains active");
+        assert!(
+            results_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("first join completes")
+        );
+        assert!(
+            waiting_result_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("second join completes")
+        );
+        owner.join().expect("join owner exits");
+        waiter.join().expect("join waiter exits");
+    }
+
+    struct PanickingDrop(Arc<AtomicUsize>);
+
+    impl Drop for PanickingDrop {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            panic!("panic payload destructor panic");
+        }
+    }
+
+    #[test]
+    fn test_join_contains_panic_payload_destructor_panic_and_caches_result() {
+        let control = control();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let payload_drops = drops.clone();
+        control.set_worker(thread::spawn(move || {
+            std::panic::panic_any(PanickingDrop(payload_drops));
+        }));
+
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| control.join_worker_panicked()));
+        assert!(result.expect("payload destructor panic is contained"));
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert!(control.join_worker_panicked());
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
     }
 }

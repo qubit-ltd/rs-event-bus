@@ -244,16 +244,15 @@ impl EventBusInner {
     /// # Errors
     /// Returns an SPI error when the worker thread panicked.
     pub(in crate::facade) fn join_control(&self, control: &Arc<SubscriptionControl>) -> Result<(), SpiError> {
-        let worker = control.worker.lock().unwrap_or_else(PoisonError::into_inner).take();
-        if let Some(worker) = worker {
-            worker.join().map_err(|_| SpiError::Operation {
+        if control.join_worker_panicked() {
+            return Err(SpiError::Operation {
                 provider_id: self.provider_id.as_str().into(),
                 operation: "subscription_worker",
                 resource: Some(control.subscriber_id.as_str().into()),
                 kind: "worker_panicked",
                 retryable: None,
                 source: Box::new(Error::other("subscription worker panicked")),
-            })?;
+            });
         }
         Ok(())
     }

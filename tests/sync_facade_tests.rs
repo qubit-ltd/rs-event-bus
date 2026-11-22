@@ -2616,6 +2616,13 @@ fn test_sync_final_cleanup_counts_all_abandoned_deliveries_after_payload_drop_pa
             ..
         }))
     ));
+    assert!(matches!(
+        subscription.cancel(),
+        Err(LifecycleError::Spi(SpiError::Operation {
+            kind: "worker_panicked",
+            ..
+        }))
+    ));
     assert_eq!(cleanup_drops.load(Ordering::Acquire), 2);
     assert_eq!(backend.settlement_calls(), 1);
     assert_eq!(backend.close_calls(), 1);

@@ -177,8 +177,10 @@ impl Subscription {
     /// # Errors
     /// Returns [`LifecycleError::SubscriptionClose`] if the worker cannot close
     /// its provider subscription, or [`LifecycleError::Spi`] if the worker
-    /// thread panics while joining. A handler calling this method from any
-    /// worker owned by the same bus requests cancellation without joining.
+    /// thread panics while joining. Repeated and concurrent external calls
+    /// sharing this control observe the same worker exit result. A handler
+    /// calling this method from any worker owned by the same bus requests
+    /// cancellation without joining.
     pub fn cancel(&self) -> Result<(), LifecycleError> {
         self.scheduler.cancel_subscription(self.control.id);
         self.control.request_cancel();
@@ -208,25 +210,15 @@ impl Subscription {
     /// # Errors
     /// Returns an SPI lifecycle error if the worker thread panicked.
     fn join_worker(&self) -> Result<(), LifecycleError> {
-        let worker = self
-            .control
-            .worker
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
-        if let Some(worker) = worker {
-            #[cfg(test)]
-            crate::internal::test_wait_probe::announce("subscription_worker_join");
-            worker.join().map_err(|_| {
-                LifecycleError::Spi(SpiError::Operation {
-                    provider_id: "event-bus".into(),
-                    operation: "subscription_worker",
-                    resource: Some(self.control.subscriber_id.as_str().into()),
-                    kind: "worker_panicked",
-                    retryable: None,
-                    source: Box::new(IoError::other("subscription worker panicked")),
-                })
-            })?;
+        if self.control.join_worker_panicked() {
+            return Err(LifecycleError::Spi(SpiError::Operation {
+                provider_id: "event-bus".into(),
+                operation: "subscription_worker",
+                resource: Some(self.control.subscriber_id.as_str().into()),
+                kind: "worker_panicked",
+                retryable: None,
+                source: Box::new(IoError::other("subscription worker panicked")),
+            }));
         }
         Ok(())
     }
