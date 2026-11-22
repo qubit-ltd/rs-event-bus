@@ -170,6 +170,123 @@ struct PendingPublishSpi {
     observed_event_id: Arc<std::sync::Mutex<Option<EventId>>>,
 }
 
+/// Holds a provider publish until the test explicitly releases it.
+struct GatedPublishSpi {
+    inner: FakeAsyncEventBusSpi,
+    released: Arc<AtomicBool>,
+    accepted: Arc<AtomicUsize>,
+}
+
+impl AsyncEventBusSpi for GatedPublishSpi {
+    fn capabilities(&self) -> EventBusCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        Box::pin(async move {
+            self.accepted.fetch_add(1, Ordering::AcqRel);
+            std::future::poll_fn(|_| {
+                if self.released.load(Ordering::Acquire) {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
+            self.inner.publish(message).await
+        })
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        request: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+        self.inner.subscribe(request)
+    }
+
+    fn shutdown<'a>(&'a self, mode: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        self.inner.shutdown(mode)
+    }
+}
+
+struct ShutdownOnDropProbe {
+    bus: AsyncEventBus,
+    nested_shutdown_was_rejected: Arc<AtomicBool>,
+    drops: Arc<AtomicUsize>,
+}
+
+impl Drop for ShutdownOnDropProbe {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::AcqRel);
+        let mut shutdown = Box::pin(self.bus.shutdown(ShutdownMode::Immediate));
+        let mut context = Context::from_waker(Waker::noop());
+        self.nested_shutdown_was_rejected.store(
+            matches!(
+                shutdown.as_mut().poll(&mut context),
+                Poll::Ready(Err(ShutdownError::Lifecycle(LifecycleError::WouldDeadlock {
+                    operation: "shutdown"
+                })))
+            ),
+            Ordering::Release,
+        );
+    }
+}
+
+fn assert_observer_snapshot_drops_in_publish_context(cancel: bool) {
+    let released = Arc::new(AtomicBool::new(false));
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let spi = Arc::new(GatedPublishSpi {
+        inner: FakeAsyncEventBusSpi::new(),
+        released: released.clone(),
+        accepted: accepted.clone(),
+    });
+    let bus = AsyncEventBus::from_spi(ProviderId::new("observer-drop-context").unwrap(), spi)
+        .expect("valid provider capabilities");
+    let nested_shutdown_was_rejected = Arc::new(AtomicBool::new(false));
+    let drops = Arc::new(AtomicUsize::new(0));
+    let probe = ShutdownOnDropProbe {
+        bus: bus.clone(),
+        nested_shutdown_was_rejected: nested_shutdown_was_rejected.clone(),
+        drops: drops.clone(),
+    };
+    let observer = bus.observe_diagnostics(move |_| {
+        let _probe = &probe;
+    });
+    let mut publishing = Box::pin(bus.publish(PublishRequest::new(topic(), 9).unwrap()));
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(publishing.as_mut().poll(&mut context).is_pending());
+    assert_eq!(1, accepted.load(Ordering::Acquire));
+    drop(observer);
+    assert_eq!(0, drops.load(Ordering::Acquire));
+
+    if cancel {
+        drop(publishing);
+        assert_eq!(1, bus.publish_metrics().cancelled);
+    } else {
+        released.store(true, Ordering::Release);
+        let receipt = match publishing.as_mut().poll(&mut context) {
+            Poll::Ready(Ok(receipt)) => receipt,
+            other => panic!("released publish should complete, got {other:?}"),
+        };
+        assert_eq!("observer-drop-context", receipt.provider_id().as_str());
+        assert_eq!(1, bus.publish_metrics().opaque_accepted);
+    }
+
+    assert_eq!(1, drops.load(Ordering::Acquire));
+    assert!(nested_shutdown_was_rejected.load(Ordering::Acquire));
+    let _report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("external shutdown succeeds");
+}
+
+#[test]
+fn test_async_publish_completion_drops_observer_snapshot_in_bus_context() {
+    assert_observer_snapshot_drops_in_publish_context(false);
+}
+
+#[test]
+fn test_async_publish_cancellation_drops_observer_snapshot_in_bus_context() {
+    assert_observer_snapshot_drops_in_publish_context(true);
+}
+
 impl AsyncEventBusSpi for PendingPublishSpi {
     fn capabilities(&self) -> EventBusCapabilities {
         self.inner.capabilities()
