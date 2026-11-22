@@ -141,6 +141,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         let handler_drop = with_subscription_scope(bus_key, subscription_id, || {
             catch_unwind(AssertUnwindSafe(|| drop(self.handler.take())))
         });
+        control.mark_stopped();
         if let Err(primary) = receiver_drop {
             if let Err(secondary) = handler_drop {
                 with_subscription_scope(bus_key, subscription_id, || dispose_panic_payload(secondary));

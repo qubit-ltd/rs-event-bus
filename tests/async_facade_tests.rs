@@ -1513,6 +1513,39 @@ fn test_receiver_object_drop_panic_after_close_releases_subscription_slot() {
 }
 
 #[test]
+fn test_run_receiver_drop_panic_keeps_subscription_stopped() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).unwrap();
+    let subscription = block_on(bus.subscribe(SubscribeRequest::new("run-drop-panic", topic()).unwrap())).unwrap();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let drop_probe = drops.clone();
+    spi.on_receiver_drop(move || {
+        if drop_probe.fetch_add(1, Ordering::SeqCst) == 0 {
+            panic!("natural receiver drop probe");
+        }
+    });
+
+    let mut runner = Box::pin(subscription.run(|_| async { Ok(()) }));
+    assert!(crate::support::manual_async::poll_once(runner.as_mut()).is_pending());
+    assert_eq!(subscription.run_state(), AsyncSubscriptionRunState::Running);
+    spi.close_receiver(subscription.id());
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| block_on(runner)))
+        .expect_err("natural receiver object destructor panic is propagated");
+    assert_eq!(panic.downcast_ref::<&str>(), Some(&"natural receiver drop probe"));
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    assert_eq!(spi.close_call_count(), 1);
+    assert_eq!(subscription.run_state(), AsyncSubscriptionRunState::Stopped);
+
+    assert!(matches!(
+        block_on(subscription.run(|_| async { Ok(()) })),
+        Err(ReceiveError::Closed)
+    ));
+    assert_eq!(spi.close_call_count(), 1);
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
+}
+
+#[test]
 fn test_async_facade_bounds_in_flight_deliveries_across_subscriptions() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let config = EventBusFacadeConfig::new().with_delivery_scheduling(

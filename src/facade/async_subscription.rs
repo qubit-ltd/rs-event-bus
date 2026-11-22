@@ -258,7 +258,10 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// are also covered by the same-bus shutdown reentrancy check.
     ///
     /// # Panics
-    /// Panics if the session lease invariant is violated internally.
+    /// Panics if the session lease invariant is violated internally. If SPI
+    /// close succeeds, the handle becomes `Stopped` after local deregistration
+    /// and handler cleanup have been attempted, before a receiver or handler
+    /// destructor panic is propagated.
     pub async fn run<H, F>(&self, handler: H) -> Result<(), ReceiveError>
     where
         H: Fn(Delivery<T>) -> F + Send + Sync + 'static,
