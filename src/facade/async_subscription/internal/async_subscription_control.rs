@@ -32,6 +32,7 @@ use crate::error::SubscriptionCloseFailure;
 use crate::facade::AsyncSubscriptionRunState;
 use crate::facade::DeliveryMetricsSnapshot;
 use crate::facade::async_event_bus::AsyncSignal;
+use crate::facade::async_subscription::BusContextFuture;
 use crate::facade::async_subscription::with_subscription_scope;
 use crate::facade::internal::DeliveryMetrics;
 use crate::pipeline::Diagnostic;
@@ -263,7 +264,8 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
         &'a self,
         mode: ShutdownMode,
     ) -> Pin<Box<dyn Future<Output = Result<(), Arc<SubscriptionCloseFailure>>> + Send + 'a>> {
-        Box::pin(async move {
+        let bus_key = self.bus.as_ptr() as usize;
+        let shutdown = async move {
             self.signals.stop(mode);
             self.mark_stopped();
             let Some(mut lease) = self.lease().await else {
@@ -286,6 +288,7 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
                 });
             }
             session.close_inner(self).await
-        })
+        };
+        Box::pin(BusContextFuture::new_for_subscription(bus_key, self.id, shutdown))
     }
 }

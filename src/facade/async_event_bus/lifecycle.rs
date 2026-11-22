@@ -171,6 +171,10 @@ impl AsyncEventBus {
     /// before requesting shutdown for this bus; that nested call returns
     /// `WouldDeadlock`. Request shutdown from an application lifecycle task
     /// after the observer returns.
+    /// Synchronous wakers invoked when a receiver-close driver returns its
+    /// session lease receive the same protection, including when a graceful
+    /// timeout cancels that driver. A waker cannot reenter shutdown for this
+    /// bus while the lease is being returned.
     ///
     /// # Parameters
     /// - `mode`: Shutdown policy and, for graceful mode, its deadline.

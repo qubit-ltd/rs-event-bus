@@ -1177,6 +1177,147 @@ fn test_receiver_close_cancelled_by_graceful_timeout_drop_rejects_same_bus_shutd
     assert_eq!(2, closes.load(Ordering::SeqCst), "retry closes the retained receiver");
 }
 
+struct ReceiverCloseLeaseReturnFixture {
+    provider: Arc<FakeAsyncEventBusSpi>,
+    clock: Arc<ManualMonotonicClock>,
+    bus: AsyncEventBus,
+    subscription: Arc<qubit_event_bus::AsyncSubscription<u32>>,
+    observed: ShutdownReentryObservation,
+    run_observed: SubscriptionRunObservation,
+    handler_calls: Arc<AtomicUsize>,
+    bus_slot: Arc<Mutex<Option<AsyncEventBus>>>,
+    wake: Waker,
+}
+
+fn receiver_close_lease_return_fixture(name: &'static str) -> ReceiverCloseLeaseReturnFixture {
+    let provider = Arc::new(FakeAsyncEventBusSpi::new());
+    provider.pause_close();
+    let clock = ManualMonotonicClock::new_shared();
+    let bus_slot = Arc::new(Mutex::new(None));
+    let observed = Arc::new(Mutex::new(None));
+    let run_observed = Arc::new(Mutex::new(None));
+    let handler_calls = Arc::new(AtomicUsize::new(0));
+    let bus = AsyncEventBus::with_timer(
+        ProviderId::new(name).expect("provider ID"),
+        provider.clone(),
+        clock.clone().new_timer(),
+    )
+    .expect("facade");
+    *bus_slot.lock().expect("bus lock") = Some(bus.clone());
+    let topic = Topic::<u32>::new(name).expect("topic");
+    let subscription = Arc::new(
+        block_on_shutdown(bus.subscribe(SubscribeRequest::new(name, topic).expect("request"))).expect("subscription"),
+    );
+    let wake = Waker::from(Arc::new(ReenterOnWake {
+        bus: bus_slot.clone(),
+        observed: observed.clone(),
+        subscription: Arc::new(Mutex::new(Some(Arc::downgrade(&subscription)))),
+        run_observed: run_observed.clone(),
+        handler_calls: handler_calls.clone(),
+        used: std::sync::atomic::AtomicBool::new(false),
+    }));
+    ReceiverCloseLeaseReturnFixture {
+        provider,
+        clock,
+        bus,
+        subscription,
+        observed,
+        run_observed,
+        handler_calls,
+        bus_slot,
+        wake,
+    }
+}
+
+fn assert_lease_return_reentry(
+    observed: &ShutdownReentryObservation,
+    run_observed: &SubscriptionRunObservation,
+    handler_calls: &AtomicUsize,
+) {
+    assert!(
+        matches!(
+            observed.lock().expect("observation lock").as_ref(),
+            Some(Poll::Ready(Err(ShutdownError::Lifecycle(
+                LifecycleError::WouldDeadlock { operation: "shutdown" }
+            ))))
+        ),
+        "lease return waker must reject nested shutdown: {:?}",
+        observed.lock().expect("observation lock")
+    );
+    assert!(run_observed.lock().expect("run observation").is_some());
+    assert_eq!(0, handler_calls.load(Ordering::SeqCst));
+}
+
+#[test]
+fn test_receiver_close_lease_return_wake_rejects_shutdown_on_completion() {
+    let fixture = receiver_close_lease_return_fixture("close-lease-complete");
+    let mut shutdown = Box::pin(fixture.bus.shutdown(ShutdownMode::Immediate));
+    assert!(
+        shutdown
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    assert!(
+        fixture.provider.close_poll_count() > 0,
+        "shutdown holds the receiver lease in close"
+    );
+    let mut run = Box::pin(fixture.subscription.run({
+        let handler_calls = fixture.handler_calls.clone();
+        move |_| {
+            handler_calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok::<(), qubit_event_bus::DeliveryError>(()) }
+        }
+    }));
+    assert!(run.as_mut().poll(&mut Context::from_waker(&fixture.wake)).is_pending());
+
+    fixture.provider.release_close();
+    assert!(matches!(
+        shutdown.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+        Poll::Ready(Ok(_))
+    ));
+    assert_lease_return_reentry(&fixture.observed, &fixture.run_observed, &fixture.handler_calls);
+    drop(run);
+    *fixture.bus_slot.lock().expect("bus slot") = None;
+}
+
+#[test]
+fn test_receiver_close_lease_return_wake_rejects_shutdown_on_timeout_cancel() {
+    let fixture = receiver_close_lease_return_fixture("close-lease-timeout");
+    let timeout = Duration::from_secs(1);
+    let mut shutdown = Box::pin(fixture.bus.shutdown(ShutdownMode::Graceful { timeout }));
+    assert!(
+        shutdown
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    assert!(
+        fixture.provider.close_poll_count() > 0,
+        "shutdown holds the receiver lease in close"
+    );
+    let mut run = Box::pin(fixture.subscription.run({
+        let handler_calls = fixture.handler_calls.clone();
+        move |_| {
+            handler_calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok::<(), qubit_event_bus::DeliveryError>(()) }
+        }
+    }));
+    assert!(run.as_mut().poll(&mut Context::from_waker(&fixture.wake)).is_pending());
+
+    fixture.clock.advance(timeout).expect("advance graceful deadline");
+    assert!(matches!(
+        shutdown.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+        Poll::Ready(Err(ShutdownError::TimedOut { timeout: elapsed })) if elapsed == timeout
+    ));
+    assert_lease_return_reentry(&fixture.observed, &fixture.run_observed, &fixture.handler_calls);
+
+    drop(run);
+    *fixture.bus_slot.lock().expect("bus slot") = None;
+    fixture.provider.release_close();
+    assert!(block_on_shutdown(fixture.bus.shutdown(ShutdownMode::Immediate)).is_ok());
+}
+
 fn block_on_shutdown<F: Future>(future: F) -> F::Output {
     let mut future = Box::pin(future);
     loop {
