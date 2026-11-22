@@ -1327,15 +1327,18 @@ shutdown 返回缓存的 report 或保留的规范化 close errors，不会抹�
 
 ### 9.8 `BusContextFuture`：poll 级死锁检测
 
-异步侧没有线程可绑定，因此使用 **poll 作用域**。投递任务在 poll handler 或 middleware
-时进入 bus 上下文，poll 返回后退出；该作用域覆盖 runner 整轮，包括 filter、decode、
-handler 和 diagnostic 回调。Publisher pipeline 也会在每次 poll 时进入 bus 上下文，在
-poll 返回或 unwind 后退出，覆盖准备阶段、拦截器、codec/provider poll 和终结诊断回调。
-在任一作用域内调用 `wait_for_received_deliveries` 或 `shutdown().await` 会立刻得到
-`WouldDeadlock`；即使没有已接收投递，也保守地按 bus poll 边界拒绝。上下文在 `Pending`、
-`Ready` 或 unwind 后清除，操作其他 bus 不会匹配当前上下文。此检查不检测独立 spawn
-任务之间任意的依赖环。
+异步侧没有线程可绑定，因此使用 **poll 作用域**。受保护 future 的每次 poll 都会进入
+bus 上下文，并在 poll 返回或 unwind 后退出。异步 publish 的 publisher pipeline 使用该作用域；
+异步 subscribe 在打开 provider receiver 时使用；subscription runner 覆盖 receive、投递处理和
+settlement；receiver close 与 provider shutdown 也在该作用域中 poll。上述 future 若在 poll
+作用域之外析构，其清理 guard 会在析构期间重新进入 bus 上下文。
 
+部分资源在受保护 future 就绪后同步释放，因此析构发生在该 poll 作用域之外。async close
+会在同步 bus 作用域中释放受跟踪的 receiver、handler，以及排队和已完成的投递；provider
+shutdown 后处置失败 session 时也使用相同作用域。作用域覆盖释放及其析构，并在结束后恢复
+先前上下文。普通 subscription handle 的析构保持原有行为。在匹配的作用域内嵌套 shutdown
+会立即返回 `WouldDeadlock`；即使没有已接收投递，这也是保守的边界。操作其他 bus 不匹配
+当前上下文。此检查不检测独立 spawn 任务之间任意的依赖环。
 ---
 
 ## 10. 内置 `local` provider

@@ -1423,18 +1423,26 @@ A bounded caller wait is not forced process exit. `Immediate` can still wait for
 
 ### 9.8 `BusContextFuture`: deadlock detection at poll scope
 
-The async side has no thread to bind, so it uses a **poll scope**. A delivery task
-enters bus context while polling its handler or middleware and leaves it when
-that poll returns. The scope covers the full runner turn, including filter,
-decode, handler, and diagnostic callbacks. The publisher pipeline also enters
-bus context for each poll and leaves it when the poll returns or unwinds; it
-covers preparation, interceptors, codec/provider polling, and terminal
-diagnostics. Inside either scope, `wait_for_received_deliveries` or
-`shutdown().await` returns `WouldDeadlock` immediately, even if no received
-delivery is active; this is a conservative bus-poll boundary. It is cleared on
-`Pending`, `Ready`, or unwind, and work on another bus does not match this context.
-The check does not detect arbitrary dependency cycles between independently
-spawned tasks.
+The async side has no thread to bind, so it uses a **poll scope**. Each poll of a
+protected future enters bus context and leaves it when that poll returns or
+unwinds. The publisher pipeline uses this scope for asynchronous publish;
+asynchronous subscribe uses it while opening the provider receiver; the
+subscription runner uses it across receive, delivery processing, and settlement;
+receiver close and provider shutdown also poll their protected futures in this
+scope. When one of these futures is dropped outside its poll, its cleanup guard
+re-enters the bus context while destroying the future.
+
+Some resources are released synchronously after a protected future is ready, so
+their destructors run after that poll scope has ended. The tracked receiver and
+handler, along with queued and completed deliveries released by async close, are
+destroyed inside a synchronous bus scope. Failed sessions disposed after
+provider shutdown are released inside the same kind of scope. The scope covers
+the release and its destructors, then restores the previous context. Ordinary
+subscription-handle destruction keeps its existing behavior. Inside a matching
+scope, a nested shutdown returns `WouldDeadlock` immediately, even if no received
+delivery is active; this is a conservative boundary. Work on another bus does
+not match this context. The check does not detect arbitrary dependency cycles
+between independently spawned tasks.
 
 ---
 
