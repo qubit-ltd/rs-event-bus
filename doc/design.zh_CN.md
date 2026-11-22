@@ -1341,8 +1341,11 @@ shutdown 后处置失败 session 时也使用相同作用域。作用域覆盖�
 受保护的清理 future 持有，直到关闭 future 和 session lease 被释放，包括取消路径。在匹配的总线作用域内调用
 `wait_for_received_deliveries` 或嵌套 shutdown 会立即返回 `WouldDeadlock`；即使没有已接收
 投递，这也是保守的边界。操作其他 bus 不匹配当前上下文。此检查不检测独立 spawn 任务之间
-任意的依赖环。subscription runner 还会记录 bus-local 订阅 ID。同一订阅递归调用 `run()` 时，
-会在等待 session lease 前返回 `ReceiveError::WouldDeadlock`。同一 bus 的嵌套作用域保留外层订阅身份；
+任意的依赖环。subscription runner 还会记录 bus-local 订阅 ID，并在 receiver close poll 及同步释放受跟踪的投递、receiver
+和 handler 时保留该身份。同一订阅在 close 回调或这些受保护析构器中递归调用 `run()` 时，
+会在等待 session lease 前返回 `ReceiveError::WouldDeadlock`。显式 close 或 bus shutdown 接管暂停会话时，
+格式化终止错误和通知诊断观察者也携带相同订阅身份；观察者同步请求同一 bus 的 shutdown 会收到
+`WouldDeadlock`，必须先返回，再由应用生命周期任务驱动 shutdown。同一 bus 的嵌套作用域保留外层订阅身份；
 另一订阅或另一 bus 上的同号订阅不会匹配。独立调用者仍按原行为等待 lease。
 ---
 

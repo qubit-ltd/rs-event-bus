@@ -32,6 +32,7 @@ use crate::error::SubscriptionCloseFailure;
 use crate::facade::AsyncSubscriptionRunState;
 use crate::facade::DeliveryMetricsSnapshot;
 use crate::facade::async_event_bus::AsyncSignal;
+use crate::facade::async_subscription::with_subscription_scope;
 use crate::facade::internal::DeliveryMetrics;
 use crate::pipeline::Diagnostic;
 use crate::spi::ShutdownMode;
@@ -274,9 +275,13 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
                 && let Err(error) = session.run_loop(handler).await
                 && !matches!(error, ReceiveError::Stopped(_))
             {
-                session.inner.emit(&Diagnostic::InternalFailure {
-                    origin: "shutdown_resume".into(),
-                    message: error.to_string().into(),
+                let bus_key = Arc::as_ptr(&session.inner) as usize;
+                with_subscription_scope(bus_key, session.id, || {
+                    session.inner.emit(&Diagnostic::InternalFailure {
+                        origin: "shutdown_resume".into(),
+                        message: error.to_string().into(),
+                    });
+                    drop(error);
                 });
             }
             session.close_inner(self).await

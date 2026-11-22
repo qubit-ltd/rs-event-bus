@@ -456,6 +456,115 @@ fn test_receive_failure_finalizes_all_completed_handler_failures_once() {
 }
 
 #[test]
+fn test_resume_diagnostics_reject_reentrant_shutdown() {
+    for shutdown_takeover in [false, true] {
+        let spi = Arc::new(support::fake_spi::FakeAsyncEventBusSpi::new());
+        let bus = AsyncEventBus::from_spi(ProviderId::new("resume-diagnostic-reentry").unwrap(), spi.clone()).unwrap();
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed_diagnostics = observed.clone();
+        let observer_bus = bus.clone();
+        let _observer = bus.observe_diagnostics(move |diagnostic| {
+            let Diagnostic::InternalFailure { origin, message } = diagnostic else {
+                return;
+            };
+            if origin.as_ref()
+                != if shutdown_takeover {
+                    "shutdown_resume"
+                } else {
+                    "close_resume"
+                }
+            {
+                return;
+            }
+            let mut nested = Box::pin(observer_bus.shutdown(qubit_event_bus::spi::ShutdownMode::Immediate));
+            let result = nested
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
+            let rejected = matches!(
+                result,
+                std::task::Poll::Ready(Err(qubit_event_bus::ShutdownError::Lifecycle(
+                    qubit_event_bus::LifecycleError::WouldDeadlock { operation: "shutdown" }
+                )))
+            );
+            observed_diagnostics
+                .lock()
+                .unwrap()
+                .push((origin.clone(), message.clone(), rejected));
+        });
+        let options = SubscribeOptions::<u32>::builder()
+            .retry_policy(RetryPolicy::builder().max_attempts(1).build().unwrap())
+            .error_handler(|_, _| FailureDirective::DeadLetter)
+            .dead_letter(DeadLetterPolicy::with_topic_name("test.dead").unwrap())
+            .build();
+        support::manual_async::block_on(async {
+            let mut subscription = bus
+                .subscribe(
+                    SubscribeRequest::new("terminal-source", topic())
+                        .unwrap()
+                        .with_options(options),
+                )
+                .await
+                .unwrap();
+            spi.fail_next_publish();
+            spi.pause_publishes();
+            spi.enqueue(support::fake_spi::inbound_message(Some(SettlementToken::new(
+                subscription.id(),
+                "resume-source-token",
+            ))));
+            let mut runner = Box::pin(subscription.run(|_| async {
+                Err(DeliveryError::Handler {
+                    source: Box::new(IoError::other("handler failed")),
+                })
+            }));
+            for _ in 0..256 {
+                if spi.operation_log().contains(&"publish") {
+                    break;
+                }
+                assert!(
+                    runner
+                        .as_mut()
+                        .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+                        .is_pending()
+                );
+            }
+            assert!(
+                spi.operation_log().contains(&"publish"),
+                "dead-letter publish reached its gate"
+            );
+            drop(runner);
+            spi.release_publishes();
+            if shutdown_takeover {
+                let _ = bus
+                    .shutdown(qubit_event_bus::spi::ShutdownMode::Immediate)
+                    .await
+                    .unwrap();
+            } else {
+                subscription.close().await.unwrap();
+            }
+            let observed = observed.lock().unwrap();
+            assert_eq!(observed.len(), 1, "one recovery diagnostic is delivered");
+            assert_eq!(
+                observed[0].0.as_ref(),
+                if shutdown_takeover {
+                    "shutdown_resume"
+                } else {
+                    "close_resume"
+                }
+            );
+            assert!(
+                observed[0].1.contains("event-test"),
+                "the original SPI error is preserved"
+            );
+            assert!(observed[0].2, "nested shutdown is rejected before waiting");
+            assert!(
+                spi.settlement_dispositions().is_empty(),
+                "the source delivery remains unsettled"
+            );
+        });
+    }
+}
+
+#[test]
 fn test_dead_letter_failure_emits_once_without_settling_source() {
     let spi = Arc::new(support::fake_spi::FakeAsyncEventBusSpi::new());
     let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).unwrap();

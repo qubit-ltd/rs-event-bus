@@ -32,6 +32,7 @@ use qubit_clock::TimeError;
 use qubit_clock::Timer;
 use qubit_clock::TimerFuture;
 use qubit_clock::TimerUnavailableError;
+use qubit_event_bus::AsyncSubscription;
 use qubit_event_bus::CheckedPublishError;
 use qubit_event_bus::CodecError;
 use qubit_event_bus::ConfigurationError;
@@ -302,6 +303,7 @@ fn test_async_subscribe_reentrant_shutdown_returns_would_deadlock() {
 
 struct CleanupReentryProbe {
     bus: Mutex<Option<AsyncEventBus>>,
+    subscription: Mutex<Option<Arc<AsyncSubscription<u32>>>>,
     different_bus: Mutex<Option<AsyncEventBus>>,
     check_during_poll: bool,
     calls: AtomicUsize,
@@ -320,6 +322,13 @@ impl CleanupReentryProbe {
         if let Some(other_bus) = self.different_bus.lock().unwrap().as_ref() {
             let _ =
                 block_on(other_bus.shutdown(ShutdownMode::Immediate)).expect("shutdown of a different bus is allowed");
+        }
+        if let Some(subscription) = self.subscription.lock().unwrap().clone() {
+            let mut run = Box::pin(subscription.run(|_| async { Ok(()) }));
+            assert!(matches!(
+                run.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+                Poll::Ready(Err(ReceiveError::WouldDeadlock))
+            ));
         }
         self.calls.fetch_add(1, Ordering::AcqRel);
     }
@@ -387,6 +396,14 @@ struct ReentrantCleanupReceiver {
     close_calls: Arc<AtomicUsize>,
 }
 
+impl Drop for ReentrantCleanupReceiver {
+    fn drop(&mut self) {
+        if self.check_close {
+            self.probe.check();
+        }
+    }
+}
+
 impl AsyncEventSubscriptionSpi for ReentrantCleanupReceiver {
     fn receive<'a>(
         &'a mut self,
@@ -425,6 +442,7 @@ fn test_async_spi_cleanup_reentrant_shutdown_returns_would_deadlock() {
         for close_during_shutdown in [false, true] {
             let probe = Arc::new(CleanupReentryProbe {
                 bus: Mutex::new(None),
+                subscription: Mutex::new(None),
                 different_bus: Mutex::new(None),
                 check_during_poll,
                 calls: AtomicUsize::new(0),
@@ -442,20 +460,22 @@ fn test_async_spi_cleanup_reentrant_shutdown_returns_would_deadlock() {
             let bus = AsyncEventBus::from_spi(ProviderId::new("cleanup-close-reentrant").unwrap(), spi).unwrap();
             *probe.bus.lock().unwrap() = Some(bus.clone());
             let mut subscription =
-                block_on(bus.subscribe(SubscribeRequest::new("cleanup-close", topic()).unwrap())).unwrap();
+                Arc::new(block_on(bus.subscribe(SubscribeRequest::new("cleanup-close", topic()).unwrap())).unwrap());
             if close_during_shutdown {
+                *probe.subscription.lock().unwrap() = Some(subscription.clone());
                 let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
             } else {
-                block_on(subscription.close()).unwrap();
+                block_on(Arc::get_mut(&mut subscription).unwrap().close()).unwrap();
                 let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
             }
-            assert_eq!(1, probe.calls.load(Ordering::Acquire));
+            assert_eq!(2, probe.calls.load(Ordering::Acquire));
             assert_eq!(1, close_calls.load(Ordering::Acquire));
             assert_eq!(1, shutdown_calls.load(Ordering::Acquire));
         }
 
         let probe = Arc::new(CleanupReentryProbe {
             bus: Mutex::new(None),
+            subscription: Mutex::new(None),
             different_bus: Mutex::new(None),
             check_during_poll,
             calls: AtomicUsize::new(0),
@@ -484,6 +504,7 @@ fn test_async_spi_cleanup_reentrant_shutdown_returns_would_deadlock() {
     .unwrap();
     let probe = Arc::new(CleanupReentryProbe {
         bus: Mutex::new(None),
+        subscription: Mutex::new(None),
         different_bus: Mutex::new(Some(other_bus)),
         check_during_poll: false,
         calls: AtomicUsize::new(0),
@@ -1314,8 +1335,12 @@ fn test_async_facade_bounds_in_flight_deliveries_across_subscriptions() {
         }
     }
     let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
-    first_runner.join().unwrap().unwrap();
-    second_runner.join().unwrap().unwrap();
+    for result in [first_runner.join().unwrap(), second_runner.join().unwrap()] {
+        assert!(
+            result.is_ok() || matches!(result, Err(ReceiveError::Closed)),
+            "immediate shutdown may close a session before its runner reacquires the lease: {result:?}"
+        );
+    }
     assert_eq!(observed_concurrency, 1, "bus-wide cap must include all subscriptions");
 }
 

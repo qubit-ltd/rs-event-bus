@@ -655,6 +655,8 @@ pub(crate) struct FakeAsyncEventBusSpi {
     shutdown_transitions: Arc<Mutex<usize>>,
     calls: Arc<Mutex<Vec<&'static str>>>,
     fail_next_publish: Arc<Mutex<bool>>,
+    publish_paused: Arc<AtomicBool>,
+    publish_wakers: Arc<Mutex<Vec<Waker>>>,
     unconfirmed_next_publish: Arc<Mutex<bool>>,
     conformance_tamper: Arc<Mutex<Option<ConformanceTamper>>>,
     foreign_settlement_behavior: ForeignSettlementBehavior,
@@ -699,6 +701,8 @@ impl FakeAsyncEventBusSpi {
             shutdown_transitions: Arc::default(),
             calls: Arc::default(),
             fail_next_publish: Arc::default(),
+            publish_paused: Arc::new(AtomicBool::new(false)),
+            publish_wakers: Arc::default(),
             unconfirmed_next_publish: Arc::default(),
             conformance_tamper: Arc::default(),
             foreign_settlement_behavior: ForeignSettlementBehavior::default(),
@@ -811,6 +815,15 @@ impl FakeAsyncEventBusSpi {
     }
     pub(crate) fn fail_next_publish(&self) {
         *self.fail_next_publish.lock().unwrap() = true;
+    }
+    pub(crate) fn pause_publishes(&self) {
+        self.publish_paused.store(true, Ordering::Release);
+    }
+    pub(crate) fn release_publishes(&self) {
+        self.publish_paused.store(false, Ordering::Release);
+        for waker in self.publish_wakers.lock().unwrap().drain(..) {
+            waker.wake();
+        }
     }
     pub(crate) fn unconfirm_next_publish(&self) {
         *self.unconfirmed_next_publish.lock().unwrap() = true;
@@ -950,7 +963,22 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
     fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
         self.calls.lock().unwrap().push("publish");
         if take(&mut *self.fail_next_publish.lock().unwrap()) {
-            return Box::pin(async { Err(spi_error("publish")) });
+            let paused = self.publish_paused.clone();
+            let wakers = self.publish_wakers.clone();
+            return Box::pin(async move {
+                poll_fn(|context| {
+                    if !paused.load(Ordering::Acquire) {
+                        return Poll::Ready(());
+                    }
+                    let mut waiters = wakers.lock().unwrap();
+                    if !waiters.iter().any(|waker| waker.will_wake(context.waker())) {
+                        waiters.push(context.waker().clone());
+                    }
+                    Poll::Pending
+                })
+                .await;
+                Err(spi_error("publish"))
+            });
         }
         let unconfirmed = take(&mut *self.unconfirmed_next_publish.lock().unwrap());
         for (subscription_id, queue) in self.queues.lock().unwrap().clone() {

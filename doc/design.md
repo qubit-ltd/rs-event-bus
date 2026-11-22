@@ -1448,8 +1448,15 @@ shutdown return `WouldDeadlock` immediately, even if no received delivery is
 active; this is a conservative boundary. Work on another bus does not match
 this context. The check does not detect arbitrary dependency cycles between
 independently spawned tasks. The subscription runner additionally records its
-bus-local subscription ID. A recursive `run()` for that same subscription
-returns `ReceiveError::WouldDeadlock` before waiting for the session lease.
+bus-local subscription ID through receiver close polling and synchronous
+release of tracked deliveries, the receiver, and its handler. A recursive
+`run()` for that same subscription from a close callback or one of those
+protected destructors returns `ReceiveError::WouldDeadlock` before waiting for
+the session lease. When explicit close or bus shutdown resumes a paused session,
+formatting its terminal error and notifying diagnostic observers carry that
+same subscription identity; an observer that synchronously requests shutdown
+on the same bus receives `WouldDeadlock` and must return before an application
+lifecycle task drives shutdown.
 Nested scopes on the same bus retain the outer subscription identity; another
 subscription or a same-numbered subscription on another bus does not match.
 Independent callers still wait for the lease as before.

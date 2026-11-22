@@ -49,6 +49,7 @@ mod delivery_task;
 pub(super) use internal::BusContextFuture;
 pub(super) use internal::is_current_bus_poll;
 pub(super) use internal::with_bus_scope;
+pub(super) use internal::with_subscription_scope;
 
 /// Boxed subscriber handler that returns a runtime-neutral future.
 /// The callback can be shared by delivery tasks without tying the session to
@@ -244,9 +245,10 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// Returns `ReceiveError::Closed` when the session is already closed,
     /// the retained first terminal cause as `ReceiveError::Stopped`, or a
     /// receiver close failure when no earlier cause exists. Calling `run`
-    /// recursively from this subscription's handler returns
-    /// `ReceiveError::WouldDeadlock` immediately. To run it again, return from
-    /// the current handler and start it from an independent caller.
+    /// recursively from this subscription's handler, receiver-close callback,
+    /// or protected cleanup destructor returns `ReceiveError::WouldDeadlock`
+    /// immediately. To run it again, return from the current callback and start
+    /// it from an independent caller.
     ///
     /// # Panics
     /// Panics if the session lease invariant is violated internally.

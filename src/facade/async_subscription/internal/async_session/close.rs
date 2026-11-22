@@ -22,7 +22,7 @@ use crate::facade::async_subscription::BusContextFuture;
 use crate::facade::async_subscription::BusState;
 use crate::facade::async_subscription::SubscriptionCloseErrors;
 use crate::facade::async_subscription::internal::owned_delivery_task::discard_unstarted_tasks;
-use crate::facade::async_subscription::with_bus_scope;
+use crate::facade::async_subscription::with_subscription_scope;
 use crate::spi::DurabilityCapability;
 use crate::spi::ShutdownMode;
 use crate::spi::panic_boundary::catch_spi_call;
@@ -51,9 +51,13 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             && let Err(error) = self.run_loop(handler).await
             && !matches!(error, ReceiveError::Stopped(_))
         {
-            self.inner.emit(&Diagnostic::InternalFailure {
-                origin: "close_resume".into(),
-                message: error.to_string().into(),
+            let bus_key = Arc::as_ptr(&self.inner) as usize;
+            with_subscription_scope(bus_key, self.id, || {
+                self.inner.emit(&Diagnostic::InternalFailure {
+                    origin: "close_resume".into(),
+                    message: error.to_string().into(),
+                });
+                drop(error);
             });
         }
         match self.close_inner(control).await {
@@ -90,8 +94,9 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             (*state == BusState::Running).then(|| self.inner.tracker.close_started())
         };
         let bus_key = Arc::as_ptr(&self.inner) as usize;
+        let subscription_id = self.id;
         let close_result = if let Some(receiver) = self.receiver.as_mut() {
-            BusContextFuture::new_with_drop_context(bus_key, async {
+            BusContextFuture::new_for_subscription(bus_key, subscription_id, async {
                 let close = catch_spi_call(
                     self.inner.provider_id.as_str(),
                     "close",
@@ -114,7 +119,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             let failure = self.inner.record_close_error(control, &self.subscriber_id, error);
             return Err(failure);
         }
-        with_bus_scope(bus_key, || {
+        with_subscription_scope(bus_key, subscription_id, || {
             self.abandon_queued_and_completed();
             drop(self.receiver.take());
         });
@@ -127,7 +132,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 .unwrap_or_else(PoisonError::into_inner)
                 .remove(&self.id);
         }
-        with_bus_scope(bus_key, || drop(self.handler.take()));
+        with_subscription_scope(bus_key, subscription_id, || drop(self.handler.take()));
         Ok(())
     }
 

@@ -166,8 +166,11 @@ impl AsyncEventBus {
     /// outside that scope; this check does not detect arbitrary dependency
     /// cycles.
     /// The same protection applies while an asynchronous provider subscription
-    /// call is being created or polled. Request shutdown from an application
-    /// lifecycle task after that call returns.
+    /// call is being created or polled. A diagnostic observer called while a
+    /// paused subscription is resumed during close or shutdown must return
+    /// before requesting shutdown for this bus; that nested call returns
+    /// `WouldDeadlock`. Request shutdown from an application lifecycle task
+    /// after the observer returns.
     ///
     /// # Parameters
     /// - `mode`: Shutdown policy and, for graceful mode, its deadline.
