@@ -1389,10 +1389,22 @@ The async facade has no provider-view `wait_for_idle`. It has `wait_for_received
 
 ```
 shutdown(mode: ShutdownMode).await
-  ├─ CAS elects a cleanup leader; other callers wait within their own deadlines, then recheck Closed or compete for leadership
-  ├─ lifecycle Running → Closing; state rejects new publish/subscribe admission
-  ├─ stop admission; defer quiescence wait until after receiver-close attempts
-  ├─ tell every control to stop (Graceful: finish in-flight; Immediate: return as soon as possible)
+  ├─ reentrancy check for this bus; on match return WouldDeadlock("shutdown")
+  ├─ if Immediate: publish the stronger shutdown mode, then synchronously wake upgrade waiters
+  ├─ close admission: Running → Closing; reject new publish/subscribe calls
+  ├─ for Graceful and not already Closed: compute this call's absolute deadline (retain any calculation error)
+  ├─ if this call started Closing or is Immediate: notify controls to stop
+  │     (Graceful: finish in-flight; Immediate: return as soon as possible)
+  ├─ loop
+  │  ├─ if Closed: reuse the cached report or retained canonical close errors; return
+  │  ├─ if this Graceful call has a deadline and no timer yet: resolve its calculation, then register its timer on demand
+  │  │     → calculation or registration error: recheck Closed; reuse its result if closed, otherwise return error
+  │  ├─ if cleanup leader can be elected:
+  │  │     ├─ recheck Closed; if closed, return its cached result
+  │  │     ├─ if this call has not notified controls, notify them now
+  │  │     └─ continue cleanup as leader
+  │  └─ otherwise wait on the shutdown signal, bounded by this call's timer if present
+  │        → timeout returns TimedOut; wakeup loops to recheck Closed or compete again
   ├─ close_subscription_receivers(mode, shared_deadline)
   │     → each registered control: lease session → drain (Graceful) → close_inner
   │     → check deadline before non-empty batch and after every receiver poll
