@@ -63,20 +63,25 @@ pub(in crate::facade) async fn catch_spi_future<T, F: Future<Output = Result<T, 
         .map_err(|payload| provider_panic(provider_id.as_str(), operation, resource, payload))?
 }
 
-/// Installs cancellation protection before returning the receive future.
+/// Installs cancellation protection before returning the provider future.
 ///
-/// A destructor panic while receive is cancelled is disposed, preserving the
-/// competing scheduler event. Once polling has produced an outcome, a
-/// destructor panic is secondary and the original outcome or SPI error wins.
+/// A destructor panic while the operation is cancelled is disposed, preserving
+/// the caller's cancellation behavior. Once polling has produced an outcome,
+/// a destructor panic is secondary and the original outcome or SPI error wins.
 /// Panics while polling are still converted to `provider_panicked`.
 ///
+/// # Type Parameters
+/// - `'a`: lifetime shared by the provider future and its context.
+/// - `T`: successful SPI result retained after future destruction.
+///
 /// # Parameters
-/// - `future`: provider receive future to protect.
+/// - `future`: provider operation future to protect.
 /// - `provider_id`: provider identity attached to polling panics.
-/// - `resource`: optional subscription context.
+/// - `operation`: stable operation name attached to polling panics.
+/// - `resource`: optional topic or subscription context.
 ///
 /// # Returns
-/// A future preserving the receive result while isolating destructor panics.
+/// A future preserving the provider result while isolating destructor panics.
 pub(in crate::facade) fn catch_spi_future_preserving_result<'a, T: 'a>(
     future: SpiFuture<'a, Result<T, SpiError>>,
     provider_id: &'a ProviderId,
@@ -172,6 +177,7 @@ impl<F: Future> Future for CatchSpiFuture<F> {
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
     use std::future::Future;
     use std::panic::panic_any;
     use std::pin::Pin;
