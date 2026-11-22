@@ -1353,7 +1353,8 @@ Each turn polls started tasks in rotation, advances one receiver operation, then
 
 ### 9.5 `AsyncEventBus::subscribe` and subscriptions that never start
 
-`subscribe` returns as soon as the SPI receiver exists. During shutdown,
+`subscribe` returns a usable subscription handle only after the SPI receiver
+exists and the bus admits it. During shutdown,
 `close_subscription_receivers` leases every registered control, including paused
 sessions, and drives each receiver close under the shutdown leader's shared
 deadline. It checks the deadline before a non-empty batch and after each receiver
@@ -1362,9 +1363,13 @@ receiver close after expiry. A successful receiver close is deregistered; a fail
 close retains its session and canonical error for retry or final shutdown cleanup.
 After provider shutdown returns successfully, any remaining control is disposed.
 This fallback releases facade-owned resources but does not imply that receiver
-close succeeded. If `subscribe` completes when the bus is no longer
-`Running`, the receiver is closed immediately and the call returns
-`SubscribeError::Closed`.
+close succeeded. If the bus stops accepting subscriptions before a new
+receiver is admitted, the subscribe call drives an asynchronous receiver close
+attempt and releases local receiver ownership before returning
+`SubscribeError::Closed`. The close attempt can remain pending. `Closed`
+indicates that the subscription was rejected at admission. If receiver close
+fails, the bus records the failure for `shutdown` to report as
+`ShutdownError::SubscriptionClose`.
 
 Before polling a non-empty close batch, shutdown signals active runners to stop
 and checks the calling attempt's deadline. If a zero-length budget is already

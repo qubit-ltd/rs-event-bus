@@ -1124,7 +1124,8 @@ impl Drop for FakeAsyncEventSubscriptionSpi {
             .fetch_add(state.unsettled, Ordering::AcqRel);
         state.unsettled = 0;
         drop(state);
-        if let Some(hook) = self.receiver_drop_hook.lock().unwrap().clone() {
+        let hook = self.receiver_drop_hook.lock().unwrap().clone();
+        if let Some(hook) = hook {
             hook();
         }
     }

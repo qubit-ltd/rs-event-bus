@@ -7,6 +7,9 @@
 // =============================================================================
 //! Async subscription session close and delivery abandonment.
 
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
+use std::panic::resume_unwind;
 use std::sync::Arc;
 use std::sync::PoisonError;
 use std::sync::atomic::Ordering;
@@ -23,6 +26,7 @@ use crate::facade::async_subscription::BusState;
 use crate::facade::async_subscription::SubscriptionCloseErrors;
 use crate::facade::async_subscription::internal::owned_delivery_task::discard_unstarted_tasks;
 use crate::facade::async_subscription::with_subscription_scope;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::spi::DurabilityCapability;
 use crate::spi::ShutdownMode;
 use crate::spi::panic_boundary::catch_spi_call;
@@ -121,9 +125,9 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             });
             return Err(failure);
         }
-        with_subscription_scope(bus_key, subscription_id, || {
+        let receiver_drop = with_subscription_scope(bus_key, subscription_id, || {
             self.abandon_queued_and_completed();
-            drop(self.receiver.take());
+            catch_unwind(AssertUnwindSafe(|| drop(self.receiver.take())))
         });
         let _ = self.inner.scheduler.unregister(self.id);
         self.inner.notify_scheduler();
@@ -134,7 +138,18 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 .unwrap_or_else(PoisonError::into_inner)
                 .remove(&self.id);
         }
-        with_subscription_scope(bus_key, subscription_id, || drop(self.handler.take()));
+        let handler_drop = with_subscription_scope(bus_key, subscription_id, || {
+            catch_unwind(AssertUnwindSafe(|| drop(self.handler.take())))
+        });
+        if let Err(primary) = receiver_drop {
+            if let Err(secondary) = handler_drop {
+                with_subscription_scope(bus_key, subscription_id, || dispose_panic_payload(secondary));
+            }
+            resume_unwind(primary);
+        }
+        if let Err(payload) = handler_drop {
+            resume_unwind(payload);
+        }
         Ok(())
     }
 

@@ -1452,6 +1452,67 @@ fn test_async_subscription_is_created_without_spawning_until_run_is_driven() {
 }
 
 #[test]
+fn test_receiver_object_drop_panic_after_close_releases_subscription_slot() {
+    struct HandlerCapture(Arc<AtomicUsize>);
+
+    impl Drop for HandlerCapture {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let config = EventBusFacadeConfig::new().with_delivery_scheduling(
+        DeliverySchedulingConfig::new(
+            std::num::NonZeroUsize::new(1).unwrap(),
+            std::num::NonZeroUsize::new(1).unwrap(),
+            std::num::NonZeroUsize::new(1).unwrap(),
+            std::num::NonZeroUsize::new(1).unwrap(),
+        )
+        .unwrap(),
+    );
+    let bus = AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi.clone(), config)
+        .expect("valid provider capabilities");
+    let receiver_drops = Arc::new(AtomicUsize::new(0));
+    let receiver_drop_count = receiver_drops.clone();
+    spi.on_receiver_drop(move || {
+        if receiver_drop_count.fetch_add(1, Ordering::SeqCst) == 0 {
+            panic!("receiver object drop probe");
+        }
+    });
+
+    let mut subscription = block_on(bus.subscribe(SubscribeRequest::new("drop-panic", topic()).unwrap())).unwrap();
+    let handler_drops = Arc::new(AtomicUsize::new(0));
+    let capture = HandlerCapture(handler_drops.clone());
+    let mut runner = Box::pin(subscription.run(move |_| {
+        let _capture = &capture;
+        async { Ok(()) }
+    }));
+    assert!(crate::support::manual_async::poll_once(runner.as_mut()).is_pending());
+    drop(runner);
+    assert_eq!(AsyncSubscriptionRunState::Paused, subscription.run_state());
+    assert_eq!(0, handler_drops.load(Ordering::SeqCst));
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| block_on(subscription.close())))
+        .expect_err("receiver object destructor panic is propagated");
+    assert_eq!(
+        "receiver object drop probe",
+        panic.downcast_ref::<&str>().copied().unwrap()
+    );
+    assert_eq!(1, spi.close_call_count());
+    assert_eq!(1, receiver_drops.load(Ordering::SeqCst));
+
+    let mut replacement = block_on(bus.subscribe(SubscribeRequest::new("replacement", topic()).unwrap()))
+        .expect("successful close releases the only subscription slot even after receiver drop panic");
+    assert_eq!(1, handler_drops.load(Ordering::SeqCst));
+    block_on(subscription.close()).expect("repeated close is idempotent");
+    assert_eq!(1, spi.close_call_count(), "original receiver close runs once");
+    drop(subscription);
+    block_on(replacement.close()).expect("replacement closes");
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("bus shuts down");
+}
+
+#[test]
 fn test_async_facade_bounds_in_flight_deliveries_across_subscriptions() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let config = EventBusFacadeConfig::new().with_delivery_scheduling(

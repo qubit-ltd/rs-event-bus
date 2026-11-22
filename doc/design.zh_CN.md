@@ -1262,14 +1262,14 @@ lane 的键为 `(topic, key, subscription_id)`；未运行的同键消息不占 
 
 ### 9.5 `AsyncEventBus::subscribe` 与未启动订阅
 
-`subscribe` 在 SPI 侧建好接收器后立即返回。shutdown 时，
+只有 SPI 建好接收器且总线通过接纳检查后，`subscribe` 才返回可用的订阅句柄。shutdown 时，
 `close_subscription_receivers` 对所有已注册 control（包括暂停的 session）逐一 lease，
 并在 shutdown leader 共用的 deadline 下推进 receiver close。非空批次开始前及每次 receiver
 poll 后都会检查 deadline；已完成的关闭会先记录再返回超时，过期后不再启动下一个关闭。
 receiver close 成功时注销 control；失败时保留 session 与规范化 error，以便重试或由最终
 shutdown 清理。provider shutdown 成功返回后，仍剩余的 control 会被处置。此 fallback
-释放 facade 所有的资源，但不表示 receiver close 已成功。若 `subscribe`
-完成时 bus 已不是 `Running`，接收器会被立即关闭并返回 `SubscribeError::Closed`。
+释放 facade 所有的资源，但不表示 receiver close 已成功。如果新 receiver 获得接纳前总线已停止接纳订阅，订阅调用会推进异步 receiver close 尝试，并在释放本地 receiver 所有权后返回 `SubscribeError::Closed`。
+close 尝试可能挂起。`Closed` 表示订阅未通过接纳检查。若 receiver close 失败，总线会记录该错误，并由 `shutdown` 以 `ShutdownError::SubscriptionClose` 报告。
 
 轮询非空关闭批次前，shutdown 会向活动 runner 发出停止信号，并检查当前
 调用的 deadline。若零长度预算此时已耗尽，该调用会返回

@@ -311,7 +311,12 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// requested from those destructors returns `WouldDeadlock`.
     ///
     /// # Panics
-    /// Panics if the session lease invariant is violated internally.
+    /// Panics if the session lease invariant is violated internally. After a
+    /// successful provider close, a panic while dropping the receiver object
+    /// is propagated only after local deregistration and handler cleanup have
+    /// completed. A handler destructor panic is also propagated after local
+    /// deregistration; if both destructors panic, the receiver panic is
+    /// propagated and the handler panic payload is safely disposed.
     pub async fn close(&mut self) -> Result<(), LifecycleError> {
         self.control.mark_stopped();
         if self
