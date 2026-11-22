@@ -1292,10 +1292,22 @@ shutdown 清理。provider shutdown 成功返回后，仍剩余的 control 会�
 
 ```
 shutdown(mode: ShutdownMode).await
-  ├─ CAS 选出清理 leader；其他调用者在各自截止时间内等待，再检查 Closed 或重新竞争 leadership
-  ├─ lifecycle Running → Closing；state 拒绝新的 publish/subscribe 准入
-  ├─ 停止准入；receiver close 尝试完成后再等待已跟踪操作静止
-  ├─ 通知所有 control 停止（Graceful: 完成 in-flight；Immediate: 尽快返回）
+  ├─ 检查本总线重入；命中则返回 WouldDeadlock("shutdown")
+  ├─ 若为 Immediate：发布更强停机模式，再同步唤醒等待升级的调用
+  ├─ 关闭准入：Running → Closing；拒绝新的 publish/subscribe 调用
+  ├─ Graceful 且尚未 Closed 时：计算本次调用的绝对 deadline（暂存计算错误）
+  ├─ 若本次调用启动了 Closing 或请求 Immediate：通知 control 停止
+  │     （Graceful：完成 in-flight；Immediate：尽快返回）
+  ├─ 循环
+  │  ├─ 若已 Closed：复用缓存的 report 或保留的规范化 close errors 并返回
+  │  ├─ 若本次 Graceful 有 deadline 且尚无 timer：解析计算结果，再按需注册 timer
+  │  │     → 计算或注册失败：复查 Closed；若已关闭则复用结果，否则返回错误
+  │  ├─ 若成功选出清理 leader：
+  │  │     ├─ 复查 Closed；若已关闭则返回缓存结果
+  │  │     ├─ 若本次尚未通知 control，现在补发停止通知
+  │  │     └─ 以 leader 身份继续清理
+  │  └─ 否则等待 shutdown signal；若有本次 timer，则等待受其截止时间约束
+  │        → 超时返回 TimedOut；唤醒后循环复查 Closed 或重新竞争
   ├─ close_subscription_receivers(mode, shared_deadline)
   │     → 每个已注册 control：lease session → drain（Graceful）→ close_inner
   │     → 非空批次前及每次 receiver poll 后检查 deadline
