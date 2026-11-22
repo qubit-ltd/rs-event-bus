@@ -1438,12 +1438,21 @@ handler, along with queued and completed deliveries released by async close, are
 destroyed inside a synchronous bus scope. Failed sessions disposed after
 provider shutdown are released inside the same kind of scope. The scope covers
 the release and its destructors, then restores the previous context. Ordinary
-subscription-handle destruction keeps its existing behavior. Inside a matching
-scope, `wait_for_received_deliveries` and a nested shutdown return
-`WouldDeadlock` immediately, even if no received delivery is active; this is a
-conservative boundary. Work on another bus does not match this context. The
-check does not detect arbitrary dependency cycles between independently spawned
-tasks.
+subscription-handle destruction keeps its existing behavior. During resume,
+the prior handler reference is replaced and released in a synchronous scope
+carrying both bus and subscription identity. A late receiver rejected after
+the bus stops is also retained through its protected cleanup future, including
+cancellation, until its close future and session lease have been dropped.
+Inside a matching bus scope, `wait_for_received_deliveries` and a nested
+shutdown return `WouldDeadlock` immediately, even if no received delivery is
+active; this is a conservative boundary. Work on another bus does not match
+this context. The check does not detect arbitrary dependency cycles between
+independently spawned tasks. The subscription runner additionally records its
+bus-local subscription ID. A recursive `run()` for that same subscription
+returns `ReceiveError::WouldDeadlock` before waiting for the session lease.
+Nested scopes on the same bus retain the outer subscription identity; another
+subscription or a same-numbered subscription on another bus does not match.
+Independent callers still wait for the lease as before.
 
 ---
 

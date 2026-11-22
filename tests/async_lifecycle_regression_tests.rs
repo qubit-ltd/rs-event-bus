@@ -29,6 +29,7 @@ use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::AsyncSubscriptionRunState;
 use qubit_event_bus::DeliveryError;
 use qubit_event_bus::LifecycleError;
+use qubit_event_bus::ReceiveError;
 use qubit_event_bus::ShutdownError;
 use qubit_event_bus::facade::DeliverySchedulingConfig;
 use qubit_event_bus::facade::EventBusFacadeConfig;
@@ -61,6 +62,23 @@ struct DropProbe(Arc<AtomicBool>);
 impl Drop for DropProbe {
     fn drop(&mut self) {
         self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+struct ShutdownOnDrop(Arc<AsyncEventBus>, Arc<AtomicBool>);
+
+impl Drop for ShutdownOnDrop {
+    fn drop(&mut self) {
+        let mut shutdown = Box::pin(self.0.shutdown(ShutdownMode::Immediate));
+        self.1.store(
+            matches!(
+                poll_once(shutdown.as_mut(), Waker::noop()),
+                Poll::Ready(Err(ShutdownError::Lifecycle(LifecycleError::WouldDeadlock {
+                    operation: "shutdown"
+                })))
+            ),
+            Ordering::SeqCst,
+        );
     }
 }
 
@@ -237,6 +255,159 @@ fn test_cancelled_run_retains_handler_and_resumes_with_it() {
     ready(subscription.close()).expect("subscription close");
     assert!(replacement_probe_weak.upgrade().is_none());
     assert!(replacement_dropped.load(Ordering::SeqCst));
+    let _ = ready(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
+}
+
+#[test]
+fn test_resuming_run_drops_replaced_handler_in_subscription_context() {
+    let bus = Arc::new(ready(AsyncEventBus::local(Default::default())).expect("local bus"));
+    let topic = Topic::<usize>::new("regression.resume-handler-drop-scope").expect("topic");
+    let mut subscription =
+        ready(bus.subscribe(SubscribeRequest::new("resume-handler-drop-scope", topic).expect("request")))
+            .expect("subscription");
+    let nested_shutdown_was_rejected = Arc::new(AtomicBool::new(false));
+    let old_handler_capture = Arc::new(ShutdownOnDrop(bus.clone(), nested_shutdown_was_rejected.clone()));
+    let mut first_run = {
+        let old_handler_capture = old_handler_capture.clone();
+        Box::pin(subscription.run(move |_| {
+            let _capture = old_handler_capture.clone();
+            async { Ok::<(), DeliveryError>(()) }
+        }))
+    };
+    assert!(poll_once(first_run.as_mut(), Waker::noop()).is_pending());
+    drop(first_run);
+    drop(old_handler_capture);
+
+    let mut resumed = Box::pin(subscription.run(|_| async { Ok::<(), DeliveryError>(()) }));
+    assert!(poll_once(resumed.as_mut(), Waker::noop()).is_pending());
+    assert!(nested_shutdown_was_rejected.load(Ordering::SeqCst));
+    drop(resumed);
+    ready(subscription.close()).expect("subscription close");
+    let report = ready(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+}
+
+#[test]
+fn test_recursive_run_returns_would_deadlock_before_waiting_for_lease() {
+    let bus = ready(AsyncEventBus::local(Default::default())).expect("local bus");
+    let topic = Topic::<usize>::new("regression.recursive-run").expect("topic");
+    let subscription = Arc::new(
+        ready(bus.subscribe(SubscribeRequest::new("recursive-run", topic.clone()).expect("request")))
+            .expect("subscription"),
+    );
+    let _ = ready(bus.publish(PublishRequest::new(topic.clone(), 1).expect("publish request"))).expect("publish");
+
+    let observed = Arc::new(Mutex::new(None));
+    let mut run = {
+        let weak_subscription = Arc::downgrade(&subscription);
+        let observed = observed.clone();
+        Box::pin(subscription.run(move |_| {
+            let weak_subscription = weak_subscription.clone();
+            let observed = observed.clone();
+            async move {
+                let nested_subscription = weak_subscription.upgrade().expect("subscription remains alive");
+                let nested = nested_subscription.run(|_| async { Ok::<(), DeliveryError>(()) }).await;
+                *observed.lock().expect("result lock") = Some(nested);
+                Ok::<(), DeliveryError>(())
+            }
+        }))
+    };
+    assert!(poll_once(run.as_mut(), Waker::noop()).is_pending());
+    assert!(matches!(
+        observed.lock().expect("result lock").as_ref(),
+        Some(Err(ReceiveError::WouldDeadlock))
+    ));
+    drop(run);
+    let mut subscription = Arc::try_unwrap(subscription).ok().expect("unique subscription");
+    ready(subscription.close()).expect("subscription close");
+    let report = ready(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+}
+
+#[test]
+fn test_run_context_does_not_reject_other_subscriptions_or_other_buses() {
+    let bus = ready(AsyncEventBus::local(Default::default())).expect("local bus");
+    let other_bus = ready(AsyncEventBus::local(Default::default())).expect("other local bus");
+    let topic = Topic::<usize>::new("regression.run-context-owner").expect("topic");
+    let other_topic = Topic::<usize>::new("regression.run-context-other-bus").expect("other topic");
+    let mut owner = ready(bus.subscribe(SubscribeRequest::new("run-context-owner", topic.clone()).expect("request")))
+        .expect("owner subscription");
+    let same_bus = Arc::new(
+        ready(bus.subscribe(SubscribeRequest::new("run-context-same-bus", topic.clone()).expect("request")))
+            .expect("same-bus subscription"),
+    );
+    let other_bus_subscription = Arc::new(
+        ready(other_bus.subscribe(SubscribeRequest::new("run-context-other-bus", other_topic).expect("request")))
+            .expect("other-bus subscription"),
+    );
+    let _ = ready(bus.publish(PublishRequest::new(topic, 1).expect("publish request"))).expect("publish");
+
+    let observed = Arc::new(Mutex::new(None));
+    let mut run = {
+        let same_bus = Arc::downgrade(&same_bus);
+        let other_bus_subscription = Arc::downgrade(&other_bus_subscription);
+        let observed = observed.clone();
+        Box::pin(owner.run(move |_| {
+            let same_bus = same_bus.clone();
+            let other_bus_subscription = other_bus_subscription.clone();
+            let observed = observed.clone();
+            async move {
+                let same_bus = same_bus.upgrade().expect("same-bus subscription remains alive");
+                let mut same_run = Box::pin(same_bus.run(|_| async { Ok::<(), DeliveryError>(()) }));
+                let same_is_pending = poll_once(same_run.as_mut(), Waker::noop()).is_pending();
+                drop(same_run);
+
+                let other_bus_subscription = other_bus_subscription
+                    .upgrade()
+                    .expect("other subscription remains alive");
+                let mut other_run = Box::pin(other_bus_subscription.run(|_| async { Ok::<(), DeliveryError>(()) }));
+                let other_is_pending = poll_once(other_run.as_mut(), Waker::noop()).is_pending();
+                drop(other_run);
+                *observed.lock().expect("result lock") = Some((same_is_pending, other_is_pending));
+                Ok::<(), DeliveryError>(())
+            }
+        }))
+    };
+    assert!(poll_once(run.as_mut(), Waker::noop()).is_pending());
+    assert_eq!(Some((true, true)), *observed.lock().expect("result lock"));
+    drop(run);
+    ready(owner.close()).expect("owner close");
+    ready(
+        Arc::try_unwrap(same_bus)
+            .ok()
+            .expect("unique same-bus subscription")
+            .close(),
+    )
+    .expect("same-bus close");
+    ready(
+        Arc::try_unwrap(other_bus_subscription)
+            .ok()
+            .expect("unique other-bus subscription")
+            .close(),
+    )
+    .expect("other-bus close");
+    let _ = ready(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
+    let _ = ready(other_bus.shutdown(ShutdownMode::Immediate)).expect("other bus shutdown");
+}
+
+#[test]
+fn test_independent_run_caller_still_waits_for_session_lease() {
+    let bus = ready(AsyncEventBus::local(Default::default())).expect("local bus");
+    let topic = Topic::<usize>::new("regression.independent-run-waiter").expect("topic");
+    let subscription = Arc::new(
+        ready(bus.subscribe(SubscribeRequest::new("independent-run-waiter", topic).expect("request")))
+            .expect("subscription"),
+    );
+    let mut first = Box::pin(subscription.run(|_| async { Ok::<(), DeliveryError>(()) }));
+    assert!(poll_once(first.as_mut(), Waker::noop()).is_pending());
+    let mut waiter = Box::pin(subscription.run(|_| async { Ok::<(), DeliveryError>(()) }));
+    assert!(poll_once(waiter.as_mut(), Waker::noop()).is_pending());
+    drop(first);
+    assert!(poll_once(waiter.as_mut(), Waker::noop()).is_pending());
+    assert_eq!(AsyncSubscriptionRunState::Running, subscription.run_state());
+    drop(waiter);
+    let mut subscription = Arc::try_unwrap(subscription).ok().expect("unique subscription");
+    ready(subscription.close()).expect("subscription close");
     let _ = ready(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
 }
 

@@ -2043,6 +2043,23 @@ fn test_shutdown_waits_for_in_flight_subscribe_to_close_late_receiver_first() {
     spi.pause_subscribe();
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
+    let receiver_drop_was_scoped = Arc::new(AtomicBool::new(false));
+    {
+        let bus = bus.clone();
+        let observed = receiver_drop_was_scoped.clone();
+        spi.on_receiver_drop(move || {
+            let mut nested = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+            observed.store(
+                matches!(
+                    crate::support::manual_async::poll_once(nested.as_mut()),
+                    Poll::Ready(Err(ShutdownError::Lifecycle(LifecycleError::WouldDeadlock {
+                        operation: "shutdown"
+                    })))
+                ),
+                Ordering::SeqCst,
+            );
+        });
+    }
     let (subscribe_sender, subscribe_receiver) = std::sync::mpsc::channel();
     let subscribing_bus = bus.clone();
     let subscriber = std::thread::spawn(move || {
@@ -2084,6 +2101,7 @@ fn test_shutdown_waits_for_in_flight_subscribe_to_close_late_receiver_first() {
     shutdown_thread.join().unwrap();
 
     assert!(matches!(subscribe_result, Err(SubscribeError::Closed)));
+    assert!(receiver_drop_was_scoped.load(Ordering::SeqCst));
     assert_eq!(shutdown_result.unwrap().outcome, ShutdownOutcome::Complete);
     assert!(
         !shutdown_was_early,
@@ -2096,6 +2114,93 @@ fn test_shutdown_waits_for_in_flight_subscribe_to_close_late_receiver_first() {
         .position(|operation| *operation == "shutdown")
         .unwrap();
     assert!(close < shutdown, "late receiver must close before provider shutdown");
+}
+
+#[test]
+fn test_cancelling_rejected_subscribe_scopes_late_receiver_drop() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    spi.pause_subscribe();
+    spi.pause_close();
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
+    let receiver_drop_was_scoped = Arc::new(AtomicBool::new(false));
+    {
+        let bus = bus.clone();
+        let observed = receiver_drop_was_scoped.clone();
+        spi.on_receiver_drop(move || {
+            let mut nested = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+            observed.store(
+                matches!(
+                    crate::support::manual_async::poll_once(nested.as_mut()),
+                    Poll::Ready(Err(ShutdownError::Lifecycle(LifecycleError::WouldDeadlock {
+                        operation: "shutdown"
+                    })))
+                ),
+                Ordering::SeqCst,
+            );
+        });
+    }
+    let request = SubscribeRequest::new("cancel-rejected-subscribe", topic()).expect("valid subscriber ID");
+    let mut subscribe = Box::pin(bus.subscribe(request));
+    assert!(crate::support::manual_async::poll_once(subscribe.as_mut()).is_pending());
+
+    let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+    assert!(crate::support::manual_async::poll_once(shutdown.as_mut()).is_pending());
+    spi.release_subscribe();
+    assert!(crate::support::manual_async::poll_once(subscribe.as_mut()).is_pending());
+    drop(subscribe);
+    assert!(receiver_drop_was_scoped.load(Ordering::SeqCst));
+    assert!(matches!(
+        crate::support::manual_async::poll_once(shutdown.as_mut()),
+        Poll::Ready(Ok(_))
+    ));
+}
+
+#[test]
+fn test_failed_late_receiver_close_is_recorded_and_drop_is_scoped() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    spi.pause_subscribe();
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
+    let receiver_drop_was_scoped = Arc::new(AtomicBool::new(false));
+    {
+        let bus = bus.clone();
+        let observed = receiver_drop_was_scoped.clone();
+        spi.on_receiver_drop(move || {
+            let mut nested = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+            observed.store(
+                matches!(
+                    crate::support::manual_async::poll_once(nested.as_mut()),
+                    Poll::Ready(Err(ShutdownError::Lifecycle(LifecycleError::WouldDeadlock {
+                        operation: "shutdown"
+                    })))
+                ),
+                Ordering::SeqCst,
+            );
+        });
+    }
+    let mut subscribe =
+        Box::pin(bus.subscribe(SubscribeRequest::new("failed-late-receiver", topic()).expect("valid subscriber ID")));
+    assert!(crate::support::manual_async::poll_once(subscribe.as_mut()).is_pending());
+    let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+    assert!(crate::support::manual_async::poll_once(shutdown.as_mut()).is_pending());
+
+    spi.fail_next_close();
+    spi.release_subscribe();
+    assert!(matches!(
+        crate::support::manual_async::poll_once(subscribe.as_mut()),
+        Poll::Ready(Err(SubscribeError::Closed))
+    ));
+    assert!(receiver_drop_was_scoped.load(Ordering::SeqCst));
+    match crate::support::manual_async::poll_once(shutdown.as_mut()) {
+        Poll::Ready(Err(ShutdownError::SubscriptionClose(errors))) => {
+            assert_eq!(errors.total_count(), 1);
+            let failure = errors.iter().next().expect("canonical close failure");
+            assert_eq!(failure.subscriber_id().as_str(), "failed-late-receiver");
+            assert_eq!(failure.error().operation(), "close");
+        }
+        other => panic!("expected the original late receiver close error, got {other:?}"),
+    }
 }
 
 #[test]

@@ -649,6 +649,7 @@ pub(crate) struct FakeAsyncEventBusSpi {
     subscribe_panics: Arc<AtomicBool>,
     shutdown_panics: Arc<AtomicBool>,
     close_panics: Arc<AtomicBool>,
+    fail_close_calls: Arc<AtomicBool>,
     settle_panics: Arc<AtomicBool>,
     queues: Arc<Mutex<Vec<(Id, AsyncQueue)>>>,
     shutdown_transitions: Arc<Mutex<usize>>,
@@ -674,6 +675,7 @@ pub(crate) struct FakeAsyncEventBusSpi {
     shutdown_wakers: Arc<Mutex<Vec<Waker>>>,
     receiver_drop_recoveries: Arc<AtomicUsize>,
     close_poll_hook: ClosePollHook,
+    receiver_drop_hook: ClosePollHook,
 }
 
 impl FakeAsyncEventBusSpi {
@@ -691,6 +693,7 @@ impl FakeAsyncEventBusSpi {
             subscribe_panics: Arc::new(AtomicBool::new(false)),
             shutdown_panics: Arc::new(AtomicBool::new(false)),
             close_panics: Arc::new(AtomicBool::new(false)),
+            fail_close_calls: Arc::new(AtomicBool::new(false)),
             settle_panics: Arc::new(AtomicBool::new(false)),
             queues: Arc::default(),
             shutdown_transitions: Arc::default(),
@@ -716,6 +719,7 @@ impl FakeAsyncEventBusSpi {
             shutdown_wakers: Arc::default(),
             receiver_drop_recoveries: Arc::default(),
             close_poll_hook: Arc::default(),
+            receiver_drop_hook: Arc::default(),
         }
     }
 
@@ -799,6 +803,9 @@ impl FakeAsyncEventBusSpi {
     pub(crate) fn panic_on_close_call(&self) {
         self.close_panics.store(true, Ordering::Release);
     }
+    pub(crate) fn fail_next_close(&self) {
+        self.fail_close_calls.store(true, Ordering::Release);
+    }
     pub(crate) fn panic_on_settle_call(&self) {
         self.settle_panics.store(true, Ordering::Release);
     }
@@ -873,6 +880,9 @@ impl FakeAsyncEventBusSpi {
     }
     pub(crate) fn on_next_close_poll(&self, hook: impl Fn() + Send + Sync + 'static) {
         *self.close_poll_hook.lock().unwrap() = Some(Arc::new(hook));
+    }
+    pub(crate) fn on_receiver_drop(&self, hook: impl Fn() + Send + Sync + 'static) {
+        *self.receiver_drop_hook.lock().unwrap() = Some(Arc::new(hook));
     }
     pub(crate) fn pause_first_close_call(&self) {
         self.pause_first_close_call.store(true, Ordering::Release);
@@ -1019,7 +1029,9 @@ impl AsyncEventBusSpi for FakeAsyncEventBusSpi {
                 max_concurrent_close_calls: self.max_concurrent_close_calls.clone(),
                 receiver_drop_recoveries: self.receiver_drop_recoveries.clone(),
                 close_poll_hook: self.close_poll_hook.clone(),
+                receiver_drop_hook: self.receiver_drop_hook.clone(),
                 close_panics: self.close_panics.clone(),
+                fail_close_calls: self.fail_close_calls.clone(),
                 settle_panics: self.settle_panics.clone(),
             }) as Box<dyn AsyncEventSubscriptionSpi>)
         })
@@ -1071,7 +1083,9 @@ struct FakeAsyncEventSubscriptionSpi {
     max_concurrent_close_calls: Arc<AtomicUsize>,
     receiver_drop_recoveries: Arc<AtomicUsize>,
     close_poll_hook: ClosePollHook,
+    receiver_drop_hook: ClosePollHook,
     close_panics: Arc<AtomicBool>,
+    fail_close_calls: Arc<AtomicBool>,
     settle_panics: Arc<AtomicBool>,
 }
 
@@ -1081,6 +1095,10 @@ impl Drop for FakeAsyncEventSubscriptionSpi {
         self.receiver_drop_recoveries
             .fetch_add(state.unsettled, Ordering::AcqRel);
         state.unsettled = 0;
+        drop(state);
+        if let Some(hook) = self.receiver_drop_hook.lock().unwrap().clone() {
+            hook();
+        }
     }
 }
 
@@ -1216,6 +1234,7 @@ impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
         let released = self.close_released.clone();
         let close_polls = self.close_polls.clone();
         let completed_close_calls = self.completed_close_calls.clone();
+        let fail_close = self.fail_close_calls.swap(false, Ordering::AcqRel);
         let active_close_calls = self.active_close_calls.clone();
         let max_concurrent_close_calls = self.max_concurrent_close_calls.clone();
         Box::pin(async move {
@@ -1252,6 +1271,9 @@ impl AsyncEventSubscriptionSpi for FakeAsyncEventSubscriptionSpi {
                 waker.wake();
             }
             completed_close_calls.fetch_add(1, Ordering::AcqRel);
+            if fail_close {
+                return Err(spi_error("close"));
+            }
             Ok(())
         })
     }

@@ -65,6 +65,9 @@ impl AsyncEventBus {
     /// the provider remains responsible for cleaning up any partially
     /// allocated subscription. After completion, the returned receiver or SPI
     /// error is retained if future destruction also panics.
+    /// If shutdown wins admission after the provider returns a late receiver,
+    /// its close and final receiver disposal remain inside the bus cleanup
+    /// context, including when this subscribe future is cancelled.
     pub async fn subscribe<T: Send + Sync + 'static>(
         &self,
         request: SubscribeRequest<T>,
@@ -180,8 +183,13 @@ impl AsyncEventBus {
             }
         };
         if !admitted {
-            control.stop(ShutdownMode::Immediate);
-            let _ = control.shutdown(ShutdownMode::Immediate).await;
+            let bus_key = Arc::as_ptr(&self.inner) as usize;
+            BusContextFuture::new_with_drop_context(bus_key, async move {
+                control.stop(ShutdownMode::Immediate);
+                let _ = control.shutdown(ShutdownMode::Immediate).await;
+                drop(subscription);
+            })
+            .await;
             return Err(SubscribeError::Closed);
         }
         registration.committed = true;

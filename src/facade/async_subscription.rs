@@ -17,6 +17,7 @@ use self::internal::AsyncSession;
 pub(in crate::facade) use self::internal::AsyncSubscriptionControl;
 use self::internal::RunStateGuard;
 use self::internal::SessionSignals;
+use self::internal::is_current_subscription_poll;
 use super::async_event_bus::AsyncEventBusInner;
 use super::async_event_bus::AsyncRunnerGuard;
 use super::async_event_bus::AsyncShutdownDriver;
@@ -242,7 +243,10 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// # Errors
     /// Returns `ReceiveError::Closed` when the session is already closed,
     /// the retained first terminal cause as `ReceiveError::Stopped`, or a
-    /// receiver close failure when no earlier cause exists.
+    /// receiver close failure when no earlier cause exists. Calling `run`
+    /// recursively from this subscription's handler returns
+    /// `ReceiveError::WouldDeadlock` immediately. To run it again, return from
+    /// the current handler and start it from an independent caller.
     ///
     /// # Panics
     /// Panics if the session lease invariant is violated internally.
@@ -251,6 +255,10 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
         H: Fn(Delivery<T>) -> F + Send + Sync + 'static,
         F: Future<Output = Result<(), DeliveryError>> + Send + 'static,
     {
+        let bus_key = self.control.bus.as_ptr() as usize;
+        if is_current_subscription_poll(bus_key, self.control.id) {
+            return Err(ReceiveError::WouldDeadlock);
+        }
         let mut lease = self.control.lease().await.ok_or(ReceiveError::Closed)?;
         if !self.control.enter_run() {
             return Err(self

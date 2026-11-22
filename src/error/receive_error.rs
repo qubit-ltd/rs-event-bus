@@ -64,6 +64,10 @@ pub enum ReceiveError {
     /// The subscription has closed.
     #[error("cannot receive after subscription close")]
     Closed,
+    /// Running this subscription from its own handler would wait for its own
+    /// exclusive session lease.
+    #[error("cannot run a subscription recursively from its own execution context")]
+    WouldDeadlock,
     /// Dead-letter publication exhausted its configured retry budget; the
     /// original provider token was left unsettled for recovery.
     #[error("dead-letter forwarding failed for event {event_id:?}: {message}")]

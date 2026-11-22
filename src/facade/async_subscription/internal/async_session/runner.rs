@@ -33,6 +33,7 @@ use crate::facade::async_subscription::internal::BusContextFuture;
 use crate::facade::async_subscription::internal::OwnedDeliveryTask;
 use crate::facade::async_subscription::internal::PendingDelivery;
 use crate::facade::async_subscription::internal::owned_delivery_lease::OwnedDeliveryLease;
+use crate::facade::async_subscription::internal::with_subscription_scope;
 use crate::model::Delivery;
 use crate::model::SubscriptionStopReason;
 use crate::spi::ReceiveOutcome;
@@ -160,7 +161,9 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     {
         let _runner = AsyncRunnerGuard::enter(self.inner.tracker.clone());
         let handler: SharedAsyncHandler<T> = Arc::new(move |delivery| Box::pin(handler(delivery)));
-        self.handler = Some(handler.clone());
+        let previous_handler = self.handler.replace(handler.clone());
+        let bus_key = Arc::as_ptr(&self.inner) as usize;
+        with_subscription_scope(bus_key, self.id, || drop(previous_handler));
         let result = self.run_loop(handler).await;
         let closed = self.close_inner(control).await;
         result?;
@@ -197,7 +200,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     /// futures are polled on this caller; no background task is created.
     pub(in crate::facade) async fn run_loop(&mut self, handler: SharedAsyncHandler<T>) -> Result<(), ReceiveError> {
         let bus_key = Arc::as_ptr(&self.inner) as usize;
-        BusContextFuture::new_with_drop_context(bus_key, self.run_loop_inner(handler)).await
+        BusContextFuture::new_for_subscription(bus_key, self.id, self.run_loop_inner(handler)).await
     }
 
     /// Runs the receiver loop while its caller poll carries this bus identity.
