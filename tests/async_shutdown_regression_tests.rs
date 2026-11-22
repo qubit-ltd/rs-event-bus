@@ -63,6 +63,7 @@ use qubit_event_bus::spi::SubscriptionModes;
 use crate::support::fake_spi::FakeAsyncEventBusSpi;
 
 type ShutdownReentryObservation = Arc<Mutex<Option<Poll<Result<(), ShutdownError>>>>>;
+type SubscriptionRunObservation = Arc<Mutex<Option<Poll<Result<(), ReceiveError>>>>>;
 
 struct ReenterOnPollTimer {
     clock: Arc<ManualMonotonicClock>,
@@ -337,7 +338,7 @@ struct ReenterOnWake {
     bus: Arc<Mutex<Option<AsyncEventBus>>>,
     observed: ShutdownReentryObservation,
     subscription: Arc<Mutex<Option<Weak<qubit_event_bus::AsyncSubscription<u32>>>>>,
-    run_observed: Arc<Mutex<Option<Poll<Result<(), ReceiveError>>>>>,
+    run_observed: SubscriptionRunObservation,
     handler_calls: Arc<AtomicUsize>,
     used: std::sync::atomic::AtomicBool,
 }
