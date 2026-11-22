@@ -10,6 +10,7 @@ mod support;
 
 use std::future::Future;
 use std::future::pending;
+use std::future::poll_fn;
 use std::io::Error;
 use std::io::ErrorKind;
 use std::sync::Arc;
@@ -37,6 +38,7 @@ use qubit_event_bus::error::ShutdownError;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
+use qubit_event_bus::model::PublishRequest;
 use qubit_event_bus::model::SubscribeRequest;
 use qubit_event_bus::model::Topic;
 use qubit_event_bus::spi::AsyncEventBusSpi;
@@ -663,6 +665,114 @@ fn test_subscription_stop_wake_rejects_same_bus_shutdown() {
         panic!("outer shutdown must complete after the runner releases its lease");
     };
     assert_eq!(report.outcome, SpiShutdownOutcome::Complete);
+    *bus_slot.lock().expect("bus slot") = None;
+}
+
+struct PublishGateSpi {
+    inner: FakeAsyncEventBusSpi,
+    released: Arc<std::sync::atomic::AtomicBool>,
+    publish_waker: Arc<Mutex<Option<Waker>>>,
+    shutdown_calls: Arc<AtomicUsize>,
+}
+
+impl AsyncEventBusSpi for PublishGateSpi {
+    fn capabilities(&self) -> EventBusCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn publish<'a>(&'a self, _: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        let released = self.released.clone();
+        let publish_waker = self.publish_waker.clone();
+        Box::pin(poll_fn(move |cx| {
+            if released.load(Ordering::SeqCst) {
+                Poll::Ready(Ok(PublishAcknowledgement::DroppedByInterceptor))
+            } else {
+                *publish_waker.lock().expect("publish waker") = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        }))
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        request: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+        self.inner.subscribe(request)
+    }
+
+    fn shutdown<'a>(&'a self, _: ShutdownMode) -> SpiFuture<'a, Result<SpiShutdownOutcome, SpiError>> {
+        self.shutdown_calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(SpiShutdownOutcome::Complete) })
+    }
+}
+
+#[test]
+fn test_publish_completion_wake_rejects_same_bus_shutdown() {
+    let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let publish_waker = Arc::new(Mutex::new(None));
+    let shutdown_calls = Arc::new(AtomicUsize::new(0));
+    let provider = Arc::new(PublishGateSpi {
+        inner: FakeAsyncEventBusSpi::new(),
+        released: released.clone(),
+        publish_waker: publish_waker.clone(),
+        shutdown_calls: shutdown_calls.clone(),
+    });
+    let bus = AsyncEventBus::from_spi(ProviderId::new("publish-finish-wake").expect("provider ID"), provider)
+        .expect("facade");
+    let bus_slot = Arc::new(Mutex::new(Some(bus.clone())));
+    let observed = Arc::new(Mutex::new(None));
+    let reenter = Arc::new(ReenterOnWake {
+        bus: bus_slot.clone(),
+        observed: observed.clone(),
+        subscription: Arc::new(Mutex::new(None)),
+        run_observed: Arc::new(Mutex::new(None)),
+        handler_calls: Arc::new(AtomicUsize::new(0)),
+        used: std::sync::atomic::AtomicBool::new(false),
+    });
+    let waker = Waker::from(reenter.clone());
+    let topic = Topic::<u32>::new("publish-finish-wake").expect("topic");
+    let mut publish = Box::pin(bus.publish(PublishRequest::new(topic, 7).expect("request")));
+    assert!(
+        publish
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    assert!(publish_waker.lock().expect("publish waker").is_some());
+
+    let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+    assert!(shutdown.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+    assert_eq!(
+        shutdown_calls.load(Ordering::SeqCst),
+        0,
+        "leader must wait for active publish"
+    );
+
+    released.store(true, Ordering::SeqCst);
+    publish_waker
+        .lock()
+        .expect("publish waker")
+        .take()
+        .expect("registered waker")
+        .wake();
+    let Poll::Ready(Ok(_)) = publish.as_mut().poll(&mut Context::from_waker(Waker::noop())) else {
+        panic!("released publish should complete");
+    };
+    assert!(
+        matches!(
+            observed.lock().expect("observation lock").as_ref(),
+            Some(Poll::Ready(Err(ShutdownError::Lifecycle(
+                LifecycleError::WouldDeadlock { operation: "shutdown" }
+            ))))
+        ),
+        "completion wake must reject nested shutdown: {:?}",
+        observed.lock().expect("observation lock")
+    );
+    let Poll::Ready(Ok(report)) = shutdown.as_mut().poll(&mut Context::from_waker(Waker::noop())) else {
+        panic!("outer shutdown must complete after publish releases its lease");
+    };
+    assert_eq!(report.outcome, SpiShutdownOutcome::Complete);
+    assert_eq!(shutdown_calls.load(Ordering::SeqCst), 1);
     *bus_slot.lock().expect("bus slot") = None;
 }
 

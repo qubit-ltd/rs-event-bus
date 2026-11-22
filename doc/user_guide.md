@@ -1887,6 +1887,8 @@ Startup order is: create the bus, register every handler, then start accepting b
 Stop business ingress first, close notification sources with a deadline, and keep subscription handles alive while calling `try_shutdown` from the outer application shutdown path. The async equivalent is `try_shutdown_async` in the same compiled file. Each helper retries exactly once only when the first caller deadline expires, using `Graceful` waits of 2 seconds then 1 second. It returns the full report for the first call that returns a report, including a provider `TimedOut` outcome; a second caller timeout is returned as `ShutdownError::TimedOut`. These waits do not guarantee that provider-side queued messages were drained.
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/bounded_shutdown.rs -->
+The compiled helper below reads the cached report with `shutdown_report()`. That API requires source or a release that includes the change after the `v0.21.4` tag. With `v0.21.4`, preserve and return the original shutdown error, including `ShutdownError::SubscriptionClose`, and omit the cached-report read.
+
 ```rust
 //! Two bounded waits hand unresolved cleanup back to the application
 //! supervisor.
@@ -2002,6 +2004,8 @@ Bounded waiting does not force process exit. The sync background coordinator may
 
 `EventBus::request_shutdown(mode)` closes admission and returns an `EventBusShutdown` ticket while a background coordinator performs cleanup. This is safe to call from a handler; wait for the ticket only after returning from bus-owned work. `ticket.wait(Some(timeout))` bounds this caller's wait without cancelling shutdown, and `ticket.wait_async().await` observes completion without blocking a thread or requiring a runtime. The first poll of `wait_async` from a callback or worker owned by the same bus returns `WouldDeadlock` (with operation `shutdown`), including for a cached ticket; creating the future there is allowed. This rejects only that observation and does not cancel shutdown, so an external lifecycle task can wait after the callback returns. Dropping the ticket only releases that observer; shutdown continues. A later request joins the active attempt, and an `Immediate` request can strengthen a graceful attempt. `Immediate` still cannot interrupt a running handler or provider call, and the background coordinator may continue waiting after a caller times out.
 
+The example reads `shutdown_report()` after a close error, which requires source or a release that includes the API added after the `v0.21.4` tag. With `v0.21.4`, keep and propagate the original `SubscriptionClose` error and omit the cached-report branch.
+
 ```rust
 use std::time::Duration;
 
@@ -2034,7 +2038,7 @@ match ticket.wait(Some(Duration::from_secs(2))) {
 
 When an IoC container separates stopping from waiting, have its stop callback call `request_shutdown` and retain the returned ticket in shared managed state. The wait callback can call `ticket.wait_async().await`. If the container cancels that wait future, keep the same `EventBusShutdown` value and poll `wait_async` again; cancellation removes only the waker registration and does not cancel shutdown. If waiting returns an error, inspect `bus.shutdown_report()` before propagating the original error; `None` means no report has been published yet and the read does not drive cleanup. For example, retain the original result with `let result = ticket.wait_async().await;`, record any available report's outcome, known-abandonment count, and provider uncertainty, then return that same `error` unchanged. The execution-services [IoC fixture](https://github.com/qubit-ltd/rs-execution-services/blob/main/tests/fixtures/ioc_application_consumer/src/managed_event_bus.rs) demonstrates stop and wait callbacks, shared ticket retention, and cancellation. The compiled `observe_shutdown_ticket` example in this guide shows the complete wait-error branch, including reading the report and returning the original error. Keep the ticket in shared state while the wait future is active; `EventBusShutdown` is reusable but is not `Clone`.
 
-`shutdown_report()` is source API added after the `v0.21.4` release tag (in this checkout at commit `4eb5b65`). `Some(report)` means provider shutdown completed and published its outcome, including when receiver cleanup returned a close error. `None` means no report was published at the instant of the read; it is not a shutdown result, and reading it never starts or advances cleanup. A release consumer must use a package version that includes this source change.
+`shutdown_report()` was added to source after the `v0.21.4` release tag (commit `4eb5b65` in this checkout). `Some(report)` means provider shutdown completed and published its outcome, including when receiver cleanup returned a close error. `None` means no report was published at the instant of the read; it is not a shutdown result, and reading it never starts or advances cleanup.
 
 An `Ok(ShutdownReport)` means the provider returned a report; inspect it before treating cleanup as successful. This fixture accepts only `ShutdownOutcome::Complete` with `known_abandoned_deliveries == 0`. A provider `ShutdownOutcome::TimedOut` or any known abandoned delivery becomes an IoC cleanup diagnostic that includes the full report. This is distinct from `ShutdownError::TimedOut`, which means the caller's observation deadline elapsed. `provider_may_have_abandoned_deliveries` records uncertainty and does not by itself prove loss or fail this policy. The fixture writes the report to stderr; an application can replace that with structured logging and choose its own tolerance for known loss.
 
@@ -2084,7 +2088,9 @@ shutdown. See the [migration note](migration.md#async-zero-budget-shutdown-after
 
 Async publish callbacks, including publisher interceptors and terminal publish error handlers, run inside the publishing bus's poll scope. Directly awaiting `shutdown` or calling `wait_for_received_deliveries` for that same bus returns `LifecycleError::WouldDeadlock`; the wait check is conservative even when no received delivery is active. Return from the callback and have an application lifecycle task drive shutdown. Another bus is unaffected. This poll-scoped guard does not detect arbitrary dependency cycles between independently spawned tasks.
 
-The async runner must be driven while the application receives events. On a stop signal, end that `run` future, then directly drive bounded bus shutdown. Do not put an unbounded `close().await` before the shutdown helper: shutdown takes ownership of retained sessions and applies its graceful deadlines. Here `handler` and `shutdown_signal` come from the application; run this lifecycle in its background task:
+The async runner must be driven while the application receives events. On a stop signal, end that `run` future, then directly drive bounded bus shutdown. Do not put an unbounded `close().await` before the shutdown helper: shutdown takes ownership of retained sessions and applies its graceful deadlines. Here `handler` and `shutdown_signal` come from the application; run this lifecycle in its background task.
+
+The example reads `shutdown_report()` after `SubscriptionClose`, which requires source or a release that includes the API added after the `v0.21.4` tag. With `v0.21.4`, preserve and propagate that original error and omit the cached-report branch:
 
 ```rust
 use std::time::Duration;

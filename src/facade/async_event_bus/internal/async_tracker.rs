@@ -15,10 +15,12 @@ use super::AsyncCloseGuard;
 use super::AsyncDeliveryGuard;
 use super::AsyncSignal;
 use super::tracker_state::TrackerState;
+use crate::facade::async_subscription::with_bus_scope;
 
 /// Counts active facade operations and received deliveries by topic.
-#[derive(Default)]
 pub(in crate::facade) struct AsyncTracker {
+    /// Stable identity of the owning bus, used to guard synchronous wakers.
+    bus_key: usize,
     /// Mutable counts protected as one consistent snapshot.
     pub(super) state: Mutex<TrackerState>,
     /// Wakes waiters after tracked activity changes.
@@ -26,6 +28,23 @@ pub(in crate::facade) struct AsyncTracker {
 }
 
 impl AsyncTracker {
+    /// Creates a tracker associated with its owning bus identity.
+    ///
+    /// # Parameters
+    /// - `bus_key`: stable identity of the bus that owns this tracker.
+    pub(in crate::facade) fn new(bus_key: usize) -> Self {
+        Self {
+            bus_key,
+            state: Mutex::new(TrackerState::default()),
+            signal: AsyncSignal::default(),
+        }
+    }
+
+    /// Wakes quiescence waiters while marking callbacks as bus-owned work.
+    fn notify_operation_finished(&self) {
+        with_bus_scope(self.bus_key, || self.signal.notify());
+    }
+
     /// Starts tracking a close operation until its guard is dropped.
     ///
     /// # Returns
@@ -103,7 +122,7 @@ impl AsyncTracker {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.active_runners = state.active_runners.saturating_sub(1);
         drop(state);
-        self.signal.notify();
+        self.notify_operation_finished();
     }
 
     /// Increments the number of active publishes.
@@ -125,7 +144,7 @@ impl AsyncTracker {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.active_publishes = state.active_publishes.saturating_sub(1);
         drop(state);
-        self.signal.notify();
+        self.notify_operation_finished();
     }
 
     /// Increments the number of active subscribes.
@@ -147,7 +166,7 @@ impl AsyncTracker {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.active_subscribes = state.active_subscribes.saturating_sub(1);
         drop(state);
-        self.signal.notify();
+        self.notify_operation_finished();
     }
 
     /// Decrements the close count and wakes quiescence waiters.
@@ -158,6 +177,6 @@ impl AsyncTracker {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.active_closes = state.active_closes.saturating_sub(1);
         drop(state);
-        self.signal.notify();
+        self.notify_operation_finished();
     }
 }

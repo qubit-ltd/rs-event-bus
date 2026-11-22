@@ -240,6 +240,8 @@ impl AsyncEventBus {
     /// shutdown of this bus again.
     /// Synchronous wakers invoked by subscription stop notifications receive
     /// the same protection and cannot request shutdown for this bus again.
+    /// Wakers notified when a runner or facade operation finishes also run in
+    /// this bus context, so they cannot reenter shutdown for this bus.
     pub async fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownReport, ShutdownError> {
         let bus_key = Arc::as_ptr(&self.inner) as usize;
         if is_current_bus_poll(bus_key) {

@@ -223,7 +223,7 @@ impl AsyncEventBus {
         let capabilities = catch_spi_call(provider_id.as_str(), "capabilities", None, || spi.capabilities())?;
         let scheduler = Arc::new(DeliverySchedulerCore::new(config.delivery_scheduling()));
         Ok(Self {
-            inner: Arc::new(AsyncEventBusInner {
+            inner: Arc::new_cyclic(|inner: &std::sync::Weak<AsyncEventBusInner>| AsyncEventBusInner {
                 spi,
                 capabilities,
                 provider_id: provider_id.clone(),
@@ -246,7 +246,7 @@ impl AsyncEventBus {
                 shutdown_report: Mutex::new(None),
                 abandoned_deliveries: AtomicU64::new(0),
                 observers: Mutex::new(Vec::new()),
-                tracker: Arc::new(AsyncTracker::default()),
+                tracker: Arc::new(AsyncTracker::new(inner.as_ptr() as usize)),
                 scheduler,
                 timer,
                 publish_metrics: PublishMetrics::default(),

@@ -1885,6 +1885,8 @@ worker 完成状态包含资源清理，也包含 observer 捕获对象的析构
 先停止业务入口，在期限内关闭通知来源，并保留订阅句柄；然后从最外层应用关闭流程调用 `try_shutdown`，异步路径调用同文件的 `try_shutdown_async`。只有第一次调用方 deadline 到期时，helper 才会使用 `Graceful` 再重试一次，等待时间分别为 2 秒和 1 秒。首次返回报告（包括 provider 的 `TimedOut` outcome）会完整保留；第二次调用方超时则作为 `ShutdownError::TimedOut` 返回。helper 不保证 provider 队列中的消息都已排空。
 
 <!-- event-bus-source: tests/fixtures/documentation_consumer/src/bounded_shutdown.rs -->
+下面编译的 helper 会通过 `shutdown_report()` 读取缓存报告；这要求源码或包含 `v0.21.4` tag 之后该变更的发行版。使用 `v0.21.4` 时，应保留并返回原始停机错误（包括 `ShutdownError::SubscriptionClose`），并省略读取缓存报告的分支。
+
 ```rust
 //! Two bounded waits hand unresolved cleanup back to the application
 //! supervisor.
@@ -2000,6 +2002,8 @@ pub async fn observe_shutdown_ticket(
 
 `EventBus::request_shutdown(mode)` 会关闭新接纳并返回 `EventBusShutdown` ticket，由后台协调器继续清理。可以在 handler 中请求停机；应等退出总线拥有的回调后再等待 ticket。`ticket.wait(Some(timeout))` 只限制当前调用方的等待，不会取消停机；`ticket.wait_async().await` 可观察完成，不阻塞线程，也不要求特定运行时。在同一 bus 拥有的 callback 或 worker 中首次轮询 `wait_async` 会返回 `WouldDeadlock`（operation 为 `shutdown`），缓存 ticket 也一样；在其中创建 future 是允许的。这只拒绝此次观察，不会取消停机；回调返回后可由外部生命周期任务等待。丢弃 ticket 只释放该观察者，停机仍继续。后续请求会加入当前停机尝试，`Immediate` 请求可以把 graceful 尝试加强为立即取消。`Immediate` 仍不能中断正在运行的 handler 或 provider 调用；调用方超时后，后台协调器可能继续等待。
 
+下面示例在 receiver 关闭错误后读取 `shutdown_report()`；这要求源码或包含 `v0.21.4` tag 之后加入此 API 的发行版。使用 `v0.21.4` 时，应保留并传播原始 `SubscriptionClose` 错误，并省略缓存报告分支。
+
 ```rust
 use std::time::Duration;
 
@@ -2031,7 +2035,7 @@ match ticket.wait(Some(Duration::from_secs(2))) {
 
 如果 IoC 容器把“停止”和“等待”分成两个回调，可在 stop 回调中调用 `request_shutdown`，并把返回的 ticket 保存在共享状态里；wait 回调再执行 `ticket.wait_async().await`。容器取消 wait future 时，保留同一个 `EventBusShutdown` 并再次轮询 `wait_async` 即可：取消只移除 waker 注册，不会取消停机。如果等待返回错误，先读取 `bus.shutdown_report()`，再传播原始错误；`None` 表示当前还未发布报告，读取不会驱动清理。例如先保存 `let result = ticket.wait_async().await;`，记录可用报告中的 outcome、已知放弃数和 provider 不确定性，然后原样返回其中的 `error`。execution-services 的 [IoC fixture](https://github.com/qubit-ltd/rs-execution-services/blob/main/tests/fixtures/ioc_application_consumer/src/managed_event_bus.rs) 用于展示 stop/wait 回调分离、共享状态保留 ticket 和取消后的继续观察。本指南中已编译的 `observe_shutdown_ticket` 示例给出了完整的等待错误分支，包括读取报告并返回原始错误。等待期间应让共享状态继续持有 ticket；它可重复观察，但没有实现 `Clone`。
 
-`shutdown_report()` 是 `v0.21.4` 发布 tag 之后加入的源码 API（本 checkout 中的提交为 `4eb5b65`）。`Some(report)` 表示 provider shutdown 已完成并发布结果，即使 receiver 清理同时返回关闭错误也是如此。`None` 仅表示读取时尚未发布报告；它不是停机结果，读取也不会开始或推进清理。使用发行版的调用方应依赖包含这项源码变更的版本。
+`shutdown_report()` 是 `v0.21.4` 发布 tag 之后加入的源码 API（本 checkout 中的提交为 `4eb5b65`）。`Some(report)` 表示 provider shutdown 已完成并发布结果，即使 receiver 清理同时返回关闭错误也是如此。`None` 仅表示读取时尚未发布报告；它不是停机结果，读取也不会开始或推进清理。
 
 `Ok(ShutdownReport)` 表示 provider 返回了一份报告；在把清理视为成功前，应先检查报告。本示例仅接受 `ShutdownOutcome::Complete` 且 `known_abandoned_deliveries == 0`。provider 返回 `ShutdownOutcome::TimedOut` 或存在已知放弃的投递时，会生成包含完整报告的 IoC 清理诊断。这与 `ShutdownError::TimedOut` 不同，后者表示调用方观察期限已到。`provider_may_have_abandoned_deliveries` 表示存在不确定性，单独出现时既不能证明消息已丢弃，也不会让本策略失败。本示例将报告写入 stderr；应用可以改用结构化日志，并自行决定对已知丢弃的容忍策略。
 
@@ -2072,7 +2076,9 @@ provider 支持 `wait_for_idle` 时，`Idle` 表示 provider 根据自己的队�
 
 异步发布回调（包括发布拦截器和终结发布错误处理器）在发布总线的 poll 作用域中运行。在回调中直接等待同一总线的 `shutdown` 或调用 `wait_for_received_deliveries`，会返回 `LifecycleError::WouldDeadlock`；即使当前没有已接收投递，等待检查也采用保守保护。回调返回后，由应用生命周期任务驱动停机。操作另一条总线不会触发该保护。此 poll 作用域检查不检测独立 spawn 任务之间任意的依赖环。
 
-应用运行期间要持续驱动异步 `run`。收到停止信号后，结束该 `run` future，直接驱动有界总线停机。不要在停机 helper 前无期限等待 `close().await`：总线停机会接管保留的 session，并应用 Graceful deadline。下面的 `handler` 与 `shutdown_signal` 由应用提供，流程放在后台任务中：
+应用运行期间要持续驱动异步 `run`。收到停止信号后，结束该 `run` future，直接驱动有界总线停机。不要在停机 helper 前无期限等待 `close().await`：总线停机会接管保留的 session，并应用 Graceful deadline。下面的 `handler` 与 `shutdown_signal` 由应用提供，流程放在后台任务中。
+
+下面示例在 `SubscriptionClose` 后读取 `shutdown_report()`；这要求源码或包含 `v0.21.4` tag 之后加入此 API 的发行版。使用 `v0.21.4` 时，应保留并传播原始错误，并省略缓存报告分支：
 
 ```rust
 use std::time::Duration;
