@@ -249,6 +249,10 @@ impl AsyncEventBus {
     /// the same protection and cannot request shutdown for this bus again.
     /// Wakers notified when a runner or facade operation finishes also run in
     /// this bus context, so they cannot reenter shutdown for this bus.
+    /// Wakers notified when shutdown leadership is released also run in this
+    /// bus context: a new same-bus shutdown started synchronously by such a
+    /// waker returns [`LifecycleError::WouldDeadlock`], while shutdown calls
+    /// already waiting for leadership can still take over.
     pub async fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownReport, ShutdownError> {
         let bus_key = Arc::as_ptr(&self.inner) as usize;
         if is_current_bus_poll(bus_key) {

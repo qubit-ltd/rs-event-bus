@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use super::AsyncEventBusInner;
+use crate::facade::async_subscription::with_bus_scope;
 
 /// Releases shutdown leadership and wakes callers waiting for the leader.
 #[must_use = "the shutdown leader guard must remain alive during shutdown work"]
@@ -23,7 +24,8 @@ impl Drop for ShutdownLeaderGuard {
     /// Makes shutdown work available to another waiting caller.
     fn drop(&mut self) {
         self.0.shutdown_active.store(false, Ordering::Release);
-        self.0.shutdown_signal.notify();
+        let bus_key = Arc::as_ptr(&self.0) as usize;
+        with_bus_scope(bus_key, || self.0.shutdown_signal.notify());
     }
 }
 

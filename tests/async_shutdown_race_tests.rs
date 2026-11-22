@@ -30,6 +30,8 @@ use qubit_clock::Timer;
 use qubit_clock::TimerFuture;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::EventBusFacadeConfig;
+use qubit_event_bus::LifecycleError;
+use qubit_event_bus::ShutdownError;
 use qubit_event_bus::SpiError;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
@@ -45,6 +47,21 @@ use qubit_event_bus::spi::SpiFuture;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
 
 const WATCHDOG: Duration = Duration::from_secs(5);
+
+type ShutdownObservation = Arc<Mutex<Option<Poll<Result<(), ShutdownError>>>>>;
+
+struct ShutdownOnWake {
+    bus: AsyncEventBus,
+    observed: ShutdownObservation,
+}
+
+impl Wake for ShutdownOnWake {
+    fn wake(self: Arc<Self>) {
+        let mut nested = Box::pin(self.bus.shutdown(ShutdownMode::Immediate));
+        let result = poll_once(nested.as_mut()).map(|result| result.map(|_| ()));
+        *self.observed.lock().expect("observation lock") = Some(result);
+    }
+}
 
 struct FakeAsyncEventBusSpi {
     calls: Mutex<Vec<&'static str>>,
@@ -447,14 +464,32 @@ fn test_cancelled_shutdown_leader_can_be_taken_over() {
         poll_once(first.as_mut()).is_pending(),
         "provider shutdown should remain pending"
     );
+    let observed = Arc::new(Mutex::new(None));
+    let mut second = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+    let waker = Waker::from(Arc::new(ShutdownOnWake {
+        bus: bus.clone(),
+        observed: observed.clone(),
+    }));
+    assert!(second.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+    assert!(observed.lock().expect("observation lock").is_none());
+    assert_eq!(
+        1,
+        spi.operation_log().iter().filter(|&&call| call == "shutdown").count()
+    );
     drop(first);
+    assert!(matches!(
+        observed.lock().expect("observation lock").take(),
+        Some(Poll::Ready(Err(ShutdownError::Lifecycle(
+            LifecycleError::WouldDeadlock { operation: "shutdown" }
+        ))))
+    ));
     assert_eq!(
         1,
         spi.operation_log().iter().filter(|&&call| call == "shutdown").count()
     );
 
     spi.release_shutdown();
-    let report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("replacement leader completes shutdown");
+    let report = block_on(second).expect("replacement leader completes shutdown");
     assert_eq!(ShutdownOutcome::Complete, report.outcome);
     assert_eq!(
         2,
