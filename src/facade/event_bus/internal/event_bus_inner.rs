@@ -40,6 +40,7 @@ use crate::facade::internal::LifecycleState;
 use crate::facade::observer_entry::ObserverEntry;
 use crate::facade::shutdown_coordinator::ShutdownCoordinator;
 use crate::facade::sync_delivery_scheduler::SyncDeliveryScheduler;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::ProviderId;
 use crate::pipeline::Diagnostic;
 use crate::pipeline::DiagnosticObserver;
@@ -265,17 +266,22 @@ impl EventBusInner {
         let bus_identity = Arc::as_ptr(&self) as usize;
         let _context = BusContextGuard::enter(bus_identity);
         let result = catch_unwind(AssertUnwindSafe(|| self.perform_shutdown(generation))).unwrap_or_else(|panic| {
-            Err(SpiError::Operation {
+            let error = SpiError::Operation {
                 provider_id: self.provider_id.as_str().into(),
                 operation: "shutdown_coordinator",
                 resource: None,
                 kind: "coordinator_panicked",
                 retryable: None,
                 source: Box::new(Error::other(panic_message(panic.as_ref()))),
-            })
+            };
+            dispose_panic_payload(panic);
+            Err(error)
         });
         let failure_message = catch_unwind(AssertUnwindSafe(|| result.as_ref().err().map(ToString::to_string)))
-            .unwrap_or_else(|_| Some(String::from("shutdown error formatting panicked")));
+            .unwrap_or_else(|payload| {
+                dispose_panic_payload(payload);
+                Some(String::from("shutdown error formatting panicked"))
+            });
         self.shutdown_coordinator.finish(generation, result);
         if let Some(message) = failure_message {
             self.emit_internal("shutdown_coordinator", message);

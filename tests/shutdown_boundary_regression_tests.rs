@@ -10,6 +10,7 @@
 use std::error::Error;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::panic::panic_any;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
@@ -69,6 +70,10 @@ struct ProbeSpi {
     receiver_probe: Mutex<Option<Reentry>>,
     receiver_close_count: Arc<AtomicUsize>,
     panic_shutdown: bool,
+    shutdown_error_once: bool,
+    receiver_close_error: bool,
+    payload_drop_count: Arc<AtomicUsize>,
+    shutdown_count: Arc<AtomicUsize>,
 }
 
 impl EventBusSpi for ProbeSpi {
@@ -95,25 +100,32 @@ impl EventBusSpi for ProbeSpi {
         Ok(Box::new(ProbeReceiver(
             self.receiver_probe.lock().expect("probe").take(),
             self.receiver_close_count.clone(),
+            self.receiver_close_error,
+            self.payload_drop_count.clone(),
         )))
     }
 
     fn shutdown(&self, _: ShutdownMode) -> Result<ShutdownOutcome, SpiError> {
-        if self.panic_shutdown {
+        let call = self.shutdown_count.fetch_add(1, Ordering::SeqCst);
+        if self.panic_shutdown || (self.shutdown_error_once && call == 0) {
             return Err(SpiError::Operation {
                 provider_id: "shutdown-probe".into(),
                 operation: "shutdown",
                 resource: None,
-                kind: "display_panicked",
+                kind: if self.panic_shutdown {
+                    "display_panicked"
+                } else {
+                    "shutdown_display_panicked"
+                },
                 retryable: Some(false),
-                source: Box::new(PanickingDisplay),
+                source: Box::new(PanickingDisplay(self.payload_drop_count.clone())),
             });
         }
         Ok(ShutdownOutcome::Complete)
     }
 }
 
-struct ProbeReceiver(Option<Reentry>, Arc<AtomicUsize>);
+struct ProbeReceiver(Option<Reentry>, Arc<AtomicUsize>, bool, Arc<AtomicUsize>);
 
 impl EventSubscriptionSpi for ProbeReceiver {
     fn receive(&mut self, timeout: Duration) -> Result<ReceiveOutcome, SpiError> {
@@ -127,6 +139,13 @@ impl EventSubscriptionSpi for ProbeReceiver {
 
     fn close(&mut self) -> Result<(), SpiError> {
         self.1.fetch_add(1, Ordering::SeqCst);
+        if self.2 {
+            return Err(display_panic_error(
+                "close_subscription",
+                "receiver_close_display_panicked",
+                self.3.clone(),
+            ));
+        }
         Ok(())
     }
 }
@@ -137,11 +156,20 @@ impl Drop for ProbeReceiver {
     }
 }
 
-struct PanickingDisplay;
+struct PanickingDrop(Arc<AtomicUsize>);
+
+impl Drop for PanickingDrop {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        panic!("injected panic payload drop panic");
+    }
+}
+
+struct PanickingDisplay(Arc<AtomicUsize>);
 
 impl Display for PanickingDisplay {
     fn fmt(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
-        panic!("injected error display panic");
+        panic_any(PanickingDrop(self.0.clone()));
     }
 }
 
@@ -153,10 +181,25 @@ impl std::fmt::Debug for PanickingDisplay {
 
 impl Error for PanickingDisplay {}
 
+fn display_panic_error(operation: &'static str, kind: &'static str, payload_drop_count: Arc<AtomicUsize>) -> SpiError {
+    SpiError::Operation {
+        provider_id: "shutdown-probe".into(),
+        operation,
+        resource: None,
+        kind,
+        retryable: Some(false),
+        source: Box::new(PanickingDisplay(payload_drop_count)),
+    }
+}
+
 fn probe_bus(
     receiver_probe: Option<Reentry>,
     panic_shutdown: bool,
     receiver_close_count: Arc<AtomicUsize>,
+    shutdown_error_once: bool,
+    receiver_close_error: bool,
+    payload_drop_count: Arc<AtomicUsize>,
+    shutdown_count: Arc<AtomicUsize>,
 ) -> EventBus {
     EventBus::from_spi(
         ProviderId::new("shutdown-probe").expect("provider id"),
@@ -164,6 +207,10 @@ fn probe_bus(
             receiver_probe: Mutex::new(receiver_probe),
             receiver_close_count,
             panic_shutdown,
+            shutdown_error_once,
+            receiver_close_error,
+            payload_drop_count,
+            shutdown_count,
         }),
     )
     .expect("bus construction")
@@ -208,7 +255,15 @@ fn test_receiver_drop_shutdown_is_guarded() {
         assert_eq!(case, "receiver-drop");
         let (probe, rx, slot) = reentry_probe(ShutdownMode::Immediate);
         let close_count = Arc::new(AtomicUsize::new(0));
-        let bus = probe_bus(Some(probe), false, close_count.clone());
+        let bus = probe_bus(
+            Some(probe),
+            false,
+            close_count.clone(),
+            false,
+            false,
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+        );
         *slot.lock().expect("bus slot") = Some(bus.clone());
         let _subscription = bus
             .subscribe(
@@ -257,7 +312,15 @@ fn test_drop_graceful_zero_timeout_is_guarded() {
 
 #[test]
 fn test_shutdown_error_display_panic_completes_ticket() {
-    let bus = probe_bus(None, true, Arc::new(AtomicUsize::new(0)));
+    let bus = probe_bus(
+        None,
+        true,
+        Arc::new(AtomicUsize::new(0)),
+        false,
+        false,
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+    );
     let ticket = bus.request_shutdown(ShutdownMode::Immediate).expect("request shutdown");
     let error = ticket.wait(Some(LIMIT)).expect_err("provider error is returned");
     assert!(matches!(
@@ -267,4 +330,125 @@ fn test_shutdown_error_display_panic_completes_ticket() {
             ..
         })
     ));
+}
+
+#[test]
+fn test_shutdown_error_display_payload_drop_panic_completes_ticket() {
+    let payload_drop_count = Arc::new(AtomicUsize::new(0));
+    let shutdown_count = Arc::new(AtomicUsize::new(0));
+    let bus = probe_bus(
+        None,
+        false,
+        Arc::new(AtomicUsize::new(0)),
+        true,
+        false,
+        payload_drop_count.clone(),
+        shutdown_count.clone(),
+    );
+    let ticket = bus.request_shutdown(ShutdownMode::Immediate).expect("request shutdown");
+    let error = ticket.wait(Some(LIMIT)).expect_err("provider error is returned");
+    let provider_error = match &error {
+        ShutdownError::Spi(error) => error,
+        _ => panic!("expected provider error, got another structured variant"),
+    };
+    assert_eq!(provider_error.kind(), "shutdown_display_panicked");
+    assert!(
+        provider_error
+            .source()
+            .and_then(Error::source)
+            .and_then(Error::source)
+            .unwrap()
+            .downcast_ref::<PanickingDisplay>()
+            .is_some()
+    );
+    assert_eq!(payload_drop_count.load(Ordering::SeqCst), 1);
+    let repeated = ticket
+        .wait(Some(LIMIT))
+        .expect_err("same generation retains provider error");
+    assert!(matches!(
+        repeated,
+        ShutdownError::Spi(SpiError::Operation {
+            kind: "shutdown_display_panicked",
+            ..
+        })
+    ));
+    let retry = bus.request_shutdown(ShutdownMode::Immediate).expect("retry shutdown");
+    assert_eq!(
+        retry.wait(Some(LIMIT)).expect("retry completes").outcome,
+        ShutdownOutcome::Complete
+    );
+    assert_eq!(shutdown_count.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn test_sync_receiver_close_error_display_panic_is_retained() {
+    let payload_drop_count = Arc::new(AtomicUsize::new(0));
+    let shutdown_count = Arc::new(AtomicUsize::new(0));
+    let close_count = Arc::new(AtomicUsize::new(0));
+    let bus = probe_bus(
+        None,
+        false,
+        close_count.clone(),
+        false,
+        true,
+        payload_drop_count.clone(),
+        shutdown_count.clone(),
+    );
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new(
+                "receiver-close-probe",
+                Topic::<String>::new("close.receiver").expect("topic"),
+            )
+            .expect("subscribe request"),
+            |_| {},
+        )
+        .expect("subscription");
+    let expected_id = subscription.subscriber_id().as_str().to_owned();
+    let cancel_error = match subscription.cancel().expect_err("receiver close failure retained") {
+        qubit_event_bus::LifecycleError::SubscriptionClose(errors) => errors,
+        _ => panic!("unexpected cancellation error variant"),
+    };
+    let cancel_failure = cancel_error.iter().next().expect("one cancellation failure");
+    assert_eq!(cancel_failure.subscriber_id().as_str(), expected_id);
+    assert!(matches!(
+        cancel_failure.error(),
+        SpiError::Operation {
+            operation: "close_subscription",
+            kind: "receiver_close_display_panicked",
+            ..
+        }
+    ));
+    assert!(cancel_failure.error().source().is_some());
+    let ticket = bus.request_shutdown(ShutdownMode::Immediate).expect("request shutdown");
+    let shutdown_error = ticket.wait(Some(LIMIT)).expect_err("close failure reported by bus");
+    let shutdown_errors = match shutdown_error {
+        ShutdownError::SubscriptionClose(errors) => errors,
+        _ => panic!("unexpected shutdown error variant"),
+    };
+    let shutdown_failure = shutdown_errors.iter().next().expect("one shutdown failure");
+    assert_eq!(shutdown_failure.subscriber_id(), cancel_failure.subscriber_id());
+    assert_eq!(shutdown_failure.error().kind(), cancel_failure.error().kind());
+    assert_eq!(shutdown_failure.error().operation(), cancel_failure.error().operation());
+    assert!(std::ptr::eq(cancel_failure, shutdown_failure));
+    assert!(
+        shutdown_failure
+            .error()
+            .source()
+            .unwrap()
+            .downcast_ref::<PanickingDisplay>()
+            .is_some()
+    );
+    assert!(
+        cancel_failure
+            .error()
+            .source()
+            .unwrap()
+            .downcast_ref::<PanickingDisplay>()
+            .is_some()
+    );
+    assert_eq!(close_count.load(Ordering::SeqCst), 1);
+    assert_eq!(payload_drop_count.load(Ordering::SeqCst), 1);
+    assert_eq!(shutdown_count.load(Ordering::SeqCst), 1);
+    assert!(bus.shutdown_report().is_some());
 }

@@ -618,10 +618,14 @@ fn run_subscription_worker_body<T>(
         }
     }
     if let Err(error) = close_spi_subscription(&inner, &subscriber_id, &mut *spi_subscription) {
-        inner.emit_internal("subscription_close", error.to_string());
         let failure = Arc::new(SubscriptionCloseFailure::new(subscriber_id.clone(), error));
         control.record_close_error(failure.clone());
         inner.record_close_failure(&failure);
+        let message = catch_unwind(AssertUnwindSafe(|| failure.error().to_string())).unwrap_or_else(|payload| {
+            dispose_panic_payload(payload);
+            String::from("subscription close error formatting panicked")
+        });
+        inner.emit_internal("subscription_close", message);
     }
     // Count the complete batch before dropping any payload, so an unwind
     // during destruction cannot leave the abandoned-delivery metrics partial.
