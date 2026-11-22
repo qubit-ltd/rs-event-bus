@@ -35,7 +35,7 @@ def wait_for_process_exit(pid, timeout=2.0):
         if procfs_available:
             try:
                 stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
                 return True
             if _is_zombie(stat):
                 return True

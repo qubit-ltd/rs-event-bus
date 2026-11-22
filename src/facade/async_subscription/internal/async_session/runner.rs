@@ -12,6 +12,8 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::future::poll_fn;
 use std::io::Error;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
@@ -34,6 +36,7 @@ use crate::facade::async_subscription::internal::OwnedDeliveryTask;
 use crate::facade::async_subscription::internal::PendingDelivery;
 use crate::facade::async_subscription::internal::owned_delivery_lease::OwnedDeliveryLease;
 use crate::facade::async_subscription::internal::with_subscription_scope;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::Delivery;
 use crate::model::SubscriptionStopReason;
 use crate::spi::ReceiveOutcome;
@@ -236,10 +239,20 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 .await;
             }
             if self.signals.is_stopped() && !self.signals.stopping_gracefully() {
-                for _ in 0..self.buffered.len() {
+                let mut drop_panicked = false;
+                while let Some(delivery) = self.buffered.pop_front() {
                     self.record_abandoned_delivery();
+                    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(delivery))) {
+                        dispose_panic_payload(payload);
+                        drop_panicked = true;
+                    }
                 }
-                self.buffered.clear();
+                if drop_panicked {
+                    self.inner.emit(&Diagnostic::InternalFailure {
+                        origin: "immediate_stop_buffer_drop".into(),
+                        message: "buffered delivery drop panicked".into(),
+                    });
+                }
                 self.discard_unstarted_tasks();
                 self.inner.scheduler.stop_subscription(self.id);
                 if self.signals.terminal_failure().is_some() {

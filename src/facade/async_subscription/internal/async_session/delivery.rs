@@ -173,7 +173,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             Ok(payload) => payload,
             Err(error) => {
                 if receive_failure_action(&error) == ReceiveFailureAction::StopUnsettled {
-                    let message = error.to_string();
+                    let message = crate::pipeline::format_diagnostic_error(&error, "codec error formatting panicked");
                     self.record_abandoned_delivery();
                     if self.signals.fail_receive(SubscriptionStopReason::Codec {
                         event_id,

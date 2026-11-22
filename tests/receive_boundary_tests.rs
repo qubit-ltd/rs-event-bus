@@ -608,6 +608,70 @@ fn panic_probe(mode: usize) -> Arc<Probe> {
     })
 }
 #[test]
+fn test_async_codec_stop_display_panic_preserves_cause_and_abandonment() {
+    let mut source_value = Source::new(1, Some(SchemaId::new("v1").expect("schema")));
+    source_value.ephemeral = true;
+    let source = Arc::new(source_value);
+    let bus =
+        AsyncEventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config()).expect("bus");
+    let (diagnostic_sender, diagnostic_receiver) = mpsc::channel();
+    let _observer = bus.observe_diagnostics(move |diagnostic| {
+        if let Diagnostic::InternalFailure { origin, message } = diagnostic
+            && origin.as_ref() == "receive_boundary"
+        {
+            let _ = diagnostic_sender.send(message.clone());
+        }
+    });
+    let handled = Arc::new(AtomicUsize::new(0));
+    let subscription = manual_async::block_on(
+        bus.subscribe(
+            SubscribeRequest::new(
+                "async-codec-format-panic",
+                Topic::new("boundary").expect("topic").with_shared_codec(panic_probe(5)),
+            )
+            .expect("request"),
+        ),
+    )
+    .expect("subscription");
+    let handled_by_callback = handled.clone();
+    let error = manual_async::block_on(subscription.run(move |_| {
+        handled_by_callback.fetch_add(1, Ordering::SeqCst);
+        async { Ok(()) }
+    }))
+    .expect_err("codec failure stops the async receiver");
+    let ReceiveError::Stopped(reason) = error else {
+        panic!("codec failure remains a structured stop")
+    };
+    let SubscriptionStopReason::Codec { event_id, error } = reason.as_ref() else {
+        panic!("codec failure remains structured")
+    };
+    assert_eq!(event_id.as_str(), "source-record");
+    assert!(
+        StdError::source(error.as_ref())
+            .unwrap()
+            .downcast_ref::<PanicDisplay>()
+            .is_some()
+    );
+    assert!(Arc::ptr_eq(
+        &reason,
+        &subscription.terminal_failure().expect("cause retained")
+    ));
+    assert_eq!(handled.load(Ordering::SeqCst), 0);
+    assert_eq!(source.settled.load(Ordering::SeqCst), 0);
+    assert!(source.dispositions.lock().expect("disposition log").is_empty());
+    assert_eq!(
+        diagnostic_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("fallback diagnostic emitted")
+            .as_ref(),
+        "codec error formatting panicked",
+    );
+    assert_eq!(subscription.delivery_metrics().metrics.abandoned_ephemeral, 1);
+    assert_eq!(source.closed.load(Ordering::SeqCst), 1);
+    let _ = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+}
+
+#[test]
 fn test_permanent_panic_is_unsettled_and_new_subscription_recovers() {
     for mode in [1, 2] {
         let source = Arc::new(Source::new(4, Some(SchemaId::new("v1").expect("schema"))));

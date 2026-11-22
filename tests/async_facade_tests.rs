@@ -4948,13 +4948,20 @@ fn test_immediate_close_counts_buffered_delivery_when_payload_drop_panics() {
     let config = EventBusFacadeConfig::new().with_delivery_scheduling(
         DeliverySchedulingConfig::new(
             std::num::NonZeroUsize::new(1).unwrap(),
-            std::num::NonZeroUsize::new(2).unwrap(),
-            std::num::NonZeroUsize::new(2).unwrap(),
+            std::num::NonZeroUsize::new(3).unwrap(),
+            std::num::NonZeroUsize::new(3).unwrap(),
             std::num::NonZeroUsize::new(1).unwrap(),
         )
         .unwrap(),
     );
     let bus = AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi.clone(), config).unwrap();
+    let drop_panics = Arc::new(AtomicUsize::new(0));
+    let observed_panics = drop_panics.clone();
+    let _observer = bus.observe_diagnostics(move |diagnostic| {
+        if matches!(diagnostic, Diagnostic::InternalFailure { origin, .. } if origin.as_ref() == "immediate_stop_buffer_drop") {
+            observed_panics.fetch_add(1, Ordering::SeqCst);
+        }
+    });
     let payload_topic = Topic::<DropProbe>::new("immediate-close-drop.topic").unwrap();
     let mut subscription = block_on(
         bus.subscribe(
@@ -4968,7 +4975,7 @@ fn test_immediate_close_counts_buffered_delivery_when_payload_drop_panics() {
         ),
     )
     .unwrap();
-    for (event_id, panic_on_drop) in [("ordinary", false), ("panic", true)] {
+    for (event_id, panic_on_drop) in [("ordinary", false), ("panic-one", true), ("panic-two", true)] {
         spi.enqueue(InboundMessage::new(
             TopicAddress::new("immediate-close-drop.topic").unwrap(),
             EventId::new(event_id).unwrap(),
@@ -4980,26 +4987,57 @@ fn test_immediate_close_counts_buffered_delivery_when_payload_drop_panics() {
             Default::default(),
         ));
     }
-    let mut runner = Box::pin(subscription.run(|_| std::future::pending::<Result<(), DeliveryError>>()));
+    let finish_handler = Arc::new(AtomicBool::new(false));
+    let finish_by_handler = finish_handler.clone();
+    let mut runner = Box::pin(subscription.run(move |_| {
+        let finish = finish_by_handler.clone();
+        async move {
+            std::future::poll_fn(|context| {
+                if finish.load(Ordering::SeqCst) {
+                    Poll::Ready(Ok(()))
+                } else {
+                    context.waker().wake_by_ref();
+                    Poll::Pending
+                }
+            })
+            .await
+        }
+    }));
     let mut metrics = subscription.delivery_metrics().metrics;
     for _ in 0..1024 {
         let _ = crate::support::manual_async::poll_once(runner.as_mut());
         metrics = subscription.delivery_metrics().metrics;
-        if metrics.running_handlers == 1 && metrics.queued == 1 {
+        if metrics.running_handlers == 1 && metrics.queued == 2 {
             break;
         }
     }
     assert_eq!(metrics.running_handlers, 1);
-    assert_eq!(metrics.queued, 1);
+    assert_eq!(metrics.queued, 2);
     drop(runner);
     assert_eq!(subscription.run_state(), AsyncSubscriptionRunState::Paused);
     assert_eq!(subscription.delivery_metrics().metrics.abandoned_ephemeral, 0);
 
-    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| block_on(subscription.close())))
-        .expect_err("queued payload destructor must panic during immediate close");
-    assert_eq!(panic.downcast_ref::<&str>(), Some(&"buffered payload drop probe"));
+    finish_handler.store(true, Ordering::SeqCst);
+    block_on(subscription.close()).expect("immediate close contains buffered payload drop panic");
     assert_eq!(subscription.delivery_metrics().metrics.queued, 0);
-    assert_eq!(subscription.delivery_metrics().metrics.abandoned_ephemeral, 1);
+    assert_eq!(subscription.delivery_metrics().metrics.abandoned_ephemeral, 2);
+    assert_eq!(
+        drop_panics.load(Ordering::SeqCst),
+        1,
+        "one diagnostic covers both buffered drop panics"
+    );
+    assert_eq!(spi.close_call_count(), 1);
+    let replacement = block_on(
+        bus.subscribe(
+            SubscribeRequest::new(
+                "immediate-close-replacement",
+                Topic::<DropProbe>::new("immediate-close-drop.topic").unwrap(),
+            )
+            .expect("replacement request"),
+        ),
+    )
+    .expect("close releases the subscription slot");
+    drop(replacement);
     drop(subscription);
     let report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
     assert_eq!(report.known_abandoned_deliveries, 2);

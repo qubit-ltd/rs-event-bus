@@ -8,6 +8,8 @@
 //! Stop, terminal-error and start-gate state shared by a subscription session.
 
 use std::error::Error;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
@@ -16,6 +18,7 @@ use std::sync::atomic::Ordering;
 
 use crate::error::ReceiveError;
 use crate::facade::async_event_bus::AsyncSignal;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::EventId;
 use crate::model::SubscriptionStopReason;
 use crate::spi::ShutdownMode;
@@ -179,12 +182,22 @@ impl SessionSignals {
         message: Box<str>,
         source: Box<dyn Error + Send + Sync + 'static>,
     ) {
-        *self.terminal_error.lock().unwrap_or_else(PoisonError::into_inner) =
-            Some(ReceiveError::DeadLetterForwardFailed {
-                event_id,
-                message,
-                source,
-            });
+        let mut error = Some(ReceiveError::DeadLetterForwardFailed {
+            event_id,
+            message,
+            source,
+        });
+        {
+            let mut terminal_error = self.terminal_error.lock().unwrap_or_else(PoisonError::into_inner);
+            if terminal_error.is_none() {
+                *terminal_error = error.take();
+            }
+        }
+        if let Some(error) = error
+            && let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(error)))
+        {
+            dispose_panic_payload(payload);
+        }
         self.stop(ShutdownMode::Immediate);
     }
 
@@ -223,5 +236,65 @@ impl SessionSignals {
     pub(in crate::facade::async_subscription) fn admit_handler(&self) -> bool {
         let _start_gate = self.start_gate.lock().unwrap_or_else(PoisonError::into_inner);
         !self.stopped.load(Ordering::Acquire) || self.stopping_gracefully()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+    use std::io::Error as IoError;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    use super::SessionSignals;
+    use crate::error::ReceiveError;
+    use crate::model::EventId;
+
+    #[derive(Debug)]
+    struct PanicOnDrop(Arc<AtomicUsize>);
+
+    impl std::fmt::Display for PanicOnDrop {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("panic on drop")
+        }
+    }
+
+    impl Error for PanicOnDrop {}
+
+    impl Drop for PanicOnDrop {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            panic!("secondary dead-letter error drop panic");
+        }
+    }
+
+    #[test]
+    fn test_dead_letter_failure_keeps_first_error_and_disposes_later_drop_panic() {
+        let signals = SessionSignals::new();
+        signals.fail_dead_letter_forward(
+            EventId::new("first-event").expect("event ID"),
+            "first failure".into(),
+            Box::new(IoError::other("first source")),
+        );
+        let drops = Arc::new(AtomicUsize::new(0));
+        signals.fail_dead_letter_forward(
+            EventId::new("second-event").expect("event ID"),
+            "second failure".into(),
+            Box::new(PanicOnDrop(drops.clone())),
+        );
+        let error = signals.take_terminal_error().expect("first terminal error remains");
+        let ReceiveError::DeadLetterForwardFailed {
+            event_id,
+            message,
+            source,
+        } = error
+        else {
+            panic!("dead-letter failure remains the terminal error")
+        };
+        assert_eq!(event_id.as_str(), "first-event");
+        assert_eq!(message.as_ref(), "first failure");
+        assert_eq!(source.to_string(), "first source");
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
     }
 }
