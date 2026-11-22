@@ -22,6 +22,7 @@ use crate::facade::async_subscription::BusContextFuture;
 use crate::facade::async_subscription::BusState;
 use crate::facade::async_subscription::SubscriptionCloseErrors;
 use crate::facade::async_subscription::internal::owned_delivery_task::discard_unstarted_tasks;
+use crate::facade::async_subscription::with_bus_scope;
 use crate::spi::DurabilityCapability;
 use crate::spi::ShutdownMode;
 use crate::spi::panic_boundary::catch_spi_call;
@@ -113,8 +114,10 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             let failure = self.inner.record_close_error(control, &self.subscriber_id, error);
             return Err(failure);
         }
-        self.abandon_queued_and_completed();
-        self.receiver.take();
+        with_bus_scope(bus_key, || {
+            self.abandon_queued_and_completed();
+            drop(self.receiver.take());
+        });
         let _ = self.inner.scheduler.unregister(self.id);
         self.inner.notify_scheduler();
         {
@@ -124,8 +127,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 .unwrap_or_else(PoisonError::into_inner)
                 .remove(&self.id);
         }
-        let finished_handler = self.handler.take();
-        drop(finished_handler);
+        with_bus_scope(bus_key, || drop(self.handler.take()));
         Ok(())
     }
 

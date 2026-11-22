@@ -47,6 +47,7 @@ mod delivery_task;
 
 pub(super) use internal::BusContextFuture;
 pub(super) use internal::is_current_bus_poll;
+pub(super) use internal::with_bus_scope;
 
 /// Boxed subscriber handler that returns a runtime-neutral future.
 /// The callback can be shared by delivery tasks without tying the session to
@@ -288,6 +289,9 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// Calling shutdown for this bus from the receiver close SPI call returns
     /// [`LifecycleError::WouldDeadlock`]. Request shutdown from an application
     /// lifecycle task after the close callback returns.
+    /// Synchronous destruction of session-owned deliveries, receiver, and
+    /// handler after a successful close also runs in this bus context; shutdown
+    /// requested from those destructors returns `WouldDeadlock`.
     ///
     /// # Panics
     /// Panics if the session lease invariant is violated internally.

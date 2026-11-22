@@ -825,6 +825,8 @@ struct CloseFailingSpi {
     receiver_drops: Arc<AtomicUsize>,
     receive_future_drops: Arc<AtomicUsize>,
     fail_every_close: bool,
+    close_succeeds_immediately: bool,
+    drop_probe: Arc<Mutex<Option<DropShutdownProbe>>>,
     fail_provider_shutdown_once: bool,
     pending_provider_shutdown_once: bool,
     deliver_count: usize,
@@ -869,6 +871,8 @@ impl AsyncEventBusSpi for CloseFailingSpi {
         let receiver_drops = self.receiver_drops.clone();
         let receive_future_drops = self.receive_future_drops.clone();
         let fail_every_close = self.fail_every_close;
+        let close_succeeds_immediately = self.close_succeeds_immediately;
+        let drop_probe = self.drop_probe.lock().expect("probe mutex").clone();
         let deliver_count = self.deliver_count;
         let subscription_id = request.subscription_id();
         Box::pin(async move {
@@ -880,6 +884,8 @@ impl AsyncEventBusSpi for CloseFailingSpi {
                 receiver_drops,
                 receive_future_drops,
                 fail_every_close,
+                close_succeeds_immediately,
+                drop_probe,
                 deliver_count,
                 subscription_id,
             }) as Box<dyn AsyncEventSubscriptionSpi>)
@@ -916,6 +922,8 @@ struct CloseFailingReceiver {
     receiver_drops: Arc<AtomicUsize>,
     receive_future_drops: Arc<AtomicUsize>,
     fail_every_close: bool,
+    close_succeeds_immediately: bool,
+    drop_probe: Option<DropShutdownProbe>,
     deliver_count: usize,
     subscription_id: Id,
 }
@@ -946,8 +954,9 @@ impl AsyncEventSubscriptionSpi for CloseFailingReceiver {
         self.total_close_attempts.fetch_add(1, Ordering::AcqRel);
         let attempt = self.close_attempts.fetch_add(1, Ordering::AcqRel);
         let fail_every_close = self.fail_every_close;
+        let close_succeeds_immediately = self.close_succeeds_immediately;
         Box::pin(async move {
-            if fail_every_close || attempt == 0 {
+            if fail_every_close || (!close_succeeds_immediately && attempt == 0) {
                 Err(SpiError::Operation {
                     provider_id: "close-failing".into(),
                     operation: "close",
@@ -985,6 +994,53 @@ impl Drop for CancellableReceive {
 impl Drop for CloseFailingReceiver {
     fn drop(&mut self) {
         self.receiver_drops.fetch_add(1, Ordering::AcqRel);
+        if let Some(probe) = &self.drop_probe {
+            probe.check_nested_shutdown();
+        }
+    }
+}
+
+#[derive(Clone)]
+struct DropShutdownProbe {
+    bus: Arc<Mutex<Option<AsyncEventBus>>>,
+    outcomes: Arc<Mutex<Vec<&'static str>>>,
+}
+
+fn nested_shutdown_probe(bus: AsyncEventBus) -> DropShutdownProbe {
+    DropShutdownProbe {
+        bus: Arc::new(Mutex::new(Some(bus))),
+        outcomes: Arc::new(Mutex::new(Vec::new())),
+    }
+}
+
+fn assert_one_nested_shutdown_rejected(probe: &DropShutdownProbe) {
+    assert_eq!(
+        *probe.outcomes.lock().expect("probe outcomes mutex"),
+        ["would_deadlock"],
+        "destructor performs one poll and nested shutdown is rejected"
+    );
+}
+
+impl DropShutdownProbe {
+    fn check_nested_shutdown(&self) {
+        let Some(bus) = self.bus.lock().expect("probe bus mutex").take() else {
+            return;
+        };
+        let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+        let result = match poll_once(shutdown.as_mut()) {
+            Poll::Pending => "pending",
+            Poll::Ready(Err(ShutdownError::Lifecycle(LifecycleError::WouldDeadlock { .. }))) => "would_deadlock",
+            Poll::Ready(_) => "other_ready",
+        };
+        self.outcomes.lock().expect("probe outcomes mutex").push(result);
+    }
+}
+
+struct DropShutdownCapture(DropShutdownProbe);
+
+impl Drop for DropShutdownCapture {
+    fn drop(&mut self) {
+        self.0.check_nested_shutdown();
     }
 }
 
@@ -1027,6 +1083,67 @@ fn test_explicit_subscription_close_returns_a_single_close_failure() {
             original_source,
         ));
     });
+}
+
+#[test]
+fn test_explicit_successful_close_scopes_receiver_and_handler_destruction() {
+    let spi = Arc::new(CloseFailingSpi {
+        close_succeeds_immediately: true,
+        ..CloseFailingSpi::default()
+    });
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("close-failing").expect("static test provider ID must be valid"),
+        spi.clone(),
+    )
+    .expect("valid provider capabilities");
+    let receiver_probe = nested_shutdown_probe(bus.clone());
+    *spi.drop_probe.lock().expect("probe mutex") = Some(receiver_probe.clone());
+    let handler_probe = nested_shutdown_probe(bus.clone());
+    let mut subscription =
+        block_on(bus.subscribe(SubscribeRequest::new("scoped-explicit-close", topic()).expect("valid subscriber ID")))
+            .expect("subscription must be created");
+    let capture = DropShutdownCapture(handler_probe.clone());
+    let mut run = Box::pin(subscription.run(move |_| {
+        let _capture = &capture;
+        async { Ok(()) }
+    }));
+    assert!(poll_once(run.as_mut()).is_pending());
+    drop(run);
+    block_on(subscription.close()).expect("first receiver close succeeds");
+    assert_one_nested_shutdown_rejected(&receiver_probe);
+    assert_one_nested_shutdown_rejected(&handler_probe);
+    assert!(block_on(bus.shutdown(ShutdownMode::Immediate)).is_ok());
+}
+
+#[test]
+fn test_bus_shutdown_scopes_successful_receiver_destruction() {
+    let spi = Arc::new(CloseFailingSpi {
+        close_succeeds_immediately: true,
+        ..CloseFailingSpi::default()
+    });
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("close-failing").expect("static test provider ID must be valid"),
+        spi.clone(),
+    )
+    .expect("valid provider capabilities");
+    let receiver_probe = nested_shutdown_probe(bus.clone());
+    *spi.drop_probe.lock().expect("probe mutex") = Some(receiver_probe.clone());
+    let handler_probe = nested_shutdown_probe(bus.clone());
+    let subscription =
+        block_on(bus.subscribe(SubscribeRequest::new("scoped-bus-close", topic()).expect("valid subscriber ID")))
+            .expect("subscription must be created");
+    let capture = DropShutdownCapture(handler_probe.clone());
+    let mut run = Box::pin(subscription.run(move |_| {
+        let _capture = &capture;
+        async { Ok(()) }
+    }));
+    assert!(poll_once(run.as_mut()).is_pending());
+    drop(run);
+    let report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown succeeds");
+    assert_eq!(report.outcome, ShutdownOutcome::Complete);
+    assert_one_nested_shutdown_rejected(&receiver_probe);
+    assert_one_nested_shutdown_rejected(&handler_probe);
+    drop(subscription);
 }
 
 #[test]
@@ -1200,13 +1317,19 @@ fn test_shutdown_disposes_failed_close_session_after_provider_termination() {
         spi.clone(),
     )
     .expect("valid provider capabilities");
+    let receiver_probe = nested_shutdown_probe(bus.clone());
+    *spi.drop_probe.lock().expect("probe mutex") = Some(receiver_probe.clone());
     let subscription = block_on(async {
         bus.subscribe(SubscribeRequest::new("terminal-disposal", topic()).expect("valid subscriber ID"))
             .await
             .expect("async subscription must be created")
     });
     let handler_drops = Arc::new(AtomicUsize::new(0));
-    let handler_capture = DropCounter(handler_drops.clone());
+    let handler_probe = nested_shutdown_probe(bus.clone());
+    let handler_capture = (
+        DropCounter(handler_drops.clone()),
+        DropShutdownCapture(handler_probe.clone()),
+    );
     let mut run = Box::pin(subscription.run(move |_| {
         let _capture = &handler_capture;
         async { Ok(()) }
@@ -1263,6 +1386,8 @@ fn test_shutdown_disposes_failed_close_session_after_provider_termination() {
         "receiver is disposed once"
     );
     assert_eq!(handler_drops.load(Ordering::Acquire), 1, "handler is disposed once");
+    assert_one_nested_shutdown_rejected(&receiver_probe);
+    assert_one_nested_shutdown_rejected(&handler_probe);
 }
 
 #[test]

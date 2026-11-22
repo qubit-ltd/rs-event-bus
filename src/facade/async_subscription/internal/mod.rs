@@ -26,6 +26,7 @@ pub(in crate::facade::async_subscription) use async_session::AsyncSession;
 pub(in crate::facade) use async_subscription_control::AsyncSubscriptionControl;
 pub(in crate::facade) use bus_context_future::BusContextFuture;
 pub(in crate::facade) use bus_context_future::is_current_bus_poll;
+pub(in crate::facade) use bus_context_future::with_bus_scope;
 pub(super) use owned_delivery_task::OwnedDeliveryTask;
 pub(super) use pending_delivery::PendingDelivery;
 pub(in crate::facade::async_subscription) use run_state_guard::RunStateGuard;

@@ -34,6 +34,7 @@ use crate::facade::async_event_bus::waiting::wait_until;
 use crate::facade::async_event_bus::waiting::wait_until_deadline;
 use crate::facade::async_subscription::BusContextFuture;
 use crate::facade::async_subscription::is_current_bus_poll;
+use crate::facade::async_subscription::with_bus_scope;
 use crate::model::Topic;
 use crate::spi::DurabilityCapability;
 use crate::spi::ShutdownMode;
@@ -219,6 +220,10 @@ impl AsyncEventBus {
     /// # Panics
     /// An internal invariant violation while handling a graceful deadline
     /// triggers a panic.
+    ///
+    /// After provider shutdown succeeds, synchronous disposal of subscriptions
+    /// whose receiver close failed runs in this bus context. A shutdown
+    /// requested from those destructors returns [`LifecycleError::WouldDeadlock`].
     pub async fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownReport, ShutdownError> {
         let bus_key = Arc::as_ptr(&self.inner) as usize;
         if is_current_bus_poll(bus_key) {
@@ -363,9 +368,12 @@ impl AsyncEventBus {
             .values()
             .cloned()
             .collect();
-        for control in remaining_controls {
-            control.dispose();
-        }
+        let bus_key = Arc::as_ptr(&self.inner) as usize;
+        with_bus_scope(bus_key, || {
+            for control in remaining_controls {
+                control.dispose();
+            }
+        });
         let report = ShutdownReport::new(
             outcome,
             self.inner.abandoned_deliveries.load(Ordering::Acquire),
