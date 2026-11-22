@@ -178,7 +178,14 @@ impl AsyncEventBus {
     /// Graceful shutdown first stops admission and fixes its absolute deadline,
     /// then signals active runners to stop. Synchronous stop notifications
     /// cannot be interrupted, but their time counts against the budget. The
-    /// deadline is checked before starting the registered receiver
+    /// registered deadline timer is polled in this bus's reentrancy context,
+    /// including when waiting for receivers, runners, or provider shutdown.
+    /// The leader's clock sample for the provider's remaining budget carries
+    /// the same context. A timer implementation that requests shutdown for
+    /// this bus during either operation receives
+    /// [`LifecycleError::WouldDeadlock`].
+    ///
+    /// The deadline is checked before starting the registered receiver
     /// close batch. If receivers remain when a zero-length budget is exhausted,
     /// this call returns [`ShutdownError::TimedOut`] without starting those
     /// close operations. An active runner that the application continues to
@@ -276,7 +283,8 @@ impl AsyncEventBus {
                 match absolute_deadline.and_then(|instant| self.inner.timer.at(instant).map(|timer| (instant, timer))) {
                     Ok((instant, timer)) => {
                         deadline_at = Some(instant);
-                        deadline = Some(timer);
+                        deadline =
+                            Some(Box::pin(BusContextFuture::new_with_drop_context(bus_key, timer)) as TimerFuture);
                     }
                     Err(error) => {
                         let closed =
@@ -425,7 +433,8 @@ impl AsyncEventBus {
                 ShutdownMode::Immediate => ShutdownMode::Immediate,
                 ShutdownMode::Graceful { .. } => {
                     let deadline_at = deadline_at.expect("graceful shutdown has a registered deadline");
-                    let now = self.inner.timer.clock().now();
+                    let bus_key = Arc::as_ptr(&self.inner) as usize;
+                    let now = with_bus_scope(bus_key, || self.inner.timer.clock().now());
                     let remaining = match deadline_at.duration_since(now) {
                         Ok(remaining) => remaining,
                         Err(qubit_clock::TimeError::InvalidInstantOrder { .. }) => Duration::ZERO,

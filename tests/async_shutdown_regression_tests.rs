@@ -23,8 +23,13 @@ use std::task::Wake;
 use std::task::Waker;
 use std::time::Duration;
 
+use qubit_clock::ClockDomain;
 use qubit_clock::ManualMonotonicClock;
 use qubit_clock::MonotonicClock;
+use qubit_clock::MonotonicInstant;
+use qubit_clock::TimeError;
+use qubit_clock::Timer;
+use qubit_clock::TimerFuture;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::LifecycleError;
 use qubit_event_bus::error::ReceiveError;
@@ -56,6 +61,275 @@ use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::SubscriptionModes;
 
 use crate::support::fake_spi::FakeAsyncEventBusSpi;
+
+type ShutdownReentryObservation = Arc<Mutex<Option<Poll<Result<(), ShutdownError>>>>>;
+
+struct ReenterOnPollTimer {
+    clock: Arc<ManualMonotonicClock>,
+    bus: Arc<Mutex<Option<AsyncEventBus>>>,
+    observed: ShutdownReentryObservation,
+}
+
+struct ReenterOnDropTimer {
+    clock: Arc<ManualMonotonicClock>,
+    bus: Arc<Mutex<Option<AsyncEventBus>>>,
+    observed: ShutdownReentryObservation,
+}
+
+struct ReenterOnDropTimerFuture {
+    inner: TimerFuture,
+    bus: Arc<Mutex<Option<AsyncEventBus>>>,
+    observed: ShutdownReentryObservation,
+}
+
+struct ReenterOnSampleClock {
+    clock: ManualMonotonicClock,
+    bus: Arc<Mutex<Option<AsyncEventBus>>>,
+    observed: ShutdownReentryObservation,
+    samples: AtomicUsize,
+    elapsed_before_provider_sample: Duration,
+}
+
+impl MonotonicClock for ReenterOnSampleClock {
+    fn domain(&self) -> ClockDomain {
+        self.clock.domain()
+    }
+
+    fn now(&self) -> MonotonicInstant {
+        if self.samples.fetch_add(1, Ordering::SeqCst) == 1 {
+            self.clock
+                .advance(self.elapsed_before_provider_sample)
+                .expect("advance clock during leader sampling");
+            let bus = self.bus.lock().expect("bus lock").clone().expect("bus installed");
+            let mut reentrant = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+            let result = reentrant
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .map(|result| result.map(|_| ()));
+            *self.observed.lock().expect("observation lock") = Some(result);
+        }
+        self.clock.now()
+    }
+
+    fn new_timer(&self) -> Arc<dyn Timer> {
+        Arc::new(self.clock.new_timer())
+    }
+}
+
+struct ReenterOnSampleTimer(Arc<ReenterOnSampleClock>);
+
+impl Timer for ReenterOnSampleTimer {
+    fn clock(&self) -> &dyn MonotonicClock {
+        self.0.as_ref()
+    }
+
+    fn at(&self, deadline: MonotonicInstant) -> Result<TimerFuture, TimeError> {
+        self.0.clock.new_timer().at(deadline)
+    }
+}
+
+impl Timer for ReenterOnPollTimer {
+    fn clock(&self) -> &dyn MonotonicClock {
+        &self.clock
+    }
+
+    fn at(&self, deadline: MonotonicInstant) -> Result<TimerFuture, TimeError> {
+        let mut inner = self.clock.new_timer().at(deadline)?;
+        let bus = self.bus.clone();
+        let observed = self.observed.clone();
+        Ok(Box::pin(std::future::poll_fn(move |cx| {
+            if observed.lock().expect("observation lock").is_none() {
+                let bus = bus.lock().expect("bus lock").clone().expect("bus installed");
+                let mut reentrant = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+                let result = reentrant.as_mut().poll(cx).map(|result| result.map(|_| ()));
+                *observed.lock().expect("observation lock") = Some(result);
+            }
+            inner.as_mut().poll(cx)
+        })))
+    }
+}
+
+impl Timer for ReenterOnDropTimer {
+    fn clock(&self) -> &dyn MonotonicClock {
+        self.clock.as_ref()
+    }
+
+    fn at(&self, deadline: MonotonicInstant) -> Result<TimerFuture, TimeError> {
+        Ok(Box::pin(ReenterOnDropTimerFuture {
+            inner: self.clock.new_timer().at(deadline)?,
+            bus: self.bus.clone(),
+            observed: self.observed.clone(),
+        }))
+    }
+}
+
+impl Future for ReenterOnDropTimerFuture {
+    type Output = Result<(), TimeError>;
+
+    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.inner.as_mut().poll(cx)
+    }
+}
+
+impl Drop for ReenterOnDropTimerFuture {
+    fn drop(&mut self) {
+        let Some(bus) = self.bus.lock().expect("bus lock").clone() else {
+            return;
+        };
+        let mut reentrant = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+        let result = reentrant
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .map(|result| result.map(|_| ()));
+        *self.observed.lock().expect("observation lock") = Some(result);
+    }
+}
+
+#[test]
+fn test_graceful_deadline_poll_rejects_same_bus_shutdown() {
+    let clock = ManualMonotonicClock::new_shared();
+    let provider = Arc::new(FakeAsyncEventBusSpi::new());
+    provider.pause_close();
+    let bus_slot = Arc::new(Mutex::new(None));
+    let observed = Arc::new(Mutex::new(None));
+    let bus = AsyncEventBus::with_timer(
+        ProviderId::new("timer-reenter").expect("provider ID"),
+        provider.clone(),
+        Arc::new(ReenterOnPollTimer {
+            clock: clock.clone(),
+            bus: bus_slot.clone(),
+            observed: observed.clone(),
+        }),
+    )
+    .expect("facade");
+    *bus_slot.lock().expect("bus lock") = Some(bus.clone());
+    let topic = Topic::<u32>::new("timer-reenter").expect("topic");
+    let _subscription =
+        block_on_shutdown(bus.subscribe(SubscribeRequest::new("timer-reenter", topic).expect("request")))
+            .expect("subscription");
+
+    let timeout = Duration::from_secs(1);
+    let mut graceful = Box::pin(bus.shutdown(ShutdownMode::Graceful { timeout }));
+    assert!(
+        graceful
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    assert!(
+        matches!(
+            observed.lock().expect("observation lock").as_ref(),
+            Some(Poll::Ready(Err(ShutdownError::Lifecycle(
+                LifecycleError::WouldDeadlock { operation: "shutdown" }
+            ))))
+        ),
+        "observed reentry result: {:?}",
+        observed.lock().expect("observation lock")
+    );
+    clock.advance(timeout).expect("advance graceful deadline");
+    assert!(matches!(
+        graceful.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+        Poll::Ready(Err(ShutdownError::TimedOut { timeout: elapsed })) if elapsed == timeout
+    ));
+    drop(graceful);
+    *bus_slot.lock().expect("bus lock") = None;
+    provider.release_close();
+    let _ = block_on_shutdown(bus.shutdown(ShutdownMode::Immediate));
+}
+
+#[test]
+fn test_graceful_provider_clock_sample_rejects_same_bus_shutdown() {
+    let bus_slot = Arc::new(Mutex::new(None));
+    let observed = Arc::new(Mutex::new(None));
+    let clock = Arc::new(ReenterOnSampleClock {
+        clock: ManualMonotonicClock::new(),
+        bus: bus_slot.clone(),
+        observed: observed.clone(),
+        samples: AtomicUsize::new(0),
+        elapsed_before_provider_sample: Duration::from_nanos(7),
+    });
+    let provider = Arc::new(ShutdownGateSpi::new(false));
+    let bus = AsyncEventBus::with_timer(
+        ProviderId::new("clock-reenter").expect("provider ID"),
+        provider.clone(),
+        Arc::new(ReenterOnSampleTimer(clock)),
+    )
+    .expect("facade");
+    *bus_slot.lock().expect("bus lock") = Some(bus.clone());
+
+    let mut graceful = Box::pin(bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(1),
+    }));
+    let _ = graceful.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+    assert!(
+        matches!(
+            observed.lock().expect("observation lock").as_ref(),
+            Some(Poll::Ready(Err(ShutdownError::Lifecycle(
+                LifecycleError::WouldDeadlock { operation: "shutdown" }
+            ))))
+        ),
+        "observed reentry result: {:?}",
+        observed.lock().expect("observation lock")
+    );
+    assert_eq!(
+        vec![ShutdownMode::Graceful {
+            timeout: Duration::from_secs(1) - Duration::from_nanos(7),
+        }],
+        *provider.calls.lock().expect("provider calls lock"),
+        "provider receives the original budget minus synchronous clock progress",
+    );
+    drop(graceful);
+    *bus_slot.lock().expect("bus lock") = None;
+    let _ = block_on_shutdown(bus.shutdown(ShutdownMode::Immediate));
+}
+
+#[test]
+fn test_graceful_deadline_drop_rejects_same_bus_shutdown() {
+    let provider = Arc::new(FakeAsyncEventBusSpi::new());
+    provider.pause_close();
+    let bus_slot = Arc::new(Mutex::new(None));
+    let observed = Arc::new(Mutex::new(None));
+    let bus = AsyncEventBus::with_timer(
+        ProviderId::new("timer-drop-reenter").expect("provider ID"),
+        provider.clone(),
+        Arc::new(ReenterOnDropTimer {
+            clock: ManualMonotonicClock::new_shared(),
+            bus: bus_slot.clone(),
+            observed: observed.clone(),
+        }),
+    )
+    .expect("facade");
+    *bus_slot.lock().expect("bus lock") = Some(bus.clone());
+    let topic = Topic::<u32>::new("timer-drop-reenter").expect("topic");
+    let _subscription =
+        block_on_shutdown(bus.subscribe(SubscribeRequest::new("timer-drop-reenter", topic).expect("request")))
+            .expect("subscription");
+
+    let mut graceful = Box::pin(bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(1),
+    }));
+    assert!(
+        graceful
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    drop(graceful);
+    assert!(
+        matches!(
+            observed.lock().expect("observation lock").as_ref(),
+            Some(Poll::Ready(Err(ShutdownError::Lifecycle(
+                LifecycleError::WouldDeadlock { operation: "shutdown" }
+            ))))
+        ),
+        "timer future drop must reject reentrant shutdown: {:?}",
+        observed.lock().expect("observation lock")
+    );
+
+    *bus_slot.lock().expect("bus lock") = None;
+    provider.release_close();
+    assert!(block_on_shutdown(bus.shutdown(ShutdownMode::Immediate)).is_ok());
+}
 
 struct WakeCounter(AtomicUsize);
 
