@@ -159,9 +159,11 @@ impl AsyncEventBus {
     /// Directly awaiting shutdown from a handler, middleware, or publisher
     /// callback running on this bus returns [`LifecycleError::WouldDeadlock`].
     /// This detection is scoped to each poll of caller-driven runner and
-    /// publisher futures. Request shutdown from an application lifecycle task
-    /// after the callback returns. Independently spawned tasks are outside
-    /// that scope; this check does not detect arbitrary dependency cycles.
+    /// publisher futures, including destruction of their suspended execution
+    /// futures when cancelled. Request shutdown from an application lifecycle
+    /// task after the callback returns. Independently spawned tasks are
+    /// outside that scope; this check does not detect arbitrary dependency
+    /// cycles.
     /// The same protection applies while an asynchronous provider subscription
     /// call is being created or polled. Request shutdown from an application
     /// lifecycle task after that call returns.

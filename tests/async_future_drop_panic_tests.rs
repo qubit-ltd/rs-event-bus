@@ -652,6 +652,41 @@ fn test_future_drop_panic_public_async_publish_cancellation_has_no_result() {
 }
 
 #[test]
+fn test_async_cancelled_spi_drop_rejects_same_bus_shutdown_publish() {
+    let (bus, _, drops, _, _, reentry) = future_drop_panic_bus("none", FutureDropFault::PendingPublishReentry);
+    let request = PublishRequest::new(Topic::<u32>::new("publish-drop-reentry").unwrap(), 7).unwrap();
+    let mut publish = Box::pin(bus.publish(request));
+    assert!(
+        publish
+            .as_mut()
+            .poll(&mut Context::from_waker(std::task::Waker::noop()))
+            .is_pending()
+    );
+    drop(publish);
+
+    assert_eq!(
+        drops.load(Ordering::SeqCst),
+        1,
+        "pending publish future is destroyed once"
+    );
+    assert_eq!(reentry.drops.load(Ordering::SeqCst), 1);
+    assert!(
+        !reentry.pending.load(Ordering::SeqCst),
+        "nested shutdown must not remain pending"
+    );
+    assert!(matches!(
+        reentry.result.lock().unwrap().as_ref(),
+        Some(Err(ShutdownError::Lifecycle(LifecycleError::WouldDeadlock {
+            operation: "shutdown"
+        })))
+    ));
+    assert_eq!(bus.publish_metrics().cancelled, 1);
+    assert_eq!(bus.publish_metrics().errors, 0);
+    assert!(block_on(bus.shutdown(ShutdownMode::Immediate)).is_ok());
+    *reentry.bus.lock().unwrap() = None;
+}
+
+#[test]
 fn test_future_drop_panic_public_async_publish_ready_cleanup_becomes_uncertain_spi_error() {
     let _hook = PanicHookGuard::suppress();
     let drops = Arc::new(AtomicUsize::new(0));
@@ -1172,11 +1207,59 @@ fn test_async_handler_duration_boundary_factory_panic_records_one_sample() {
 
 #[derive(Clone, Copy)]
 enum FutureDropFault {
+    PendingPublishReentry,
     ReadyReceive,
-    PendingReceiveAfterFirst,
+    PendingReceiveReentryAfterFirst,
     ReadySettleSuccess,
     ReadySettleError,
-    PendingSettleOnce,
+    PendingSettleReentryOnce,
+}
+
+struct ReentryProbe {
+    bus: Mutex<Option<AsyncEventBus>>,
+    result: Mutex<Option<Result<(), ShutdownError>>>,
+    pending: std::sync::atomic::AtomicBool,
+    drops: AtomicUsize,
+}
+
+impl ReentryProbe {
+    fn trigger(&self) {
+        let bus = self.bus.lock().unwrap().as_ref().unwrap().clone();
+        let result = match Box::pin(bus.shutdown(ShutdownMode::Immediate))
+            .as_mut()
+            .poll(&mut Context::from_waker(std::task::Waker::noop()))
+        {
+            Poll::Ready(result) => Some(result.map(|_| ())),
+            Poll::Pending => {
+                self.pending.store(true, Ordering::SeqCst);
+                None
+            }
+        };
+        *self.result.lock().unwrap() = result;
+        self.drops.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+struct PendingShutdownReentry<T> {
+    probe: Arc<ReentryProbe>,
+    drops: Arc<AtomicUsize>,
+    _output: PhantomData<fn() -> T>,
+}
+
+impl<T> Future for PendingShutdownReentry<T> {
+    type Output = T;
+
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<T> {
+        Poll::Pending
+    }
+}
+
+impl<T> Drop for PendingShutdownReentry<T> {
+    fn drop(&mut self) {
+        self.probe.trigger();
+        self.drops.fetch_add(1, Ordering::SeqCst);
+        panic!("pending provider future cleanup panic");
+    }
 }
 
 struct FutureDropPanicBus {
@@ -1186,6 +1269,7 @@ struct FutureDropPanicBus {
     drops: Arc<AtomicUsize>,
     settles: Arc<AtomicUsize>,
     pending_receive_created: Arc<std::sync::atomic::AtomicBool>,
+    reentry: Arc<ReentryProbe>,
 }
 
 impl AsyncEventBusSpi for FutureDropPanicBus {
@@ -1194,6 +1278,13 @@ impl AsyncEventBusSpi for FutureDropPanicBus {
     }
 
     fn publish<'a>(&'a self, message: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        if matches!(self.fault, FutureDropFault::PendingPublishReentry) {
+            return Box::pin(PendingShutdownReentry {
+                probe: self.reentry.clone(),
+                drops: self.drops.clone(),
+                _output: PhantomData,
+            });
+        }
         self.inner.publish(message)
     }
 
@@ -1208,6 +1299,7 @@ impl AsyncEventBusSpi for FutureDropPanicBus {
         let receives = Arc::new(AtomicUsize::new(0));
         let settles = self.settles.clone();
         let pending_receive_created = self.pending_receive_created.clone();
+        let reentry = self.reentry.clone();
         Box::pin(async move {
             let inner = receiver.await?;
             Ok(Box::new(FutureDropPanicReceiver {
@@ -1218,6 +1310,7 @@ impl AsyncEventBusSpi for FutureDropPanicBus {
                 receives,
                 settles,
                 pending_receive_created,
+                reentry,
             }) as Box<dyn AsyncEventSubscriptionSpi>)
         })
     }
@@ -1235,6 +1328,7 @@ struct FutureDropPanicReceiver {
     receives: Arc<AtomicUsize>,
     settles: Arc<AtomicUsize>,
     pending_receive_created: Arc<std::sync::atomic::AtomicBool>,
+    reentry: Arc<ReentryProbe>,
 }
 
 impl AsyncEventSubscriptionSpi for FutureDropPanicReceiver {
@@ -1246,9 +1340,13 @@ impl AsyncEventSubscriptionSpi for FutureDropPanicReceiver {
                 drops: self.drops.clone(),
             });
         }
-        if self.targeted && matches!(self.fault, FutureDropFault::PendingReceiveAfterFirst) && call == 1 {
+        if self.targeted && matches!(self.fault, FutureDropFault::PendingReceiveReentryAfterFirst) && call == 1 {
             self.pending_receive_created.store(true, Ordering::Release);
-            return Box::pin(PendingReceiveDropPanic(self.drops.clone()));
+            return Box::pin(PendingShutdownReentry {
+                probe: self.reentry.clone(),
+                drops: self.drops.clone(),
+                _output: PhantomData,
+            });
         }
         self.inner.receive(timeout)
     }
@@ -1278,8 +1376,12 @@ impl AsyncEventSubscriptionSpi for FutureDropPanicReceiver {
                 drops: self.drops.clone(),
             });
         }
-        if self.targeted && matches!(self.fault, FutureDropFault::PendingSettleOnce) && call == 0 {
-            return Box::pin(PendingSettleDropPanic(self.drops.clone()));
+        if self.targeted && matches!(self.fault, FutureDropFault::PendingSettleReentryOnce) && call == 0 {
+            return Box::pin(PendingShutdownReentry {
+                probe: self.reentry.clone(),
+                drops: self.drops.clone(),
+                _output: PhantomData,
+            });
         }
         self.inner.settle(token, disposition)
     }
@@ -1309,23 +1411,6 @@ impl Drop for ReadyReceiveDropPanic<'_> {
     }
 }
 
-struct PendingReceiveDropPanic(Arc<AtomicUsize>);
-
-impl Future for PendingReceiveDropPanic {
-    type Output = Result<ReceiveOutcome, SpiError>;
-
-    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
-        Poll::Pending
-    }
-}
-
-impl Drop for PendingReceiveDropPanic {
-    fn drop(&mut self) {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        panic!("pending provider receive future cleanup panic");
-    }
-}
-
 struct ReadySettleDropPanic {
     result: Option<Result<(), SpiError>>,
     drops: Arc<AtomicUsize>,
@@ -1346,23 +1431,6 @@ impl Drop for ReadySettleDropPanic {
     }
 }
 
-struct PendingSettleDropPanic(Arc<AtomicUsize>);
-
-impl Future for PendingSettleDropPanic {
-    type Output = Result<(), SpiError>;
-
-    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
-        Poll::Pending
-    }
-}
-
-impl Drop for PendingSettleDropPanic {
-    fn drop(&mut self) {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        panic!("pending provider settle future cleanup panic");
-    }
-}
-
 fn future_drop_panic_bus(
     target: &'static str,
     fault: FutureDropFault,
@@ -1372,11 +1440,18 @@ fn future_drop_panic_bus(
     Arc<AtomicUsize>,
     Arc<AtomicUsize>,
     Arc<std::sync::atomic::AtomicBool>,
+    Arc<ReentryProbe>,
 ) {
     let inner = FakeAsyncEventBusSpi::new();
     let drops = Arc::new(AtomicUsize::new(0));
     let settles = Arc::new(AtomicUsize::new(0));
     let pending_receive_created = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reentry = Arc::new(ReentryProbe {
+        bus: Mutex::new(None),
+        result: Mutex::new(None),
+        pending: std::sync::atomic::AtomicBool::new(false),
+        drops: AtomicUsize::new(0),
+    });
     let spi = Arc::new(FutureDropPanicBus {
         inner: inner.clone(),
         target_subscriber: target,
@@ -1384,6 +1459,7 @@ fn future_drop_panic_bus(
         drops: drops.clone(),
         settles: settles.clone(),
         pending_receive_created: pending_receive_created.clone(),
+        reentry: reentry.clone(),
     });
     let config = EventBusFacadeConfig::new().with_delivery_scheduling(
         DeliverySchedulingConfig::new(
@@ -1395,7 +1471,8 @@ fn future_drop_panic_bus(
         .expect("valid scheduler"),
     );
     let bus = AsyncEventBus::with_config(ProviderId::new("drop-panic-test").unwrap(), spi, config).expect("facade");
-    (bus, inner, drops, settles, pending_receive_created)
+    *reentry.bus.lock().unwrap() = Some(bus.clone());
+    (bus, inner, drops, settles, pending_receive_created, reentry)
 }
 
 fn wait_for(condition: impl Fn() -> bool, description: &str) {
@@ -1409,10 +1486,10 @@ fn wait_for(condition: impl Fn() -> bool, description: &str) {
 }
 
 #[test]
-fn test_pending_receive_drop_panic_preserves_scheduler_grant() {
+fn test_async_cancelled_spi_drop_rejects_same_bus_shutdown_receive() {
     let _hook = PanicHookGuard::suppress();
-    let (bus, _, drops, _, pending_receive_created) =
-        future_drop_panic_bus("second", FutureDropFault::PendingReceiveAfterFirst);
+    let (bus, _, drops, _, pending_receive_created, reentry) =
+        future_drop_panic_bus("second", FutureDropFault::PendingReceiveReentryAfterFirst);
     let first_topic = Topic::<u32>::new("receive-grant-first").unwrap();
     let second_topic = Topic::<u32>::new("receive-grant-second").unwrap();
     let first = block_on(bus.subscribe(SubscribeRequest::new("first", first_topic.clone()).unwrap())).unwrap();
@@ -1474,16 +1551,35 @@ fn test_pending_receive_drop_panic_preserves_scheduler_grant() {
         || second_calls.load(Ordering::SeqCst) == 1,
         "scheduler grant to reach second handler",
     );
-    wait_for(|| drops.load(Ordering::SeqCst) == 1, "cancelled receive future cleanup");
+    wait_for(
+        || reentry.drops.load(Ordering::SeqCst) == 1,
+        "cancelled receive future cleanup",
+    );
+    assert_eq!(
+        drops.load(Ordering::SeqCst),
+        1,
+        "pending receive future is destroyed once"
+    );
+    assert!(
+        !reentry.pending.load(Ordering::SeqCst),
+        "nested shutdown must not remain pending"
+    );
+    assert!(matches!(
+        reentry.result.lock().unwrap().as_ref(),
+        Some(Err(ShutdownError::Lifecycle(LifecycleError::WouldDeadlock {
+            operation: "shutdown"
+        })))
+    ));
     let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
     first_runner.join().unwrap().unwrap();
     second_runner.join().unwrap().unwrap();
+    *reentry.bus.lock().unwrap() = None;
 }
 
 #[test]
 fn test_ready_receive_drop_panic_preserves_message_for_handler() {
     let _hook = PanicHookGuard::suppress();
-    let (bus, _, drops, _, _) = future_drop_panic_bus("ready", FutureDropFault::ReadyReceive);
+    let (bus, _, drops, _, _, _) = future_drop_panic_bus("ready", FutureDropFault::ReadyReceive);
     let topic = Topic::<u32>::new("receive-ready-drop-panic").unwrap();
     let subscription = block_on(bus.subscribe(SubscribeRequest::new("ready", topic.clone()).unwrap())).unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
@@ -1510,7 +1606,7 @@ fn test_ready_receive_drop_panic_preserves_message_for_handler() {
 fn test_finished_settle_drop_panic_is_not_recorded_as_cancellation() {
     let _hook = PanicHookGuard::suppress();
     for fault in [FutureDropFault::ReadySettleSuccess, FutureDropFault::ReadySettleError] {
-        let (bus, spi, drops, settles, _) = future_drop_panic_bus("settle", fault);
+        let (bus, spi, drops, settles, _, _) = future_drop_panic_bus("settle", fault);
         let topic = Topic::<u32>::new("settle-ready-drop-panic").unwrap();
         let subscription = block_on(bus.subscribe(SubscribeRequest::new("settle", topic).unwrap())).unwrap();
         spi.enqueue(inbound_message(Some(SettlementToken::new(
@@ -1559,9 +1655,10 @@ fn test_finished_settle_drop_panic_is_not_recorded_as_cancellation() {
 }
 
 #[test]
-fn test_cancelling_pending_settle_drop_panic_keeps_token_for_retry() {
+fn test_async_cancelled_spi_drop_rejects_same_bus_shutdown_settle() {
     let _hook = PanicHookGuard::suppress();
-    let (bus, spi, drops, settles, _) = future_drop_panic_bus("settle", FutureDropFault::PendingSettleOnce);
+    let (bus, spi, drops, settles, _, reentry) =
+        future_drop_panic_bus("settle", FutureDropFault::PendingSettleReentryOnce);
     let topic = Topic::<u32>::new("settle-pending-drop-panic").unwrap();
     let subscription = block_on(bus.subscribe(SubscribeRequest::new("settle", topic).unwrap())).unwrap();
     spi.enqueue(inbound_message(Some(SettlementToken::new(
@@ -1590,7 +1687,22 @@ fn test_cancelling_pending_settle_drop_panic_keeps_token_for_retry() {
         cancellation.is_ok(),
         "pending settle cleanup panic must not escape cancellation"
     );
-    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    assert_eq!(reentry.drops.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        drops.load(Ordering::SeqCst),
+        1,
+        "pending settlement future is destroyed once"
+    );
+    assert!(
+        !reentry.pending.load(Ordering::SeqCst),
+        "nested shutdown must not remain pending"
+    );
+    assert!(matches!(
+        reentry.result.lock().unwrap().as_ref(),
+        Some(Err(ShutdownError::Lifecycle(LifecycleError::WouldDeadlock {
+            operation: "shutdown"
+        })))
+    ));
 
     let next_calls = handler_calls.clone();
     let runner = spawn(move || {
@@ -1608,4 +1720,6 @@ fn test_cancelling_pending_settle_drop_panic_keeps_token_for_retry() {
     let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).unwrap();
     runner.join().unwrap().unwrap();
     assert_eq!(spi.settlement_count(), 1, "original token is settled once");
+    assert_eq!(spi.settlement_dispositions(), [DeliveryDisposition::Accept]);
+    *reentry.bus.lock().unwrap() = None;
 }

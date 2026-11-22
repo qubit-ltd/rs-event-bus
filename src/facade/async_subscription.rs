@@ -220,7 +220,9 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// [`crate::model::OrderingPolicy::Unordered`] does not provide this
     /// serialization.
     /// Dropping this future pauses the session. A later call resumes existing
-    /// handler futures before using its handler for new messages.
+    /// handler futures before using its handler for new messages. Same-bus
+    /// shutdown reentry protection also covers destruction of suspended
+    /// receive and settlement futures during cancellation.
     ///
     /// # Type Parameters
     /// - `H`: callback type invoked for each newly received delivery.

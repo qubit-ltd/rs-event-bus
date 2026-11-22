@@ -172,6 +172,8 @@ impl AsyncEventBus {
     /// and reconcile uncertain publication or use application idempotency
     /// before republishing. `DuplicateRiskPolicy` does not make
     /// cancellation a rollback.
+    /// The same-bus shutdown check also covers destruction of the suspended
+    /// publication future when this operation is cancelled.
     ///
     /// Publisher callbacks are polled in this bus's lifecycle context. A
     /// callback that directly waits for this bus to shut down receives
@@ -198,7 +200,7 @@ impl AsyncEventBus {
             ));
         };
         let observers = self.observer_snapshot();
-        let result = BusContextFuture::new(
+        let result = BusContextFuture::new_with_drop_context(
             Arc::as_ptr(&self.inner) as usize,
             self.inner.publisher.publish_async(
                 self.inner.spi.as_ref(),

@@ -197,7 +197,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     /// futures are polled on this caller; no background task is created.
     pub(in crate::facade) async fn run_loop(&mut self, handler: SharedAsyncHandler<T>) -> Result<(), ReceiveError> {
         let bus_key = Arc::as_ptr(&self.inner) as usize;
-        BusContextFuture::new(bus_key, self.run_loop_inner(handler)).await
+        BusContextFuture::new_with_drop_context(bus_key, self.run_loop_inner(handler)).await
     }
 
     /// Runs the receiver loop while its caller poll carries this bus identity.
