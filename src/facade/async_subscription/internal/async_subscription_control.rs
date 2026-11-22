@@ -203,7 +203,7 @@ impl<T: 'static> AsyncSubscriptionControl<T> {
                 .unwrap_or_else(PoisonError::into_inner)
                 .remove(&self.id);
         }
-        drop(session);
+        with_subscription_scope(bus_key, self.id, || drop(session));
         self.available.notify();
     }
 }

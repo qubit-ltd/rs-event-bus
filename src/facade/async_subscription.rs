@@ -69,10 +69,13 @@ type RetryFailure = (Box<DeliveryError>, u32, FailureDirective);
 
 /// A typed subscription whose receive loop is driven by the caller's executor.
 ///
-/// Dropping this handle synchronously disposes its control and cannot await
-/// provider receiver close. Same-bus shutdown reentrancy checks also apply to
-/// the synchronous stop notification. An unstarted receiver is released
-/// locally.
+/// Dropping this handle synchronously disposes its control and releases any
+/// unstarted or paused session it owns. Destructors for that session's
+/// resources run inside the subscription's bus scope, so a nested shutdown
+/// on the same bus returns [`LifecycleError::WouldDeadlock`] before changing
+/// lifecycle state. This synchronous disposal cannot await provider receiver
+/// close; call [`Self::close`] when asynchronous provider cleanup and its
+/// errors must be observed.
 /// Disposal removes the control from the bus, so deterministic receiver close
 /// and error reporting require calling [`Self::close`] before dropping the
 /// handle. An ephemeral provider may discard unsettled work on receiver drop.
@@ -334,8 +337,10 @@ impl<T: 'static> Drop for AsyncSubscription<T> {
     /// Disposes the control synchronously and removes it from bus shutdown
     /// tracking.
     ///
-    /// This releases unstarted session ownership locally. Provider receiver
-    /// close remains asynchronous and is not awaited here.
+    /// This releases unstarted or paused session ownership locally, with
+    /// same-bus lifecycle reentrancy checks active during resource
+    /// destruction. Provider receiver close remains asynchronous and is not
+    /// awaited here; use [`Self::close`] when that cleanup must complete.
     fn drop(&mut self) {
         self.control.dispose();
     }

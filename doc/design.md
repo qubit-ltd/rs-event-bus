@@ -1450,7 +1450,11 @@ handler, along with queued and completed deliveries released by async close, are
 destroyed inside a synchronous bus scope. Failed sessions disposed after
 provider shutdown are released inside the same kind of scope. The scope covers
 the release and its destructors, then restores the previous context. Ordinary
-subscription-handle destruction keeps its existing behavior. During resume,
+subscription-handle destruction releases an unstarted or paused session in a
+synchronous bus scope. A same-bus shutdown reentered by one of those resource
+destructors returns `WouldDeadlock` before changing lifecycle state; explicit
+`close().await` remains responsible for asynchronous provider receiver close and
+its errors. During resume,
 the prior handler reference is replaced and released in a synchronous scope
 carrying both bus and subscription identity. A late receiver rejected after
 the bus stops is also retained through its protected cleanup future, including

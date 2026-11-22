@@ -4301,10 +4301,26 @@ fn test_cancelling_the_run_future_preserves_an_already_received_delivery_for_res
 
 #[test]
 fn test_dropping_a_paused_subscription_drops_receiver_and_recovers_unsettled_delivery() {
+    type ShutdownObservation = Arc<Mutex<Option<Poll<Result<(), ShutdownError>>>>>;
+
+    struct ShutdownOnDrop {
+        bus: AsyncEventBus,
+        observed: ShutdownObservation,
+    }
+
+    impl Drop for ShutdownOnDrop {
+        fn drop(&mut self) {
+            let mut shutdown = Box::pin(self.bus.shutdown(ShutdownMode::Immediate));
+            let result = crate::support::manual_async::poll_once(shutdown.as_mut()).map(|result| result.map(|_| ()));
+            *self.observed.lock().unwrap() = Some(result);
+        }
+    }
+
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let handler_started = Arc::new(AtomicBool::new(false));
+    let observed: ShutdownObservation = Arc::new(Mutex::new(None));
 
     block_on(async {
         let subscription = bus
@@ -4316,9 +4332,14 @@ fn test_dropping_a_paused_subscription_drops_receiver_and_recovers_unsettled_del
             "drop-recovery",
         ))));
         let started = handler_started.clone();
+        let probe_bus = bus.clone();
+        let probe_observed = observed.clone();
         let mut run = Box::pin(subscription.run(move |_| {
             let started = started.clone();
+            let bus = probe_bus.clone();
+            let observed = probe_observed.clone();
             async move {
+                let _probe = ShutdownOnDrop { bus, observed };
                 started.store(true, Ordering::Release);
                 std::future::pending::<Result<(), DeliveryError>>().await
             }
@@ -4332,7 +4353,41 @@ fn test_dropping_a_paused_subscription_drops_receiver_and_recovers_unsettled_del
         }
         assert!(handler_started.load(Ordering::Acquire));
         drop(run);
+        assert_eq!(subscription.run_state(), AsyncSubscriptionRunState::Paused);
+        assert!(observed.lock().unwrap().is_none());
+
+        let peer = bus
+            .subscribe(
+                SubscribeRequest::new(
+                    "drop-paused-peer",
+                    Topic::<u32>::new("drop-paused-peer").expect("valid peer topic"),
+                )
+                .expect("valid peer request"),
+            )
+            .await
+            .unwrap();
+        let mut peer_run = Box::pin(peer.run(|_| std::future::ready(Ok(()))));
+        assert!(matches!(
+            crate::support::manual_async::poll_once(peer_run.as_mut()),
+            Poll::Pending
+        ));
+        assert_eq!(peer.run_state(), AsyncSubscriptionRunState::Running);
+
         drop(subscription);
+        {
+            let observed_result = observed.lock().unwrap();
+            assert!(
+                matches!(
+                    observed_result.as_ref(),
+                    Some(Poll::Ready(Err(ShutdownError::Lifecycle(
+                        LifecycleError::WouldDeadlock { operation: "shutdown" }
+                    ))))
+                ),
+                "unexpected nested shutdown result: {observed_result:?}"
+            );
+        }
+        drop(peer_run);
+        drop(peer);
     });
 
     assert_eq!(spi.settlement_count(), 0, "drop must not settle the delivery");

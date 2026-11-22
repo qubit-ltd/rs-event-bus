@@ -1348,7 +1348,9 @@ settlement；receiver close 与 provider shutdown 也在该作用域中 poll。�
 部分资源在受保护 future 就绪后同步释放，因此析构发生在该 poll 作用域之外。async close
 会在同步 bus 作用域中释放受跟踪的 receiver、handler，以及排队和已完成的投递；provider
 shutdown 后处置失败 session 时也使用相同作用域。作用域覆盖释放及其析构，并在结束后恢复
-先前上下文。普通 subscription handle 的析构保持原有行为。恢复运行时，旧 handler 引用会在
+先前上下文。普通 subscription handle 析构会在同步 bus 作用域中释放其拥有的未启动或暂停
+session；资源析构期间重入同一 bus 的 shutdown 会在改变生命周期状态前返回 `WouldDeadlock`。
+异步 provider receiver close 及其错误仍由显式 `close().await` 负责。恢复运行时，旧 handler 引用会在
 同时携带 bus 和订阅身份的同步作用域内替换并释放。总线停止后拒绝接纳的迟到 receiver 也会由
 受保护的清理 future 持有，直到关闭 future 和 session lease 被释放，包括取消路径。在匹配的总线作用域内调用
 `wait_for_received_deliveries` 或嵌套 shutdown 会立即返回 `WouldDeadlock`；即使没有已接收
