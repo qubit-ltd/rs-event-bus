@@ -668,6 +668,80 @@ fn test_subscription_stop_wake_rejects_same_bus_shutdown() {
     *bus_slot.lock().expect("bus slot") = None;
 }
 
+#[test]
+fn test_cancelled_run_lease_return_wake_rejects_same_bus_shutdown() {
+    let provider = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus_slot = Arc::new(Mutex::new(None));
+    let observed = Arc::new(Mutex::new(None));
+    let reenter = Arc::new(ReenterOnWake {
+        bus: bus_slot.clone(),
+        observed: observed.clone(),
+        subscription: Arc::new(Mutex::new(None)),
+        run_observed: Arc::new(Mutex::new(None)),
+        handler_calls: Arc::new(AtomicUsize::new(0)),
+        used: std::sync::atomic::AtomicBool::new(false),
+    });
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("cancelled-run-lease-wake").expect("provider ID"),
+        provider.clone(),
+    )
+    .expect("facade");
+    *bus_slot.lock().expect("bus lock") = Some(bus.clone());
+    let topic = Topic::<u32>::new("cancelled-run-lease-wake").expect("topic");
+    let subscription =
+        block_on_shutdown(bus.subscribe(SubscribeRequest::new("cancelled-run-lease-wake", topic).expect("request")))
+            .expect("subscription");
+
+    let mut run = Box::pin(subscription.run(|_| async { Ok(()) }));
+    assert!(run.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
+
+    let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+    assert!(
+        shutdown
+            .as_mut()
+            .poll(&mut Context::from_waker(&Waker::from(reenter.clone())))
+            .is_pending()
+    );
+    assert_eq!(
+        0,
+        provider.close_poll_count(),
+        "shutdown must wait for the application runner lease"
+    );
+    assert_eq!(
+        0,
+        provider.shutdown_transition_count(),
+        "provider shutdown must wait for the lease"
+    );
+
+    reenter.used.store(false, Ordering::SeqCst);
+    drop(run);
+    assert!(
+        reenter.used.load(Ordering::SeqCst),
+        "lease return must synchronously wake the shutdown waiter"
+    );
+    assert!(
+        matches!(
+            observed.lock().expect("observation lock").as_ref(),
+            Some(Poll::Ready(Err(ShutdownError::Lifecycle(
+                LifecycleError::WouldDeadlock { operation: "shutdown" }
+            ))))
+        ),
+        "lease return waker must reject nested shutdown: {:?}",
+        observed.lock().expect("observation lock")
+    );
+    let Poll::Ready(Ok(report)) = shutdown.as_mut().poll(&mut Context::from_waker(Waker::noop())) else {
+        panic!("outer shutdown must complete after the runner releases its lease");
+    };
+    assert_eq!(report.outcome, SpiShutdownOutcome::Complete);
+    assert_eq!(1, provider.close_poll_count(), "receiver must close once");
+    assert_eq!(
+        1,
+        provider.shutdown_transition_count(),
+        "provider shutdown must run once"
+    );
+    *bus_slot.lock().expect("bus lock") = None;
+}
+
 struct PublishGateSpi {
     inner: FakeAsyncEventBusSpi,
     released: Arc<std::sync::atomic::AtomicBool>,

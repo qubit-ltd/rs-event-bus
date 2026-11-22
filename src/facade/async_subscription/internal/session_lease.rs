@@ -11,6 +11,7 @@ use std::sync::PoisonError;
 
 use super::AsyncSession;
 use super::AsyncSubscriptionControl;
+use super::with_subscription_scope;
 
 /// Temporarily owns the session while a runner or shutdown caller uses it.
 ///
@@ -37,13 +38,13 @@ impl<T: 'static> Drop for SessionLease<'_, T> {
             if slot.disposed {
                 drop(slot);
                 drop(session);
-                self.control.available.notify();
-                return;
+            } else {
+                slot.session = Some(session);
+                slot.active = false;
+                drop(slot);
             }
-            slot.session = Some(session);
-            slot.active = false;
-            drop(slot);
-            self.control.available.notify();
+            let bus_key = self.control.bus.as_ptr() as usize;
+            with_subscription_scope(bus_key, self.control.id, || self.control.available.notify());
         }
     }
 }

@@ -249,6 +249,8 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// protected cleanup destructor, or stop notification wake returns
     /// `ReceiveError::WouldDeadlock` immediately. To run it again, return from
     /// the current callback and start it from an independent caller.
+    /// Synchronous waiter wakes caused by returning this runner's session lease
+    /// are also covered by the same-bus shutdown reentrancy check.
     ///
     /// # Panics
     /// Panics if the session lease invariant is violated internally.
