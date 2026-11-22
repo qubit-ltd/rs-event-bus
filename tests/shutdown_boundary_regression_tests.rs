@@ -19,13 +19,17 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use qubit_event_bus::EventBus;
+use qubit_event_bus::ReceiveError;
 use qubit_event_bus::ShutdownError;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
 use qubit_event_bus::model::SubscribeRequest;
+use qubit_event_bus::model::SubscriptionStopReason;
 use qubit_event_bus::model::Topic;
+use qubit_event_bus::spi::AsyncEventBusSpi;
+use qubit_event_bus::spi::AsyncEventSubscriptionSpi;
 use qubit_event_bus::spi::DelayedDeliveryCapability;
 use qubit_event_bus::spi::DeliveryDisposition;
 use qubit_event_bus::spi::DurabilityCapability;
@@ -43,6 +47,7 @@ use qubit_event_bus::spi::SettlementCapabilities;
 use qubit_event_bus::spi::SettlementToken;
 use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
+use qubit_event_bus::spi::SpiFuture;
 use qubit_event_bus::spi::SpiSubscriptionRequest;
 use qubit_event_bus::spi::SubscriptionModes;
 
@@ -74,6 +79,7 @@ struct ProbeSpi {
     receiver_close_error: bool,
     payload_drop_count: Arc<AtomicUsize>,
     shutdown_count: Arc<AtomicUsize>,
+    receive_error: bool,
 }
 
 impl EventBusSpi for ProbeSpi {
@@ -102,6 +108,7 @@ impl EventBusSpi for ProbeSpi {
             self.receiver_close_count.clone(),
             self.receiver_close_error,
             self.payload_drop_count.clone(),
+            self.receive_error,
         )))
     }
 
@@ -125,10 +132,17 @@ impl EventBusSpi for ProbeSpi {
     }
 }
 
-struct ProbeReceiver(Option<Reentry>, Arc<AtomicUsize>, bool, Arc<AtomicUsize>);
+struct ProbeReceiver(Option<Reentry>, Arc<AtomicUsize>, bool, Arc<AtomicUsize>, bool);
 
 impl EventSubscriptionSpi for ProbeReceiver {
     fn receive(&mut self, timeout: Duration) -> Result<ReceiveOutcome, SpiError> {
+        if self.4 {
+            return Err(display_panic_error(
+                "receive",
+                "receive_display_panicked",
+                self.3.clone(),
+            ));
+        }
         std::thread::sleep(timeout.min(Duration::from_millis(5)));
         Ok(ReceiveOutcome::TimedOut)
     }
@@ -211,6 +225,24 @@ fn probe_bus(
             receiver_close_error,
             payload_drop_count,
             shutdown_count,
+            receive_error: false,
+        }),
+    )
+    .expect("bus construction")
+}
+
+fn receive_error_bus(receiver_close_count: Arc<AtomicUsize>, payload_drop_count: Arc<AtomicUsize>) -> EventBus {
+    EventBus::from_spi(
+        ProviderId::new("shutdown-probe").expect("provider id"),
+        Arc::new(ProbeSpi {
+            receiver_probe: Mutex::new(None),
+            receiver_close_count,
+            panic_shutdown: false,
+            shutdown_error_once: false,
+            receiver_close_error: false,
+            payload_drop_count,
+            shutdown_count: Arc::new(AtomicUsize::new(0)),
+            receive_error: true,
         }),
     )
     .expect("bus construction")
@@ -451,4 +483,170 @@ fn test_sync_receiver_close_error_display_panic_is_retained() {
     assert_eq!(payload_drop_count.load(Ordering::SeqCst), 1);
     assert_eq!(shutdown_count.load(Ordering::SeqCst), 1);
     assert!(bus.shutdown_report().is_some());
+}
+
+#[test]
+fn test_sync_receive_display_panic_preserves_provider_error() {
+    let payload_drop_count = Arc::new(AtomicUsize::new(0));
+    let close_count = Arc::new(AtomicUsize::new(0));
+    let handler_count = Arc::new(AtomicUsize::new(0));
+    let diagnostic = Arc::new(Mutex::new(Vec::new()));
+    let bus = receive_error_bus(close_count.clone(), payload_drop_count.clone());
+    let observed = diagnostic.clone();
+    let _observer = bus.observe_diagnostics(move |item| {
+        if let qubit_event_bus::pipeline::Diagnostic::InternalFailure { origin, message } = item
+            && origin.as_ref() == "receive"
+        {
+            observed.lock().expect("diagnostics").push(message.to_string());
+        }
+    });
+    let called = handler_count.clone();
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new(
+                "receive-display-probe",
+                Topic::<String>::new("receive.display").expect("topic"),
+            )
+            .expect("subscribe request"),
+            move |_| {
+                called.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .expect("subscription");
+    let deadline = std::time::Instant::now() + LIMIT;
+    let reason = loop {
+        if let Some(reason) = subscription.terminal_failure() {
+            break reason;
+        }
+        assert!(std::time::Instant::now() < deadline, "receive worker did not stop");
+        std::thread::yield_now();
+    };
+    let SubscriptionStopReason::Provider { error } = reason.as_ref() else {
+        panic!("provider receive failure remains the terminal cause");
+    };
+    assert_eq!(error.operation(), "receive");
+    assert_eq!(error.kind(), "receive_display_panicked");
+    assert!(error.source().unwrap().downcast_ref::<PanickingDisplay>().is_some());
+    assert!(matches!(subscription.cancel(), Ok(())));
+    assert_eq!(handler_count.load(Ordering::SeqCst), 0);
+    assert_eq!(close_count.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        diagnostic.lock().expect("diagnostics").as_slice(),
+        ["receive error formatting panicked"]
+    );
+    assert_eq!(payload_drop_count.load(Ordering::SeqCst), 1);
+}
+
+struct AsyncReceiveErrorSpi {
+    close_count: Arc<AtomicUsize>,
+    payload_drop_count: Arc<AtomicUsize>,
+}
+
+impl AsyncEventBusSpi for AsyncReceiveErrorSpi {
+    fn capabilities(&self) -> EventBusCapabilities {
+        EventBusCapabilities::new(
+            PayloadModes::Native,
+            SettlementCapabilities::None,
+            OrderingCapability::None,
+            DelayedDeliveryCapability::None,
+            DurabilityCapability::Ephemeral,
+            SubscriptionModes::EPHEMERAL,
+            false,
+            ReplayCapability::None,
+            PublishGuarantee::Accepted,
+            PublishVisibility::Opaque,
+        )
+    }
+
+    fn publish<'a>(&'a self, _: OutboundMessage) -> SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+        Box::pin(async { unreachable!("receive regression does not publish") })
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        _: SpiSubscriptionRequest,
+    ) -> SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+        let receiver = AsyncReceiveErrorReceiver(self.close_count.clone(), self.payload_drop_count.clone());
+        Box::pin(async move { Ok(Box::new(receiver) as Box<dyn AsyncEventSubscriptionSpi>) })
+    }
+
+    fn shutdown<'a>(&'a self, _: ShutdownMode) -> SpiFuture<'a, Result<ShutdownOutcome, SpiError>> {
+        Box::pin(async { Ok(ShutdownOutcome::Complete) })
+    }
+}
+
+struct AsyncReceiveErrorReceiver(Arc<AtomicUsize>, Arc<AtomicUsize>);
+
+impl AsyncEventSubscriptionSpi for AsyncReceiveErrorReceiver {
+    fn receive<'a>(&'a mut self, _: Duration) -> SpiFuture<'a, Result<ReceiveOutcome, SpiError>> {
+        let error = display_panic_error("receive", "receive_display_panicked", self.1.clone());
+        Box::pin(async move { Err(error) })
+    }
+
+    fn settle<'a>(&'a mut self, _: &SettlementToken, _: DeliveryDisposition) -> SpiFuture<'a, Result<(), SpiError>> {
+        Box::pin(async { unreachable!("receive regression has no deliveries") })
+    }
+
+    fn close<'a>(&'a mut self) -> SpiFuture<'a, Result<(), SpiError>> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[test]
+fn test_async_receive_display_panic_preserves_provider_error() {
+    let close_count = Arc::new(AtomicUsize::new(0));
+    let payload_drop_count = Arc::new(AtomicUsize::new(0));
+    let bus = qubit_event_bus::facade::AsyncEventBus::from_spi(
+        ProviderId::new("receive-display-probe").expect("provider ID"),
+        Arc::new(AsyncReceiveErrorSpi {
+            close_count: close_count.clone(),
+            payload_drop_count: payload_drop_count.clone(),
+        }),
+    )
+    .expect("bus construction");
+    let diagnostics = Arc::new(Mutex::new(Vec::new()));
+    let observed = diagnostics.clone();
+    let _observer = bus.observe_diagnostics(move |diagnostic| {
+        if let qubit_event_bus::pipeline::Diagnostic::InternalFailure { origin, message } = diagnostic
+            && origin.as_ref() == "receive"
+        {
+            observed.lock().expect("diagnostics").push(message.to_string());
+        }
+    });
+    let request = SubscribeRequest::new(
+        "async-receive-display-probe",
+        Topic::<String>::new("async.receive.display").expect("topic"),
+    )
+    .expect("subscribe request");
+    let subscription = support::manual_async::block_on(bus.subscribe(request)).expect("subscription");
+    let handler_count = Arc::new(AtomicUsize::new(0));
+    let called = handler_count.clone();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        support::manual_async::block_on(subscription.run(move |_| {
+            called.fetch_add(1, Ordering::SeqCst);
+            async { Ok(()) }
+        }))
+    }))
+    .expect("receive error formatting panic is contained");
+    let ReceiveError::Stopped(reason) = result.expect_err("receive error stops the runner") else {
+        panic!("receive error remains structured");
+    };
+    assert!(Arc::ptr_eq(
+        &reason,
+        &subscription.terminal_failure().expect("terminal provider failure")
+    ));
+    let SubscriptionStopReason::Provider { error } = reason.as_ref() else {
+        panic!("provider error remains the terminal cause");
+    };
+    assert_eq!(error.operation(), "receive");
+    assert_eq!(error.kind(), "receive_display_panicked");
+    assert!(error.source().unwrap().downcast_ref::<PanickingDisplay>().is_some());
+    assert_eq!(handler_count.load(Ordering::SeqCst), 0);
+    assert_eq!(close_count.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        diagnostics.lock().expect("diagnostics").as_slice(),
+        ["receive error formatting panicked"]
+    );
+    assert_eq!(payload_drop_count.load(Ordering::SeqCst), 1);
 }

@@ -9,6 +9,7 @@
 
 mod internal;
 
+use std::fmt::Display;
 use std::panic;
 use std::sync::Arc;
 
@@ -23,6 +24,22 @@ use crate::model::SettlementTermination;
 use crate::model::SubscriberId;
 use crate::spi::DeliveryDisposition;
 use crate::spi::DeliveryGap;
+
+/// Formats an error for a diagnostic without allowing custom formatting panics
+/// to escape.
+///
+/// # Parameters
+/// - `error`: provider or codec error to format.
+/// - `fallback`: stable message used if formatting panics.
+///
+/// # Returns
+/// The formatted error text, or `fallback` when formatting unwinds.
+pub(crate) fn format_diagnostic_error(error: &dyn Display, fallback: &str) -> String {
+    panic::catch_unwind(panic::AssertUnwindSafe(|| error.to_string())).unwrap_or_else(|payload| {
+        dispose_panic_payload(payload);
+        fallback.to_owned()
+    })
+}
 
 /// A runtime fact reported by an event-bus facade.
 ///

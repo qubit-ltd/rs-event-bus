@@ -385,14 +385,18 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                             self.inner.notify_scheduler();
                         }
                         Some(Err(error)) => {
-                            let message = error.to_string();
+                            let error = Arc::new(error);
                             if self
                                 .signals
-                                .fail_receive(SubscriptionStopReason::Provider { error: Arc::new(error) })
+                                .fail_receive(SubscriptionStopReason::Provider { error: error.clone() })
                             {
                                 self.inner.emit(&Diagnostic::InternalFailure {
                                     origin: "receive".into(),
-                                    message: message.into(),
+                                    message: crate::pipeline::format_diagnostic_error(
+                                        error.as_ref(),
+                                        "receive error formatting panicked",
+                                    )
+                                    .into(),
                                 });
                             }
                         }

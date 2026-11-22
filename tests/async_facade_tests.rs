@@ -4798,6 +4798,108 @@ fn test_async_subscription_decodes_encoded_payload_with_the_topic_codec() {
 }
 
 #[test]
+fn test_async_decode_display_panic_still_rejects_bad_message() {
+    struct PanickingDrop(Arc<AtomicUsize>);
+    impl Drop for PanickingDrop {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            panic!("injected decode panic payload drop panic");
+        }
+    }
+    struct PanickingDisplay(Arc<AtomicUsize>);
+    impl std::fmt::Display for PanickingDisplay {
+        fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            std::panic::panic_any(PanickingDrop(self.0.clone()));
+        }
+    }
+    impl std::fmt::Debug for PanickingDisplay {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("PanickingDisplay")
+        }
+    }
+    impl std::error::Error for PanickingDisplay {}
+    struct PanickingCodec(ContentType, Arc<AtomicUsize>);
+    impl EventCodec<String> for PanickingCodec {
+        fn content_type(&self) -> &ContentType {
+            &self.0
+        }
+        fn schema_id(&self) -> Option<&SchemaId> {
+            None
+        }
+        fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
+            Ok(Arc::from(value.as_bytes()))
+        }
+        fn decode(&self, _: &EncodedPayload) -> Result<String, CodecError> {
+            Err(CodecError::Decode {
+                source: Box::new(PanickingDisplay(self.1.clone())),
+            })
+        }
+    }
+
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
+    let drops = Arc::new(AtomicUsize::new(0));
+    let diagnostics = Arc::new(Mutex::new(None));
+    let observed = diagnostics.clone();
+    let _observer = bus.observe_diagnostics(move |diagnostic| {
+        if let Diagnostic::DeliveryFailed { event_id, error, .. } = diagnostic {
+            *observed.lock().expect("diagnostics") = Some((event_id.as_str().to_owned(), error.to_string()));
+        }
+    });
+    let topic = Topic::<String>::new("async.decode-panic")
+        .unwrap()
+        .with_codec(PanickingCodec(ContentType::TEXT_PLAIN, drops.clone()));
+
+    block_on(async {
+        let subscription = bus
+            .subscribe(SubscribeRequest::new("decode-panic", topic).expect("valid subscriber ID"))
+            .await
+            .expect("subscription");
+        let id = subscription.id();
+        spi.enqueue(InboundMessage::new(
+            TopicAddress::new("async.decode-panic").unwrap(),
+            EventId::new("decode-panic-event").unwrap(),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            TransportPayload::Encoded(EncodedPayload::new(
+                Arc::from(b"bad payload".as_slice()),
+                ContentType::TEXT_PLAIN,
+                None,
+            )),
+            Some(SettlementToken::new(id, "decode-panic-token")),
+            Default::default(),
+        ));
+        let handled = Arc::new(AtomicUsize::new(0));
+        let called = handled.clone();
+        let runner = std::thread::spawn(move || {
+            block_on(subscription.run(move |_| {
+                called.fetch_add(1, Ordering::SeqCst);
+                async { Ok(()) }
+            }))
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while diagnostics.lock().expect("diagnostics").is_none() {
+            assert!(Instant::now() < deadline, "decode failure was not diagnosed");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        spi.close_receiver(id);
+        runner.join().expect("runner thread").expect("runner completes");
+        assert_eq!(handled.load(Ordering::SeqCst), 0);
+    });
+    assert_eq!(spi.settlement_dispositions(), [DeliveryDisposition::Reject]);
+    assert_eq!(
+        diagnostics.lock().expect("diagnostics").as_ref(),
+        Some(&(
+            "decode-panic-event".to_owned(),
+            "decode error formatting panicked".to_owned()
+        ))
+    );
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn test_async_codec_decode_panic_is_contained_and_stops_without_settlement() {
     if std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok("async-codec-fail-stop") {
         crate::support::isolated_process::run_case(

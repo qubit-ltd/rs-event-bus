@@ -567,12 +567,17 @@ fn run_subscription_worker_body<T>(
                         }
                         Err(error) => {
                             drop(lease_guard);
-                            let text = error.to_string();
-                            let first =
-                                control.fail_receive(SubscriptionStopReason::Provider { error: Arc::new(error) });
+                            let error = Arc::new(error);
+                            let first = control.fail_receive(SubscriptionStopReason::Provider { error: error.clone() });
                             inner.scheduler.cancel_subscription(control.id);
                             if first {
-                                inner.emit_internal("receive", text);
+                                inner.emit_internal(
+                                    "receive",
+                                    crate::pipeline::format_diagnostic_error(
+                                        error.as_ref(),
+                                        "receive error formatting panicked",
+                                    ),
+                                );
                             }
                         }
                     }

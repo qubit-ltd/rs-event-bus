@@ -201,7 +201,10 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                     settlement: super::super::settlement_progress::SettlementProgress::new(
                         self.inner.facade_config.settlement_retry(),
                     ),
-                    failure_diagnostic: Some((0, error.to_string().into())),
+                    failure_diagnostic: Some((
+                        0,
+                        crate::pipeline::format_diagnostic_error(&error, "decode error formatting panicked").into(),
+                    )),
                     lease,
                 });
                 return;
