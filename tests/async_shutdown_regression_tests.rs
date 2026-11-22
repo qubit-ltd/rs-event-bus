@@ -14,6 +14,7 @@ use std::io::Error;
 use std::io::ErrorKind;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::Weak;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -26,6 +27,7 @@ use qubit_clock::ManualMonotonicClock;
 use qubit_clock::MonotonicClock;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::LifecycleError;
+use qubit_event_bus::error::ReceiveError;
 use qubit_event_bus::error::ShutdownError;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::model::ProviderId;
@@ -418,6 +420,9 @@ struct DropReenterCloseSpi {
     bus: Arc<Mutex<Option<AsyncEventBus>>>,
     rejected: Arc<std::sync::atomic::AtomicBool>,
     closes: Arc<AtomicUsize>,
+    subscription: Arc<Mutex<Option<Weak<qubit_event_bus::AsyncSubscription<u32>>>>>,
+    run_rejected: Arc<Mutex<Option<bool>>>,
+    handler_calls: Arc<AtomicUsize>,
 }
 
 impl AsyncEventBusSpi for DropReenterCloseSpi {
@@ -435,6 +440,9 @@ impl AsyncEventBusSpi for DropReenterCloseSpi {
         let bus = self.bus.clone();
         let rejected = self.rejected.clone();
         let closes = self.closes.clone();
+        let subscription = self.subscription.clone();
+        let run_rejected = self.run_rejected.clone();
+        let handler_calls = self.handler_calls.clone();
         Box::pin(async move {
             let receiver = inner.subscribe(request).await?;
             Ok(Box::new(DropReenterCloseReceiver {
@@ -442,6 +450,9 @@ impl AsyncEventBusSpi for DropReenterCloseSpi {
                 bus,
                 rejected,
                 closes,
+                subscription,
+                run_rejected,
+                handler_calls,
             }) as Box<dyn AsyncEventSubscriptionSpi>)
         })
     }
@@ -455,6 +466,9 @@ struct DropReenterCloseReceiver {
     bus: Arc<Mutex<Option<AsyncEventBus>>>,
     rejected: Arc<std::sync::atomic::AtomicBool>,
     closes: Arc<AtomicUsize>,
+    subscription: Arc<Mutex<Option<Weak<qubit_event_bus::AsyncSubscription<u32>>>>>,
+    run_rejected: Arc<Mutex<Option<bool>>>,
+    handler_calls: Arc<AtomicUsize>,
 }
 
 impl AsyncEventSubscriptionSpi for DropReenterCloseReceiver {
@@ -473,6 +487,9 @@ impl AsyncEventSubscriptionSpi for DropReenterCloseReceiver {
             Box::pin(ReenterOnCloseDrop {
                 bus: self.bus.clone(),
                 rejected: self.rejected.clone(),
+                subscription: self.subscription.clone(),
+                run_rejected: self.run_rejected.clone(),
+                handler_calls: self.handler_calls.clone(),
             })
         } else {
             self.inner.close()
@@ -483,6 +500,9 @@ impl AsyncEventSubscriptionSpi for DropReenterCloseReceiver {
 struct ReenterOnCloseDrop {
     bus: Arc<Mutex<Option<AsyncEventBus>>>,
     rejected: Arc<std::sync::atomic::AtomicBool>,
+    subscription: Arc<Mutex<Option<Weak<qubit_event_bus::AsyncSubscription<u32>>>>>,
+    run_rejected: Arc<Mutex<Option<bool>>>,
+    handler_calls: Arc<AtomicUsize>,
 }
 
 impl Future for ReenterOnCloseDrop {
@@ -507,6 +527,24 @@ impl Drop for ReenterOnCloseDrop {
             ),
             Ordering::SeqCst,
         );
+        let subscription = self
+            .subscription
+            .lock()
+            .expect("subscription slot")
+            .as_ref()
+            .and_then(Weak::upgrade);
+        if let Some(subscription) = subscription {
+            let nested_handler_calls = self.handler_calls.clone();
+            let mut nested = Box::pin(subscription.run(move |_| {
+                nested_handler_calls.fetch_add(1, Ordering::SeqCst);
+                async { Ok::<(), qubit_event_bus::DeliveryError>(()) }
+            }));
+            let result = nested.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+            *self.run_rejected.lock().expect("run result") = Some(
+                matches!(result, Poll::Ready(Err(ReceiveError::WouldDeadlock)))
+                    && self.handler_calls.load(Ordering::SeqCst) == 0,
+            );
+        }
     }
 }
 
@@ -516,11 +554,17 @@ fn test_receiver_close_cancelled_by_graceful_timeout_drop_rejects_same_bus_shutd
     let slot = Arc::new(Mutex::new(None));
     let rejected = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let closes = Arc::new(AtomicUsize::new(0));
+    let subscription_slot = Arc::new(Mutex::new(None));
+    let run_rejected = Arc::new(Mutex::new(None));
+    let handler_calls = Arc::new(AtomicUsize::new(0));
     let spi = Arc::new(DropReenterCloseSpi {
         inner: FakeAsyncEventBusSpi::new(),
         bus: slot.clone(),
         rejected: rejected.clone(),
         closes: closes.clone(),
+        subscription: subscription_slot.clone(),
+        run_rejected: run_rejected.clone(),
+        handler_calls: handler_calls.clone(),
     });
     let bus = AsyncEventBus::with_timer(
         ProviderId::new("close-drop-reenter").expect("provider ID"),
@@ -530,7 +574,11 @@ fn test_receiver_close_cancelled_by_graceful_timeout_drop_rejects_same_bus_shutd
     .expect("facade");
     *slot.lock().expect("bus slot") = Some(bus.clone());
     let topic = Topic::<u32>::new("close-drop-reenter").expect("topic");
-    let _subscription = block_on_shutdown(bus.subscribe(SubscribeRequest::new("close-drop-reenter", topic).unwrap()));
+    let subscription = Arc::new(
+        block_on_shutdown(bus.subscribe(SubscribeRequest::new("close-drop-reenter", topic).unwrap()))
+            .expect("subscribe"),
+    );
+    *subscription_slot.lock().expect("subscription slot") = Some(Arc::downgrade(&subscription));
 
     let timeout = Duration::from_nanos(23);
     let mut graceful = Box::pin(bus.shutdown(ShutdownMode::Graceful { timeout }));
@@ -549,6 +597,8 @@ fn test_receiver_close_cancelled_by_graceful_timeout_drop_rejects_same_bus_shutd
         rejected.load(Ordering::SeqCst),
         "cancelled receiver close Drop rejects reentrant shutdown"
     );
+    assert_eq!(Some(true), *run_rejected.lock().expect("run result"));
+    assert_eq!(0, handler_calls.load(Ordering::SeqCst));
     assert_eq!(1, closes.load(Ordering::SeqCst));
 
     assert!(block_on_shutdown(bus.shutdown(ShutdownMode::Immediate)).is_ok());
