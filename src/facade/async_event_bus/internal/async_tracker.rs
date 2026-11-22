@@ -41,7 +41,7 @@ impl AsyncTracker {
     }
 
     /// Wakes quiescence waiters while marking callbacks as bus-owned work.
-    fn notify_operation_finished(&self) {
+    pub(super) fn notify_activity_changed(&self) {
         with_bus_scope(self.bus_key, || self.signal.notify());
     }
 
@@ -122,7 +122,7 @@ impl AsyncTracker {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.active_runners = state.active_runners.saturating_sub(1);
         drop(state);
-        self.notify_operation_finished();
+        self.notify_activity_changed();
     }
 
     /// Increments the number of active publishes.
@@ -144,7 +144,7 @@ impl AsyncTracker {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.active_publishes = state.active_publishes.saturating_sub(1);
         drop(state);
-        self.notify_operation_finished();
+        self.notify_activity_changed();
     }
 
     /// Increments the number of active subscribes.
@@ -166,7 +166,7 @@ impl AsyncTracker {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.active_subscribes = state.active_subscribes.saturating_sub(1);
         drop(state);
-        self.notify_operation_finished();
+        self.notify_activity_changed();
     }
 
     /// Decrements the close count and wakes quiescence waiters.
@@ -177,6 +177,6 @@ impl AsyncTracker {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.active_closes = state.active_closes.saturating_sub(1);
         drop(state);
-        self.notify_operation_finished();
+        self.notify_activity_changed();
     }
 }

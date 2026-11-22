@@ -47,6 +47,6 @@ impl Drop for AsyncDeliveryGuard {
             }
         }
         drop(state);
-        self.tracker.signal.notify();
+        self.tracker.notify_activity_changed();
     }
 }
