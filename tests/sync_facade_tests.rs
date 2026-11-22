@@ -396,6 +396,7 @@ struct TestBackendState {
     close_calls: usize,
     settlement_calls: usize,
     settlement_dispositions: Vec<DeliveryDisposition>,
+    settlement_token_states: Vec<String>,
     fail_next_settle: bool,
     fail_settle_always: bool,
     settlement_retryability: Option<bool>,
@@ -509,6 +510,14 @@ impl TestBackend {
             .lock()
             .expect("test state lock")
             .settlement_dispositions
+            .clone()
+    }
+
+    fn settlement_token_states(&self) -> Vec<String> {
+        self.state
+            .lock()
+            .expect("test state lock")
+            .settlement_token_states
             .clone()
     }
 
@@ -990,6 +999,9 @@ impl EventSubscriptionSpi for TestSubscription {
         let mut state = self.backend_state.lock().expect("test state lock");
         state.operations.push(("settle", Some(disposition)));
         state.settlement_calls += 1;
+        if let Some(value) = token.downcast_ref::<&str>() {
+            state.settlement_token_states.push((*value).to_owned());
+        }
         if state.fail_settle_always {
             return Err(SpiError::Operation {
                 provider_id: "sync-test".into(),
@@ -2183,6 +2195,38 @@ impl EventCodec<String> for Utf8Codec {
         String::from_utf8(bytes.to_vec()).map_err(|source| CodecError::Decode {
             source: Box::new(source),
         })
+    }
+}
+
+struct PanicDecodeCodec {
+    content_type: ContentType,
+    displays: Arc<AtomicUsize>,
+    drops: Arc<AtomicUsize>,
+}
+
+impl EventCodec<String> for PanicDecodeCodec {
+    fn content_type(&self) -> &ContentType {
+        &self.content_type
+    }
+
+    fn schema_id(&self) -> Option<&SchemaId> {
+        None
+    }
+
+    fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
+        Ok(Arc::from(value.as_bytes()))
+    }
+
+    fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
+        match String::from_utf8(payload.bytes().to_vec()) {
+            Ok(value) => Ok(value),
+            Err(_) => Err(CodecError::Decode {
+                source: Box::new(PanicOnDisplay {
+                    displays: self.displays.clone(),
+                    drops: self.drops.clone(),
+                }),
+            }),
+        }
     }
 }
 
@@ -5547,6 +5591,111 @@ fn test_accept_only_handler_failure_with_foreign_token_stops() {
 
 /// Decode rejection is owner work even when every real handler thread is
 /// occupied.
+#[test]
+fn test_sync_decode_display_panic_still_rejects_bad_message() {
+    let (bus, backend) = create_bus();
+    let cleanup = SyncBusCleanup::new(bus.clone());
+    let displays = Arc::new(AtomicUsize::new(0));
+    let drops = Arc::new(AtomicUsize::new(0));
+    let codec = PanicDecodeCodec {
+        content_type: ContentType::TEXT_PLAIN,
+        displays: displays.clone(),
+        drops: drops.clone(),
+    };
+    let codec_topic = Topic::new("decode.display-panic").expect("topic").with_codec(codec);
+    let (handler_tx, handler_rx) = mpsc::channel();
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new("decode-display-panic", codec_topic.clone()).expect("request"),
+            move |delivery: Delivery<String>| {
+                handler_tx
+                    .send(delivery.payload().clone())
+                    .expect("handler receiver remains connected");
+            },
+        )
+        .expect("subscription starts");
+    let (diagnostic_tx, diagnostic_rx) = mpsc::channel();
+    let _observer = bus.observe_diagnostics(move |diagnostic| {
+        if let Diagnostic::DeliveryFailed {
+            event_id,
+            attempts,
+            error,
+            ..
+        } = diagnostic
+        {
+            let _ = diagnostic_tx.send((event_id.as_str().to_owned(), *attempts, error.to_string()));
+        }
+    });
+    let queue = backend
+        .state
+        .lock()
+        .expect("backend state")
+        .queues
+        .iter()
+        .find(|(id, _)| *id == subscription.id())
+        .expect("subscription queue")
+        .1
+        .clone();
+    let enqueue = |event_id: &str, token: &'static str, bytes: &'static [u8]| {
+        let message = InboundMessage::new(
+            TopicAddress::new("decode.display-panic").expect("address"),
+            EventId::new(event_id).expect("event ID"),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            TransportPayload::Encoded(EncodedPayload::new(Arc::from(bytes), ContentType::TEXT_PLAIN, None)),
+            Some(SettlementToken::new(subscription.id(), token)),
+            Default::default(),
+        );
+        let (state, ready) = &*queue;
+        state.lock().expect("queue state").messages.push_back(message);
+        ready.notify_one();
+    };
+
+    enqueue("decode-bad", "decode-bad-token", &[0xff]);
+    let (event_id, attempts, error) = diagnostic_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("decode failure diagnostic is emitted despite source formatting panic");
+    assert_eq!(event_id, "decode-bad");
+    assert_eq!(attempts, 0);
+    assert_eq!(error, "decode error formatting panicked");
+    let bad_topic = Topic::<String>::new("decode.display-panic").expect("topic");
+    assert_eq!(
+        bus.wait_for_received_deliveries(&bad_topic, Some(Duration::from_secs(2)))
+            .expect("bad message rejection settles"),
+        qubit_event_bus::WaitOutcome::Idle
+    );
+    assert_eq!(handler_rx.try_recv(), Err(mpsc::TryRecvError::Empty));
+    assert_eq!(backend.settlement_dispositions(), [DeliveryDisposition::Reject]);
+    assert_eq!(backend.settlement_token_states(), ["decode-bad-token"]);
+    assert_eq!(displays.load(Ordering::SeqCst), 1);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+
+    enqueue("decode-good", "decode-good-token", b"healthy");
+    assert_eq!(
+        handler_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("same subscription receives after rejection"),
+        "healthy"
+    );
+    assert_eq!(
+        bus.wait_for_received_deliveries(&bad_topic, Some(Duration::from_secs(2)))
+            .expect("valid message settlement completes"),
+        qubit_event_bus::WaitOutcome::Idle
+    );
+    assert_eq!(
+        backend.settlement_dispositions(),
+        [DeliveryDisposition::Reject, DeliveryDisposition::Accept]
+    );
+    assert_eq!(
+        backend.settlement_token_states(),
+        ["decode-bad-token", "decode-good-token"]
+    );
+    assert!(subscription.terminal_failure().is_none());
+    subscription.cancel().expect("subscription cancels");
+    finish_sync_bus_cleanup(cleanup);
+}
+
 #[test]
 fn test_sync_decode_rejection_does_not_consume_handler_capacity() {
     struct ReleaseOnDrop(Arc<HandlerGate>);

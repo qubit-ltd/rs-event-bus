@@ -359,7 +359,7 @@ pub(in crate::facade) fn settle_rejected(
         subscription_id,
         subscriber_id: subscriber_id.clone(),
         attempts: 0,
-        error: error.to_string().into(),
+        error: format_diagnostic_error(&error, "decode error formatting panicked").into(),
     });
 }
 
