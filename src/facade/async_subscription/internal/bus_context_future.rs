@@ -127,6 +127,16 @@ fn enter_bus_scope(bus_key: usize) -> bus_poll_scope::BusPollScope {
 /// Runs synchronous cleanup while the owning bus identity is active.
 ///
 /// The scope covers both the action and destruction of its captured values.
+///
+/// # Type Parameters
+/// - `R`: Result returned by the cleanup action.
+///
+/// # Parameters
+/// - `bus_key`: Identity of the bus whose context is active during cleanup.
+/// - `action`: Synchronous cleanup operation to run in that context.
+///
+/// # Returns
+/// The value returned by `action`.
 pub(in crate::facade) fn with_bus_scope<R>(bus_key: usize, action: impl FnOnce() -> R) -> R {
     let _scope = enter_bus_scope(bus_key);
     action()

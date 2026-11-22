@@ -223,7 +223,8 @@ impl AsyncEventBus {
     ///
     /// After provider shutdown succeeds, synchronous disposal of subscriptions
     /// whose receiver close failed runs in this bus context. A shutdown
-    /// requested from those destructors returns [`LifecycleError::WouldDeadlock`].
+    /// requested from those destructors returns
+    /// [`LifecycleError::WouldDeadlock`].
     pub async fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownReport, ShutdownError> {
         let bus_key = Arc::as_ptr(&self.inner) as usize;
         if is_current_bus_poll(bus_key) {

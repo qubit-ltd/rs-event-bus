@@ -1439,10 +1439,11 @@ destroyed inside a synchronous bus scope. Failed sessions disposed after
 provider shutdown are released inside the same kind of scope. The scope covers
 the release and its destructors, then restores the previous context. Ordinary
 subscription-handle destruction keeps its existing behavior. Inside a matching
-scope, a nested shutdown returns `WouldDeadlock` immediately, even if no received
-delivery is active; this is a conservative boundary. Work on another bus does
-not match this context. The check does not detect arbitrary dependency cycles
-between independently spawned tasks.
+scope, `wait_for_received_deliveries` and a nested shutdown return
+`WouldDeadlock` immediately, even if no received delivery is active; this is a
+conservative boundary. Work on another bus does not match this context. The
+check does not detect arbitrary dependency cycles between independently spawned
+tasks.
 
 ---
 
