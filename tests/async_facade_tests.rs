@@ -4237,6 +4237,258 @@ fn test_async_failure_directives_settle_requeue_discard_and_dead_letter_outcomes
 }
 
 #[test]
+fn test_async_handler_error_display_panic_preserves_settlement() {
+    struct PanicOnDrop(Arc<AtomicUsize>);
+    impl Drop for PanicOnDrop {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            panic!("injected handler panic payload drop panic");
+        }
+    }
+    struct PanicOnDisplay {
+        displays: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+    }
+    impl std::fmt::Display for PanicOnDisplay {
+        fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            self.displays.fetch_add(1, Ordering::SeqCst);
+            std::panic::panic_any(PanicOnDrop(self.drops.clone()));
+        }
+    }
+    impl std::fmt::Debug for PanicOnDisplay {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("PanicOnDisplay")
+        }
+    }
+    impl std::error::Error for PanicOnDisplay {}
+
+    for (directive, expected) in [
+        (FailureDirective::Requeue, DeliveryDisposition::Retry),
+        (FailureDirective::Discard, DeliveryDisposition::Reject),
+    ] {
+        let spi = Arc::new(FakeAsyncEventBusSpi::new());
+        let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
+            .expect("valid provider capabilities");
+        let displays = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let displays_after_run = displays.clone();
+        let drops_after_run = drops.clone();
+        let diagnostic = Arc::new(Mutex::new(None));
+        let seen = diagnostic.clone();
+        let _observer = bus.observe_diagnostics(move |entry| {
+            if let Diagnostic::DeliveryFailed { event_id, error, .. } = entry {
+                *seen.lock().unwrap() = Some((event_id.as_str().to_owned(), error.to_string()));
+            }
+        });
+
+        block_on(async {
+            let options = SubscribeOptions::<u32>::builder()
+                .error_handler(move |_, _| directive)
+                .build();
+            let subscription = bus
+                .subscribe(
+                    SubscribeRequest::new("handler-format-panic", topic())
+                        .unwrap()
+                        .with_options(options),
+                )
+                .await
+                .unwrap();
+            spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+                subscription.id(),
+                "handler-format-panic-token",
+            ))));
+            let run = std::thread::spawn(move || {
+                block_on(subscription.run(move |_| {
+                    let source = PanicOnDisplay {
+                        displays: displays.clone(),
+                        drops: drops.clone(),
+                    };
+                    async move {
+                        Err(DeliveryError::Handler {
+                            source: Box::new(source),
+                        })
+                    }
+                }))
+            });
+            for _ in 0..100 {
+                if spi.settlement_count() > 0 {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            assert_eq!(spi.settlement_dispositions(), [expected]);
+            let _ = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
+            run.join().unwrap().unwrap();
+        });
+        assert_eq!(displays_after_run.load(Ordering::SeqCst), 1);
+        assert_eq!(drops_after_run.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *diagnostic.lock().unwrap(),
+            Some(("event-test".to_owned(), "handler error formatting panicked".to_owned()))
+        );
+    }
+}
+
+#[test]
+fn test_async_dead_letter_forward_display_panic_preserves_terminal_error() {
+    struct PanicOnDrop(Arc<AtomicUsize>);
+    impl Drop for PanicOnDrop {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            panic!("injected dead-letter panic payload drop panic");
+        }
+    }
+    struct PanicOnDisplay {
+        displays: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+    }
+    impl std::fmt::Display for PanicOnDisplay {
+        fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            self.displays.fetch_add(1, Ordering::SeqCst);
+            std::panic::panic_any(PanicOnDrop(self.drops.clone()));
+        }
+    }
+    impl std::fmt::Debug for PanicOnDisplay {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("PanicOnDisplay")
+        }
+    }
+    impl std::error::Error for PanicOnDisplay {}
+
+    struct PanicPublishSpi {
+        inner: Arc<FakeAsyncEventBusSpi>,
+        displays: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+        publishes: AtomicUsize,
+    }
+    impl AsyncEventBusSpi for PanicPublishSpi {
+        fn capabilities(&self) -> EventBusCapabilities {
+            self.inner.capabilities()
+        }
+        fn publish<'a>(
+            &'a self,
+            _: OutboundMessage,
+        ) -> qubit_event_bus::spi::SpiFuture<'a, Result<PublishAcknowledgement, SpiError>> {
+            self.publishes.fetch_add(1, Ordering::SeqCst);
+            let source = PanicOnDisplay {
+                displays: self.displays.clone(),
+                drops: self.drops.clone(),
+            };
+            Box::pin(async move {
+                Err(SpiError::Operation {
+                    provider_id: "fake".into(),
+                    operation: "publish",
+                    resource: None,
+                    kind: "dead_letter_display_panicked",
+                    retryable: Some(false),
+                    source: Box::new(source),
+                })
+            })
+        }
+        fn subscribe<'a>(
+            &'a self,
+            request: qubit_event_bus::spi::SpiSubscriptionRequest,
+        ) -> qubit_event_bus::spi::SpiFuture<'a, Result<Box<dyn AsyncEventSubscriptionSpi>, SpiError>> {
+            self.inner.subscribe(request)
+        }
+        fn shutdown<'a>(
+            &'a self,
+            mode: ShutdownMode,
+        ) -> qubit_event_bus::spi::SpiFuture<'a, Result<qubit_event_bus::spi::ShutdownOutcome, SpiError>> {
+            self.inner.shutdown(mode)
+        }
+    }
+
+    let inner = Arc::new(FakeAsyncEventBusSpi::new());
+    let displays = Arc::new(AtomicUsize::new(0));
+    let drops = Arc::new(AtomicUsize::new(0));
+    let spi = Arc::new(PanicPublishSpi {
+        inner: inner.clone(),
+        displays: displays.clone(),
+        drops: drops.clone(),
+        publishes: AtomicUsize::new(0),
+    });
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
+    let observed = Arc::new(Mutex::new(None));
+    let observed_by_callback = observed.clone();
+    let _observer = bus.observe_diagnostics(move |diagnostic| {
+        if let Diagnostic::InternalFailure { origin, message } = diagnostic {
+            *observed_by_callback.lock().unwrap() = Some((origin.to_string(), message.to_string()));
+        }
+    });
+
+    block_on(async {
+        let options = SubscribeOptions::<u32>::builder()
+            .error_handler(|_, _| FailureDirective::DeadLetter)
+            .dead_letter(DeadLetterPolicy::with_topic_name("test.dead").unwrap())
+            .build();
+        let subscription = bus
+            .subscribe(
+                SubscribeRequest::new("dead-letter-format-panic", topic())
+                    .unwrap()
+                    .with_options(options),
+            )
+            .await
+            .unwrap();
+        inner.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+            subscription.id(),
+            "dead-letter-format-panic-token",
+        ))));
+        let error = subscription
+            .run(|_| async {
+                Err(DeliveryError::Handler {
+                    source: Box::new(std::io::Error::other("handler failed")),
+                })
+            })
+            .await
+            .expect_err("failed dead-letter forwarding is terminal");
+        match error {
+            ReceiveError::DeadLetterForwardFailed {
+                event_id,
+                message,
+                source,
+            } => {
+                assert_eq!(event_id.as_str(), "event-test");
+                assert_eq!(&*message, "dead-letter error formatting panicked");
+                let forwarding_error = source
+                    .downcast_ref::<qubit_event_bus::pipeline::DeadLetterForwardError>()
+                    .expect("structured forwarding error is retained");
+                let qubit_event_bus::pipeline::DeadLetterForwardError::Publish(failure) = forwarding_error else {
+                    panic!("unexpected dead-letter failure: {forwarding_error:?}");
+                };
+                let qubit_event_bus::error::PublishError::Spi(spi_error) = failure.cause() else {
+                    panic!("unexpected publish failure cause: {:?}", failure.cause());
+                };
+                assert_eq!(spi_error.kind(), "dead_letter_display_panicked");
+                assert!(
+                    std::error::Error::source(spi_error)
+                        .unwrap()
+                        .downcast_ref::<PanicOnDisplay>()
+                        .is_some(),
+                    "original custom source is retained"
+                );
+            }
+            other => panic!("unexpected receive error: {other:?}"),
+        }
+        assert_eq!(subscription.run_state(), AsyncSubscriptionRunState::Stopped);
+        assert_eq!(spi.publishes.load(Ordering::SeqCst), 1);
+        assert_eq!(inner.close_call_count(), 1);
+        assert!(inner.settlement_dispositions().is_empty());
+        let _ = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
+    });
+    assert_eq!(displays.load(Ordering::SeqCst), 1);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *observed.lock().unwrap(),
+        Some((
+            "dead_letter_publish".to_owned(),
+            "dead-letter error formatting panicked".to_owned()
+        ))
+    );
+}
+
+#[test]
 fn test_async_unconfirmed_dead_letter_send_is_not_republished_or_settled() {
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =

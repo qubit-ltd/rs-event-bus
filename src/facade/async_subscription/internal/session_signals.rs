@@ -166,6 +166,7 @@ impl SessionSignals {
     /// # Parameters
     ///
     /// - `event_id`: Identity of the event that could not be forwarded.
+    /// - `message`: Panic-safe summary of the forwarding error.
     /// - `source`: Original forwarding error retained for callers.
     ///
     /// # Side Effects
@@ -175,9 +176,9 @@ impl SessionSignals {
     pub(in crate::facade) fn fail_dead_letter_forward(
         &self,
         event_id: EventId,
+        message: Box<str>,
         source: Box<dyn Error + Send + Sync + 'static>,
     ) {
-        let message = source.to_string().into_boxed_str();
         *self.terminal_error.lock().unwrap_or_else(PoisonError::into_inner) =
             Some(ReceiveError::DeadLetterForwardFailed {
                 event_id,

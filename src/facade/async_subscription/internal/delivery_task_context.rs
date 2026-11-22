@@ -42,6 +42,7 @@ use crate::model::SubscribeOptions;
 use crate::model::SubscriberId;
 use crate::pipeline::Diagnostic;
 use crate::pipeline::dead_letter_envelope;
+use crate::pipeline::format_diagnostic_error;
 use crate::spi::DeliveryDisposition;
 
 /// Processing context carried by one owned handler task.
@@ -239,7 +240,8 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
         attempts: u32,
         directive: FailureDirective,
     ) {
-        self.record_failure_diagnostic(attempts, error.to_string().into());
+        let message = format_diagnostic_error(&error, "handler error formatting panicked");
+        self.record_failure_diagnostic(attempts, message.into());
         if directive == FailureDirective::DeadLetter && !delivery.context().is_dead_letter() {
             if let Some(policy) = self.options.dead_letter() {
                 match dead_letter_envelope(&delivery, &error, policy.topic_name()) {
@@ -264,46 +266,40 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
                                 }
                             }
                             Err(source) => {
-                                let message = source.to_string();
-                                self.inner.emit(&Diagnostic::InternalFailure {
-                                    origin: "dead_letter_publish".into(),
-                                    message: message.into(),
-                                });
-                                self.signals
-                                    .fail_dead_letter_forward(delivery.event().id().clone(), source);
+                                self.stop_after_dead_letter_failure(
+                                    delivery.event().id().clone(),
+                                    "dead_letter_publish",
+                                    source,
+                                );
                                 return;
                             }
                         }
                     }
                     Ok(None) => {
                         let source = Error::other("dead-letter envelope unexpectedly absent");
-                        self.inner.emit(&Diagnostic::InternalFailure {
-                            origin: "dead_letter_build".into(),
-                            message: source.to_string().into(),
-                        });
-                        self.signals
-                            .fail_dead_letter_forward(delivery.event().id().clone(), Box::new(source));
+                        self.stop_after_dead_letter_failure(
+                            delivery.event().id().clone(),
+                            "dead_letter_build",
+                            Box::new(source),
+                        );
                         return;
                     }
                     Err(source) => {
-                        let message = source.to_string();
-                        self.inner.emit(&Diagnostic::InternalFailure {
-                            origin: "dead_letter_build".into(),
-                            message: message.into(),
-                        });
-                        self.signals
-                            .fail_dead_letter_forward(delivery.event().id().clone(), Box::new(source));
+                        self.stop_after_dead_letter_failure(
+                            delivery.event().id().clone(),
+                            "dead_letter_build",
+                            Box::new(source),
+                        );
                         return;
                     }
                 }
             } else {
                 let source = Error::other("dead-letter directive has no configured policy");
-                self.inner.emit(&Diagnostic::InternalFailure {
-                    origin: "dead_letter_policy".into(),
-                    message: source.to_string().into(),
-                });
-                self.signals
-                    .fail_dead_letter_forward(delivery.event().id().clone(), Box::new(source));
+                self.stop_after_dead_letter_failure(
+                    delivery.event().id().clone(),
+                    "dead_letter_policy",
+                    Box::new(source),
+                );
                 return;
             }
         }
@@ -316,6 +312,28 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
         if let Some(disposition) = disposition {
             self.settle_pending(disposition, Some(delivery.event()));
         }
+    }
+
+    /// Records a terminal dead-letter forwarding failure before notifying
+    /// observers.
+    ///
+    /// # Parameters
+    /// - `event_id`: Source event whose forwarding failed.
+    /// - `origin`: Diagnostic origin associated with the failure path.
+    /// - `source`: Original forwarding error retained for the receiver.
+    fn stop_after_dead_letter_failure(
+        &self,
+        event_id: crate::model::EventId,
+        origin: &str,
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    ) {
+        let message =
+            format_diagnostic_error(source.as_ref(), "dead-letter error formatting panicked").into_boxed_str();
+        self.signals.fail_dead_letter_forward(event_id, message.clone(), source);
+        self.inner.emit(&Diagnostic::InternalFailure {
+            origin: origin.into(),
+            message,
+        });
     }
 
     /// Stores the settlement decision for the session owner to apply.
