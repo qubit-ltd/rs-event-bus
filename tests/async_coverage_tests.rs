@@ -826,6 +826,7 @@ struct CloseFailingSpi {
     receive_future_drops: Arc<AtomicUsize>,
     fail_every_close: bool,
     close_succeeds_immediately: bool,
+    drop_source_on_close_attempt: Arc<Mutex<Option<(DropShutdownProbe, Arc<AtomicUsize>)>>>,
     drop_probe: Arc<Mutex<Option<DropShutdownProbe>>>,
     fail_provider_shutdown_once: bool,
     pending_provider_shutdown_once: bool,
@@ -872,6 +873,7 @@ impl AsyncEventBusSpi for CloseFailingSpi {
         let receive_future_drops = self.receive_future_drops.clone();
         let fail_every_close = self.fail_every_close;
         let close_succeeds_immediately = self.close_succeeds_immediately;
+        let drop_source_on_close_attempt = self.drop_source_on_close_attempt.lock().expect("probe mutex").clone();
         let drop_probe = self.drop_probe.lock().expect("probe mutex").clone();
         let deliver_count = self.deliver_count;
         let subscription_id = request.subscription_id();
@@ -885,6 +887,7 @@ impl AsyncEventBusSpi for CloseFailingSpi {
                 receive_future_drops,
                 fail_every_close,
                 close_succeeds_immediately,
+                drop_source_on_close_attempt,
                 drop_probe,
                 deliver_count,
                 subscription_id,
@@ -923,6 +926,7 @@ struct CloseFailingReceiver {
     receive_future_drops: Arc<AtomicUsize>,
     fail_every_close: bool,
     close_succeeds_immediately: bool,
+    drop_source_on_close_attempt: Option<(DropShutdownProbe, Arc<AtomicUsize>)>,
     drop_probe: Option<DropShutdownProbe>,
     deliver_count: usize,
     subscription_id: Id,
@@ -955,20 +959,54 @@ impl AsyncEventSubscriptionSpi for CloseFailingReceiver {
         let attempt = self.close_attempts.fetch_add(1, Ordering::AcqRel);
         let fail_every_close = self.fail_every_close;
         let close_succeeds_immediately = self.close_succeeds_immediately;
+        let drop_source_on_close_attempt = self.drop_source_on_close_attempt.clone();
         Box::pin(async move {
             if fail_every_close || (!close_succeeds_immediately && attempt == 0) {
+                let source: Box<dyn std::error::Error + Send + Sync> = if attempt == 1
+                    && let Some((probe, drops)) = drop_source_on_close_attempt
+                {
+                    Box::new(DropShutdownErrorSource { probe, drops })
+                } else {
+                    Box::new(Error::other("test close failure"))
+                };
                 Err(SpiError::Operation {
                     provider_id: "close-failing".into(),
                     operation: "close",
                     resource: None,
                     kind: "close_failed",
                     retryable: Some(false),
-                    source: Box::new(Error::other("test close failure")),
+                    source,
                 })
             } else {
                 Ok(())
             }
         })
+    }
+}
+
+struct DropShutdownErrorSource {
+    probe: DropShutdownProbe,
+    drops: Arc<AtomicUsize>,
+}
+
+impl std::fmt::Display for DropShutdownErrorSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("test close failure with shutdown probe")
+    }
+}
+
+impl std::fmt::Debug for DropShutdownErrorSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("DropShutdownErrorSource").finish()
+    }
+}
+
+impl std::error::Error for DropShutdownErrorSource {}
+
+impl Drop for DropShutdownErrorSource {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::AcqRel);
+        self.probe.check_nested_shutdown();
     }
 }
 
@@ -1148,6 +1186,7 @@ fn test_bus_shutdown_scopes_successful_receiver_destruction() {
 
 #[test]
 fn test_cancelled_shutdown_retry_preserves_one_canonical_close_failure() {
+    let source_drops = Arc::new(AtomicUsize::new(0));
     let spi = Arc::new(CloseFailingSpi {
         fail_every_close: true,
         pending_provider_shutdown_once: true,
@@ -1158,6 +1197,8 @@ fn test_cancelled_shutdown_retry_preserves_one_canonical_close_failure() {
         spi.clone(),
     )
     .expect("valid provider capabilities");
+    let drop_probe = nested_shutdown_probe(bus.clone());
+    *spi.drop_source_on_close_attempt.lock().expect("probe mutex") = Some((drop_probe.clone(), source_drops.clone()));
     let mut subscription = block_on(async {
         bus.subscribe(SubscribeRequest::new("cancelled-close-retry", topic()).expect("valid subscriber ID"))
             .await
@@ -1214,6 +1255,8 @@ fn test_cancelled_shutdown_retry_preserves_one_canonical_close_failure() {
         1,
         "successful provider retry disposes the receiver"
     );
+    assert_one_nested_shutdown_rejected(&drop_probe);
+    assert_eq!(source_drops.load(Ordering::Acquire), 1, "discarded retry source drops once");
     drop(subscription);
 }
 

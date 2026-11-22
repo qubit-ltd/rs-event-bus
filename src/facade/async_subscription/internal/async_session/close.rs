@@ -116,7 +116,9 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             Ok(())
         };
         if let Err(error) = close_result {
-            let failure = self.inner.record_close_error(control, &self.subscriber_id, error);
+            let failure = with_subscription_scope(bus_key, subscription_id, || {
+                self.inner.record_close_error(control, &self.subscriber_id, error)
+            });
             return Err(failure);
         }
         with_subscription_scope(bus_key, subscription_id, || {
