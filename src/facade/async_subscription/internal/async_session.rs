@@ -13,6 +13,7 @@ use std::sync::atomic::Ordering;
 
 use qubit_id::Id;
 
+use self::session_registration_cleanup::SessionRegistrationCleanup;
 use super::super::super::async_event_bus::AsyncEventBusInner;
 use super::OwnedDeliveryTask;
 use super::PendingDelivery;
@@ -78,10 +79,15 @@ mod runner;
 mod settlement;
 // Defines receiver-owner events selected by the poll loop.
 mod runner_event;
+// Releases the scheduler registration after lease-owning session state.
+mod session_registration_cleanup;
 
 impl<T: 'static> Drop for AsyncSession<T> {
-    /// Releases metadata after actual payload and future owners have been
-    /// dropped.
+    /// Releases scheduler metadata after locally owned payloads and futures.
+    ///
+    /// Moving the lease-owning containers into a scope declared after the
+    /// registration guard ensures they are dropped first, including during
+    /// unwinding from a payload destructor.
     fn drop(&mut self) {
         self.inner.scheduler.stop_subscription(self.id);
         let abandoned =
@@ -94,29 +100,34 @@ impl<T: 'static> Drop for AsyncSession<T> {
                 self.metrics.record_abandoned_ephemeral();
             }
         }
-        self.tasks.clear();
-        while let Some(mut delivery) = self.buffered.pop_front() {
-            self.emit_failure_diagnostic(
-                delivery.failure_diagnostic.take(),
-                delivery.event_id,
-                self.topic.name().into(),
-            );
+        let _registration = SessionRegistrationCleanup::new(&self.inner, self.id);
+        {
+            let mut tasks = std::mem::take(&mut self.tasks);
+            let mut buffered = std::mem::take(&mut self.buffered);
+            let mut completed = std::mem::take(&mut self.completed);
+            let mut completed_during_settlement = std::mem::take(&mut self.completed_during_settlement);
+            tasks.clear();
+            while let Some(mut delivery) = buffered.pop_front() {
+                self.emit_failure_diagnostic(
+                    delivery.failure_diagnostic.take(),
+                    delivery.event_id,
+                    self.topic.name().into(),
+                );
+            }
+            while let Some(mut delivery) = completed.pop_front() {
+                self.emit_failure_diagnostic(
+                    delivery.failure_diagnostic.take(),
+                    delivery.event_id,
+                    self.topic.name().into(),
+                );
+            }
+            while let Some(mut delivery) = completed_during_settlement.pop_front() {
+                self.emit_failure_diagnostic(
+                    delivery.failure_diagnostic.take(),
+                    delivery.event_id,
+                    self.topic.name().into(),
+                );
+            }
         }
-        while let Some(mut delivery) = self.completed.pop_front() {
-            self.emit_failure_diagnostic(
-                delivery.failure_diagnostic.take(),
-                delivery.event_id,
-                self.topic.name().into(),
-            );
-        }
-        while let Some(mut delivery) = self.completed_during_settlement.pop_front() {
-            self.emit_failure_diagnostic(
-                delivery.failure_diagnostic.take(),
-                delivery.event_id,
-                self.topic.name().into(),
-            );
-        }
-        let _ = self.inner.scheduler.unregister(self.id);
-        self.inner.notify_scheduler();
     }
 }
