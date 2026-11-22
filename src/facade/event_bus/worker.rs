@@ -623,8 +623,9 @@ fn run_subscription_worker_body<T>(
         control.record_close_error(failure.clone());
         inner.record_close_failure(&failure);
     }
-    // Provider close is the recovery boundary for every unresolved token.
-    for (_, delivery) in owned.drain() {
+    // Count the complete batch before dropping any payload, so an unwind
+    // during destruction cannot leave the abandoned-delivery metrics partial.
+    for delivery in owned.values() {
         if !delivery.abandoned
             && (delivery.settlement.is_some()
                 || delivery.inbound.is_some()
@@ -633,6 +634,9 @@ fn run_subscription_worker_body<T>(
         {
             count_abandoned(&inner, control.id);
         }
+    }
+    // Provider close is the recovery boundary for every unresolved token.
+    for (_, delivery) in owned.drain() {
         drop(delivery);
     }
 }
