@@ -238,6 +238,8 @@ impl AsyncEventBus {
     /// The same error is returned if a synchronous waker invoked while an
     /// immediate shutdown escalates an active graceful shutdown requests
     /// shutdown of this bus again.
+    /// Synchronous wakers invoked by subscription stop notifications receive
+    /// the same protection and cannot request shutdown for this bus again.
     pub async fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownReport, ShutdownError> {
         let bus_key = Arc::as_ptr(&self.inner) as usize;
         if is_current_bus_poll(bus_key) {
@@ -508,9 +510,12 @@ impl AsyncEventBus {
             .values()
             .cloned()
             .collect();
-        for control in controls {
-            control.stop(mode);
-        }
+        let bus_key = Arc::as_ptr(&self.inner) as usize;
+        with_bus_scope(bus_key, || {
+            for control in controls {
+                control.stop(mode);
+            }
+        });
     }
 
     /// Closes all registered subscription receivers and records close results.

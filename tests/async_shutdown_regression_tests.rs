@@ -572,6 +572,61 @@ fn test_immediate_escalation_wake_rejects_same_bus_shutdown() {
     *bus_slot.lock().unwrap() = None;
 }
 
+#[test]
+fn test_subscription_stop_wake_rejects_same_bus_shutdown() {
+    let provider = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus_slot = Arc::new(Mutex::new(None));
+    let observed = Arc::new(Mutex::new(None));
+    let bus = AsyncEventBus::with_timer(
+        ProviderId::new("stop-wake-reenter").expect("provider ID"),
+        provider,
+        qubit_clock::StdMonotonicClock::new().new_timer(),
+    )
+    .expect("facade");
+    let topic = Topic::<u32>::new("stop-wake-reenter").expect("topic");
+    let subscription =
+        block_on_shutdown(bus.subscribe(SubscribeRequest::new("stop-wake-reenter", topic).expect("request")))
+            .expect("subscription");
+    let reenter = Arc::new(ReenterOnWake {
+        bus: bus_slot.clone(),
+        observed: observed.clone(),
+        used: std::sync::atomic::AtomicBool::new(false),
+    });
+    let waker = Waker::from(reenter.clone());
+    let mut runner = Box::pin(subscription.run(|_| async { Ok(()) }));
+    assert!(runner.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+
+    // Ignore initialization wakes, then let shutdown's stop signal invoke this
+    // waker.
+    reenter.used.store(false, Ordering::SeqCst);
+    *bus_slot.lock().expect("bus slot") = Some(bus.clone());
+
+    let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+    assert!(
+        shutdown
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    assert!(
+        matches!(
+            observed.lock().expect("observation lock").as_ref(),
+            Some(Poll::Ready(Err(ShutdownError::Lifecycle(
+                LifecycleError::WouldDeadlock { operation: "shutdown" }
+            ))))
+        ),
+        "nested shutdown observation: {:?}",
+        observed.lock().expect("observation lock")
+    );
+
+    assert!(runner.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_ready());
+    let Poll::Ready(Ok(report)) = shutdown.as_mut().poll(&mut Context::from_waker(Waker::noop())) else {
+        panic!("outer shutdown must complete after the runner releases its lease");
+    };
+    assert_eq!(report.outcome, SpiShutdownOutcome::Complete);
+    *bus_slot.lock().expect("bus slot") = None;
+}
+
 struct DropReenterSpi {
     bus: Arc<Mutex<Option<AsyncEventBus>>>,
     rejected: Arc<std::sync::atomic::AtomicBool>,
