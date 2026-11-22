@@ -235,6 +235,9 @@ impl AsyncEventBus {
     /// whose receiver close failed runs in this bus context. A shutdown
     /// requested from those destructors returns
     /// [`LifecycleError::WouldDeadlock`].
+    /// The same error is returned if a synchronous waker invoked while an
+    /// immediate shutdown escalates an active graceful shutdown requests
+    /// shutdown of this bus again.
     pub async fn shutdown(&self, mode: ShutdownMode) -> Result<ShutdownReport, ShutdownError> {
         let bus_key = Arc::as_ptr(&self.inner) as usize;
         if is_current_bus_poll(bus_key) {
@@ -242,7 +245,7 @@ impl AsyncEventBus {
         }
         if mode == ShutdownMode::Immediate {
             self.inner.shutdown_immediate.store(true, Ordering::Release);
-            self.inner.shutdown_mode_signal.notify();
+            with_bus_scope(bus_key, || self.inner.shutdown_mode_signal.notify());
         }
         let (started_closing, already_closed) = {
             let mut state = self.inner.state.lock().unwrap_or_else(PoisonError::into_inner);

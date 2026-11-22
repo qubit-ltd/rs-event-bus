@@ -333,6 +333,33 @@ fn test_graceful_deadline_drop_rejects_same_bus_shutdown() {
 
 struct WakeCounter(AtomicUsize);
 
+struct ReenterOnWake {
+    bus: Arc<Mutex<Option<AsyncEventBus>>>,
+    observed: ShutdownReentryObservation,
+    used: std::sync::atomic::AtomicBool,
+}
+
+impl Wake for ReenterOnWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        if self.used.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let Some(bus) = self.bus.lock().expect("bus lock").clone() else {
+            return;
+        };
+        let mut nested = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+        let result = nested
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .map(|result| result.map(|_| ()));
+        *self.observed.lock().expect("observation lock") = Some(result);
+    }
+}
+
 impl Wake for WakeCounter {
     fn wake(self: Arc<Self>) {
         self.0.fetch_add(1, Ordering::SeqCst);
@@ -476,6 +503,73 @@ fn test_immediate_shutdown_escalates_active_graceful_provider_call() {
     };
     assert_eq!(immediate_report.outcome, SpiShutdownOutcome::Complete);
     assert_eq!(immediate_report.known_abandoned_deliveries, 0);
+}
+
+#[test]
+fn test_immediate_escalation_wake_rejects_same_bus_shutdown() {
+    let provider = Arc::new(ShutdownGateSpi::new(false));
+    let bus_slot = Arc::new(Mutex::new(None));
+    let observed = Arc::new(Mutex::new(None));
+    let bus = AsyncEventBus::with_timer(
+        ProviderId::new("wake-reenter").expect("provider ID"),
+        provider.clone(),
+        ManualMonotonicClock::new().new_timer(),
+    )
+    .expect("facade");
+    *bus_slot.lock().expect("bus lock") = Some(bus.clone());
+    let waker = Waker::from(Arc::new(ReenterOnWake {
+        bus: bus_slot.clone(),
+        observed: observed.clone(),
+        used: std::sync::atomic::AtomicBool::new(false),
+    }));
+
+    let mut graceful = Box::pin(bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(30),
+    }));
+    assert!(graceful.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+    assert_eq!(
+        vec![ShutdownMode::Graceful {
+            timeout: Duration::from_secs(30)
+        }],
+        *provider.calls.lock().unwrap()
+    );
+
+    let mut immediate = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+    assert!(
+        immediate
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    assert!(
+        matches!(
+            observed.lock().unwrap().as_ref(),
+            Some(Poll::Ready(Err(ShutdownError::Lifecycle(
+                LifecycleError::WouldDeadlock { operation: "shutdown" }
+            ))))
+        ),
+        "nested shutdown observation: {:?}",
+        observed.lock().unwrap()
+    );
+    let graceful_result = graceful.as_mut().poll(&mut Context::from_waker(&waker));
+    assert_eq!(
+        vec![
+            ShutdownMode::Graceful {
+                timeout: Duration::from_secs(30)
+            },
+            ShutdownMode::Immediate
+        ],
+        *provider.calls.lock().unwrap(),
+    );
+
+    let Poll::Ready(Ok(graceful_report)) = graceful_result else {
+        panic!("graceful shutdown must complete after immediate escalation");
+    };
+    let Poll::Ready(Ok(immediate_report)) = immediate.as_mut().poll(&mut Context::from_waker(Waker::noop())) else {
+        panic!("immediate shutdown must share the completed result");
+    };
+    assert_eq!(graceful_report, immediate_report);
+    *bus_slot.lock().unwrap() = None;
 }
 
 struct DropReenterSpi {
