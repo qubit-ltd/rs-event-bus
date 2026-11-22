@@ -68,15 +68,17 @@ pub enum ReceiveError {
     /// exclusive session lease.
     #[error("cannot run a subscription recursively from its own execution context")]
     WouldDeadlock,
-    /// Dead-letter publication exhausted its configured retry budget; the
-    /// original provider token was left unsettled for recovery.
+    /// Dead-letter construction or forwarding failed. The original provider
+    /// token, if present, remains unsettled for provider recovery.
+    /// Inspect the source error for the cause and any available retry details.
     #[error("dead-letter forwarding failed for event {event_id:?}: {message}")]
     DeadLetterForwardFailed {
         /// Source event whose dead-letter envelope could not be admitted.
         event_id: EventId,
-        /// Last forwarding or admission failure.
+        /// Diagnostic summary of the dead-letter failure.
         message: Box<str>,
-        /// Original forwarding error, including provider and retry evidence.
+        /// Original construction, policy, or forwarding error, which may carry
+        /// retry details.
         #[source]
         source: Box<dyn Error + Send + Sync + 'static>,
     },
