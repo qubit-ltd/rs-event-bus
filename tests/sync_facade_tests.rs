@@ -2684,6 +2684,15 @@ fn test_sync_settlement_success_after_retry_drop_panic_keeps_receiving() {
     }
     assert_eq!(backend.settlement_calls(), 3);
     assert_eq!(backend.settlement_token_states(), ["marked-dead-letter"; 3]);
+    let attempted_dispositions: Vec<_> = backend
+        .state
+        .lock()
+        .expect("state lock")
+        .operations
+        .iter()
+        .filter_map(|(operation, disposition)| (*operation == "settle").then_some(*disposition).flatten())
+        .collect();
+    assert_eq!(attempted_dispositions, [DeliveryDisposition::Accept; 3]);
     subscription.cancel().expect("receiver closes after retry");
     assert_eq!(subscription.delivery_metrics().metrics.completed, 2);
     let _ = cleanup.finish().expect("bus cleanup");

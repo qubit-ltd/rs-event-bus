@@ -398,6 +398,17 @@ mod tests {
         assert_eq!(session.inner.abandoned_deliveries.load(Ordering::Acquire), 2);
         assert!(block_on(session.close_inner(&subscription.control)).is_ok());
         drop(lease);
+        let mut replacement = block_on(
+            bus.subscribe(
+                SubscribeRequest::new(
+                    "close-probe-reused",
+                    Topic::<Payload>::new("close.test").expect("topic"),
+                )
+                .expect("request"),
+            ),
+        )
+        .expect("subscription capacity is reusable after close");
+        block_on(replacement.close()).expect("replacement receiver closes");
         drop(subscription);
         let report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
         assert_eq!(report.known_abandoned_deliveries, 3);
