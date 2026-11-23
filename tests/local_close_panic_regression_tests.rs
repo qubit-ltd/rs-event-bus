@@ -6,12 +6,13 @@
 //    Licensed under the Apache License, Version 2.0.
 // =============================================================================
 
+mod support;
+
 use std::any::TypeId;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::pin::pin;
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
@@ -375,9 +376,10 @@ fn test_async_shutdown_finishes_state_before_payload_drop_panics() {
 
 #[test]
 fn test_sync_close_releases_each_panicking_payload_in_isolated_process() {
-    const CHILD: &str = "LOCAL_CLOSE_PANIC_BATCH_CHILD";
-    if std::env::var_os(CHILD).is_some() {
-        run_batch_case(std::env::var("LOCAL_CLOSE_PANIC_BATCH_CASE").expect("case"));
+    const TEST_NAME: &str = "test_sync_close_releases_each_panicking_payload_in_isolated_process";
+    const CASE_ENV: &str = "QUBIT_EVENT_BUS_ISOLATED_CASE";
+    if let Ok(case) = std::env::var(CASE_ENV) {
+        run_batch_case(case);
         return;
     }
     for case in [
@@ -389,17 +391,7 @@ fn test_sync_close_releases_each_panicking_payload_in_isolated_process() {
         "async_shutdown",
         "unwind_drop",
     ] {
-        let status = Command::new(std::env::current_exe().expect("test executable"))
-            .args([
-                "--exact",
-                "test_sync_close_releases_each_panicking_payload_in_isolated_process",
-                "--nocapture",
-            ])
-            .env(CHILD, "1")
-            .env("LOCAL_CLOSE_PANIC_BATCH_CASE", case)
-            .status()
-            .expect("spawn isolated regression child");
-        assert!(status.success(), "{case} batch cleanup child must survive: {status}");
+        support::isolated_process::run_case_with_timeout(TEST_NAME, case, Duration::from_secs(10));
     }
 }
 
