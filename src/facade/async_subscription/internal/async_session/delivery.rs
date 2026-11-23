@@ -26,9 +26,11 @@ use crate::facade::async_subscription::AsyncEventBusInner;
 use crate::facade::async_subscription::AsyncSession;
 use crate::facade::async_subscription::Id;
 use crate::facade::async_subscription::SessionSignals;
+use crate::facade::async_subscription::SharedAsyncCallback;
 use crate::facade::async_subscription::SharedAsyncHandler;
 use crate::facade::async_subscription::internal::OwnedDeliveryTask;
 use crate::facade::async_subscription::internal::PendingDelivery;
+use crate::facade::async_subscription::internal::async_handler_owner::share_async_callback;
 use crate::facade::async_subscription::internal::delivery_task_context::DeliveryTaskContext;
 use crate::facade::async_subscription::internal::with_subscription_scope;
 use crate::internal::panic_payload::dispose_panic_payload;
@@ -102,18 +104,14 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         let inner = self.inner.clone();
         let metrics = self.metrics.clone();
         let signals = self.signals.clone();
-        let handler = crate::facade::async_subscription::AsyncHandlerOwner::new(
-            move |delivery| {
-                let duration = super::super::handler_duration_guard::HandlerDurationGuard::new(
-                    inner.clone(),
-                    metrics.clone(),
-                    signals.clone(),
-                );
-                Box::pin(HandlerDurationFuture::new(original_handler(delivery), duration))
-            },
-            self.inner.clone(),
-            self.id,
-        );
+        let handler: SharedAsyncCallback<T> = share_async_callback(move |delivery| {
+            let duration = super::super::handler_duration_guard::HandlerDurationGuard::new(
+                inner.clone(),
+                metrics.clone(),
+                signals.clone(),
+            );
+            Box::pin(HandlerDurationFuture::new(original_handler(delivery), duration))
+        });
         let started = Arc::new(AtomicBool::new(false));
         let mut task = DeliveryTaskContext {
             inner: self.inner.clone(),

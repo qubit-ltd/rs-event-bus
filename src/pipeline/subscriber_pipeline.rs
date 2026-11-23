@@ -482,7 +482,7 @@ fn ack_state_error(message: &'static str) -> DeliveryError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::alloc::GlobalAlloc;
     use std::alloc::Layout;
     use std::alloc::System;
@@ -515,6 +515,16 @@ mod tests {
                 ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
             }
         });
+    }
+
+    pub(crate) fn start_allocation_count() {
+        ALLOCATION_COUNT.store(0, Ordering::Relaxed);
+        COUNT_ALLOCATIONS.with(|enabled| enabled.set(true));
+    }
+
+    pub(crate) fn stop_allocation_count() -> usize {
+        COUNT_ALLOCATIONS.with(|enabled| enabled.set(false));
+        ALLOCATION_COUNT.load(Ordering::Relaxed)
     }
 
     unsafe impl GlobalAlloc for CountingAllocator {

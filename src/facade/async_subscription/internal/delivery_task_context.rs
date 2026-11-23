@@ -22,10 +22,11 @@ use std::task::Poll;
 use qubit_id::Id;
 
 use super::super::AsyncEventBusInner;
-use super::super::SharedAsyncHandler;
+use super::super::SharedAsyncCallback;
 use super::BusContextFuture;
 use super::PendingDelivery;
 use super::SessionSignals;
+use super::async_handler_owner::share_async_callback;
 use crate::error::DeliveryError;
 use crate::facade::async_subscription::dead_letter::publish_dead_letter_async;
 use crate::facade::async_subscription::delivery_task::notify_failure;
@@ -86,7 +87,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
     /// delivery. Every actual handler factory has its own stop admission gate;
     /// denied invocations return ownership without synthesizing an application
     /// result, settlement intent, error callback, or dead-letter publication.
-    pub(in crate::facade::async_subscription) async fn process_pending(&mut self, handler: SharedAsyncHandler<T>) {
+    pub(in crate::facade::async_subscription) async fn process_pending(&mut self, handler: SharedAsyncCallback<T>) {
         let Some(pending) = self.pending.as_ref() else {
             return;
         };
@@ -151,19 +152,15 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
         let rejected = denied.clone();
         let signals = self.signals.clone();
         let cancellation = self.options.retry_cancellation_token().cloned();
-        let handler = crate::facade::async_subscription::AsyncHandlerOwner::new(
-            move |delivery| {
-                if cancellation.as_ref().is_some_and(|token| token.is_cancelled()) || !signals.admit_handler() {
-                    rejected.store(true, Ordering::Release);
-                    // The owner observes denial in this same poll and drops the chain.
-                    // No synthetic success or failure reaches middleware or failure policy.
-                    return Box::pin(pending_future());
-                }
-                handler(delivery)
-            },
-            self.inner.clone(),
-            self.id,
-        );
+        let handler: SharedAsyncCallback<T> = share_async_callback(move |delivery| {
+            if cancellation.as_ref().is_some_and(|token| token.is_cancelled()) || !signals.admit_handler() {
+                rejected.store(true, Ordering::Release);
+                // The owner observes denial in this same poll and drops the chain.
+                // No synthetic success or failure reaches middleware or failure policy.
+                return Box::pin(pending_future());
+            }
+            handler(delivery)
+        });
         let attempts = run_with_retry(
             self.options.clone(),
             delivery.clone(),

@@ -20,7 +20,7 @@ mod ordering_lane;
 mod publisher;
 mod retry;
 mod retry_terminal;
-mod subscriber_pipeline;
+pub(crate) mod subscriber_pipeline;
 
 pub(crate) use dead_letter::dead_letter_envelope;
 pub(crate) use dead_letter_admission::was_accepted as dead_letter_was_accepted;
