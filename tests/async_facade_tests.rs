@@ -4946,6 +4946,75 @@ fn test_paused_subscription_releases_all_deliveries_after_multiple_drop_panics()
 }
 
 #[test]
+fn test_paused_subscription_payload_drop_panic_releases_registration() {
+    struct DropProbe {
+        panic_on_drop: bool,
+    }
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            if self.panic_on_drop {
+                panic!("queued payload drop probe");
+            }
+        }
+    }
+
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let config = EventBusFacadeConfig::new().with_delivery_scheduling(
+        DeliverySchedulingConfig::new(
+            std::num::NonZeroUsize::new(1).expect("limit"),
+            std::num::NonZeroUsize::new(3).expect("limit"),
+            std::num::NonZeroUsize::new(3).expect("limit"),
+            std::num::NonZeroUsize::new(1).expect("limit"),
+        )
+        .expect("scheduling"),
+    );
+    let bus =
+        AsyncEventBus::with_config(ProviderId::new("fake").unwrap(), spi.clone(), config).expect("valid provider");
+    let payload_topic = Topic::<DropProbe>::new("single-drop-panic.topic").expect("valid topic");
+    let subscription =
+        block_on(bus.subscribe(SubscribeRequest::new("single-drop-panic", payload_topic.clone()).unwrap()))
+            .expect("subscription");
+    for (event_id, panic_on_drop) in [
+        ("ordinary-first", false),
+        ("panic-second", true),
+        ("ordinary-third", false),
+    ] {
+        spi.enqueue(InboundMessage::new(
+            TopicAddress::new("single-drop-panic.topic").unwrap(),
+            EventId::new(event_id).unwrap(),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            TransportPayload::Native(Arc::new(DropProbe { panic_on_drop })),
+            None,
+            Default::default(),
+        ));
+    }
+    let mut runner = Box::pin(subscription.run(|_| std::future::pending::<Result<(), DeliveryError>>()));
+    let mut metrics = subscription.delivery_metrics().metrics;
+    for _ in 0..1024 {
+        let _ = crate::support::manual_async::poll_once(runner.as_mut());
+        metrics = subscription.delivery_metrics().metrics;
+        if metrics.running_handlers == 1 && metrics.queued == 2 {
+            break;
+        }
+    }
+    assert_eq!(metrics.running_handlers, 1);
+    assert_eq!(metrics.queued, 2);
+    drop(runner);
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(subscription)))
+        .expect_err("dropping the queued payload should unwind");
+    assert_eq!(panic.downcast_ref::<&str>(), Some(&"queued payload drop probe"));
+    assert_eq!(spi.settlement_count(), 0);
+    let replacement =
+        block_on(bus.subscribe(SubscribeRequest::new("single-drop-panic-replacement", payload_topic).unwrap()))
+            .expect("session destruction must return the scheduler subscription slot");
+    drop(replacement);
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("bus closes");
+}
+
+#[test]
 fn test_immediate_close_counts_buffered_delivery_when_payload_drop_panics() {
     struct DropProbe(bool);
     impl Drop for DropProbe {
