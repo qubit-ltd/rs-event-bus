@@ -2183,10 +2183,11 @@ provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过
 
 ```sh
 python3 -B scripts/check_downstream_compatibility.py \
-  --redis-root ../rs-event-bus-redis --task-root ../rs-task
+  --redis-root ../rs-event-bus-redis --task-root ../rs-task \
+  --execution-services-root ../rs-execution-services
 ```
 
-旧参数 `--use-worktrees` 仍可使用，但两个入口都会采用相同的 tracked-source 快照。参数指向输入 checkout；`--core-root` 选择 core checkout，未指定时默认使用包含脚本的检出目录。Redis 与 rs-task 的已跟踪文件会复制到临时快照，core 则保持在所选路径，因此复现期间须保持 core 输入稳定。检查器把已跟踪文件（包括已跟踪但未提交的改动和 lockfile）复制到临时快照，再在那里解析并运行 Cargo。未跟踪输入不会复制，解析产生的新 lockfile 也不会写回输入 checkout。需要参与检查的文件应先纳入 Git 跟踪；若验证依赖未跟踪文件，请在专用工作副本自行运行 Cargo 检查。metadata 解析、locked 依赖图校验、精确测试枚举和执行都使用所选快照，并显式 patch 到所选 core checkout。具体机制见[设计说明](design.zh_CN.md#使用下游消费者验证当前-core)。
+旧参数 `--use-worktrees` 仍可使用，但两个入口都会采用相同的 tracked-source 快照。参数指向输入 checkout；`--core-root` 选择 core checkout，未指定时默认使用包含脚本的检出目录。Redis、rs-task 和 execution-services fixture 会复制到临时快照，core 则保持在所选路径，因此复现期间须保持 core 输入稳定。execution-services 检查会从 fixture manifest 递归发现本地 path 依赖和 patch，并按相对布局复制所需同级仓库；缺失或越界路径会连同引用它的 manifest 一起报告。不传 `--execution-services-root` 时仍运行原有 Redis 与 task 检查，输出会说明未选择 IoC 检查。检查器把已跟踪文件（包括已跟踪但未提交的改动和 lockfile）复制到临时快照，再在那里解析并运行 Cargo。未跟踪输入不会复制，解析产生的新 lockfile 也不会写回输入 checkout。需要参与检查的文件应先纳入 Git 跟踪；若验证依赖未跟踪文件，请在专用工作副本自行运行 Cargo 检查。metadata 解析、locked 依赖图校验、精确测试枚举和执行都使用所选快照，并显式 patch 到所选 core checkout。具体机制见[设计说明](design.zh_CN.md#使用下游消费者验证当前-core)。
 - 后续源码变更使投递指标快照只用于观察；该变更晚于 `v0.21.4`，尚无对应发行标签。升级到包含它的发行版后，应把 `oldest_owned_age == None` 视为样本不可用，并通过 `terminal_failure()` 或异步 `run()` 判断订阅是否停止。详见[迁移指南](migration.zh_CN.md#core-0214-之后的投递指标快照)。
 
 ## 边界与实践清单

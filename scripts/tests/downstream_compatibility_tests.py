@@ -11,6 +11,8 @@ import unittest
 from unittest.mock import patch
 
 from scripts.check_downstream_compatibility import cargo_config
+from scripts.check_downstream_compatibility import TESTS
+from scripts.check_downstream_compatibility import discover_local_repositories
 from scripts.check_downstream_compatibility import main
 from scripts.check_downstream_compatibility import metadata
 from scripts.check_downstream_compatibility import run
@@ -20,6 +22,61 @@ from scripts.tests.process_test_support import wait_for_process_exit
 
 
 class DownstreamCompatibilityTests(unittest.TestCase):
+    def test_test_configurations_record_relative_manifest_target_and_exact_test_name(self):
+        configurations = {(entry.root, entry.manifest, entry.target, entry.test_name)
+                          for entry in TESTS}
+        self.assertEqual(configurations, {
+            ("redis", "Cargo.toml", "sync_standalone_tests", "test_sync_spi_conformance"),
+            ("redis", "Cargo.toml", "async_standalone_tests", "test_async_spi_conformance"),
+            ("rs-task", "Cargo.toml", "typed_service_tests",
+             "service::typed_task_execution_tests::test_cancelled_submit_wakes_durable_outbox_publisher"),
+            ("redis", "Cargo.toml", "wire_limit_tests",
+             "durable::test_real_core_codec_failures_leave_redis_durable_record_recoverable"),
+            ("execution-services", "tests/fixtures/ioc_application_consumer/Cargo.toml",
+             "managed_event_bus_tests", "test_blocked_handler_graceful_request_cancel_resume"),
+            ("execution-services", "tests/fixtures/ioc_application_consumer/Cargo.toml",
+             "managed_event_bus_tests", "test_blocked_handler_request_cancel_resume_and_abort_upgrade"),
+            ("execution-services", "tests/fixtures/ioc_application_consumer/Cargo.toml",
+             "managed_event_bus_tests", "test_provider_timed_out_report_reaches_container_diagnostic"),
+        })
+
+    def test_execution_services_discovers_recursive_path_dependencies_and_patches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory) / "siblings"
+            execution = parent / "rs-execution-services"
+            fixture = execution / "tests/fixtures/ioc_application_consumer"
+            fixture.mkdir(parents=True)
+            (fixture / "Cargo.toml").write_text(
+                '[dependencies]\nlocal-a = { path = "../../../../rs-local-a" }\n'
+                '[patch.crates-io]\nlocal-b = { path = "../../../../rs-local-b" }\n')
+            local_a = parent / "rs-local-a"
+            local_a.mkdir()
+            (local_a / "Cargo.toml").write_text(
+                '[dependencies]\nlocal-c = { path = "../rs-local-c" }\n')
+            for name in ("rs-local-b", "rs-local-c"):
+                (parent / name).mkdir()
+                (parent / name / "Cargo.toml").write_text("[package]\nname='local'\n")
+
+            discovered = discover_local_repositories(fixture / "Cargo.toml", parent)
+
+            self.assertEqual(set(discovered), {execution.resolve(), local_a.resolve(),
+                                               (parent / "rs-local-b").resolve(),
+                                               (parent / "rs-local-c").resolve()})
+
+    def test_execution_services_rejects_missing_and_out_of_bounds_path_with_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory) / "siblings"
+            fixture = parent / "rs-execution-services/tests/fixtures/consumer"
+            fixture.mkdir(parents=True)
+            manifest = fixture / "Cargo.toml"
+            manifest.write_text('[dependencies]\nmissing = { path = "../../../../missing" }\n')
+            with self.assertRaisesRegex(ValueError, r"Cargo.toml.*missing"):
+                discover_local_repositories(manifest, parent)
+
+            manifest.write_text('[dependencies]\noutside = { path = "../../../../../outside" }\n')
+            with self.assertRaisesRegex(ValueError, r"Cargo.toml.*outside"):
+                discover_local_repositories(manifest, parent)
+
     def test_cargo_patch_points_at_requested_core_and_redis_checkouts(self):
         args = cargo_config(Path("/core checkout"), Path("/redis checkout"))
         self.assertEqual(args, [
@@ -56,6 +113,17 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             }],
         }
         validate_graph_for_downstream(graph, expected_core=Path("/core"), expected_redis=Path("/redis"))
+
+        graph["packages"][0]["manifest_path"] = "/other-core/Cargo.toml"
+        with self.assertRaisesRegex(ValueError, "expected local core"):
+            validate_graph_for_downstream(graph, expected_core=Path("/core"),
+                                          expected_redis=Path("/redis"))
+        graph["packages"][0]["manifest_path"] = "/core/Cargo.toml"
+        graph["packages"][0]["source"] = "registry+https://github.com/rust-lang/crates.io-index"
+        with self.assertRaisesRegex(ValueError, "expected local core"):
+            validate_graph_for_downstream(graph, expected_core=Path("/core"),
+                                          expected_redis=Path("/redis"))
+        graph["packages"][0]["source"] = None
 
         graph["packages"][1]["manifest_path"] = "/other-redis/Cargo.toml"
         with self.assertRaisesRegex(ValueError, "expected local Redis provider"):
@@ -304,6 +372,71 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                                      (root / "Cargo.lock").stat().st_mtime_ns)
                               for root in (redis, task)}, original)
 
+    def test_execution_services_missing_local_path_leaves_all_input_files_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            redis = self.make_input_repository(base / "rs-event-bus-redis", "redis")
+            task = self.make_input_repository(base / "rs-task", "rs-task")
+            execution = self.make_input_repository(base / "rs-execution-services", "execution")
+            fixture = execution / "tests/fixtures/ioc_application_consumer"
+            fixture.mkdir(parents=True)
+            manifest = fixture / "Cargo.toml"
+            manifest.write_text('[dependencies]\nmissing = { path = "../../../../missing" }\n')
+            subprocess.run(["git", "-C", str(execution), "add", str(manifest.relative_to(execution))],
+                           check=True)
+            subprocess.run(["git", "-C", str(execution), "commit", "-qm", "fixture"], check=True)
+            inputs = (redis, task, execution)
+            original = {path: {file.relative_to(path): (file.read_bytes(), file.stat().st_mtime_ns)
+                               for file in path.rglob("*") if file.is_file() and ".git" not in file.parts}
+                        for path in inputs}
+            argv = ["check_downstream_compatibility.py", "--redis-root", str(redis),
+                    "--task-root", str(task), "--execution-services-root", str(execution)]
+            with patch("sys.argv", argv):
+                with self.assertRaisesRegex(ValueError, "missing local path") as error:
+                    main()
+            self.assertIn(str(manifest), str(error.exception))
+            self.assertEqual(original, {
+                path: {file.relative_to(path): (file.read_bytes(), file.stat().st_mtime_ns)
+                       for file in path.rglob("*") if file.is_file() and ".git" not in file.parts}
+                for path in inputs
+            })
+
+    def test_execution_services_snapshot_preserves_nested_relative_dependency_layout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            redis = self.make_input_repository(base / "rs-event-bus-redis", "redis")
+            task = self.make_input_repository(base / "rs-task", "rs-task")
+            execution = self.make_input_repository(base / "rs-execution-services", "execution")
+            sibling = self.make_input_repository(base / "rs-local-dependency", "local")
+            fixture = execution / "tests/fixtures/ioc_application_consumer"
+            fixture.mkdir(parents=True)
+            manifest = fixture / "Cargo.toml"
+            manifest.write_text('[dependencies]\nlocal = { path = "../../../../rs-local-dependency" }\n')
+            subprocess.run(["git", "-C", str(execution), "add", str(manifest.relative_to(execution))],
+                           check=True)
+            subprocess.run(["git", "-C", str(execution), "commit", "-qm", "fixture"], check=True)
+            argv = ["check_downstream_compatibility.py", "--redis-root", str(redis),
+                    "--task-root", str(task), "--execution-services-root", str(execution)]
+            seen = []
+
+            def metadata_snapshot(root, _features, _core, _redis, _target, **_kwargs):
+                if root.name == "rs-execution-services":
+                    dependency = root.parent / "rs-local-dependency"
+                    self.assertTrue((dependency / "Cargo.toml").is_file())
+                    self.assertEqual((dependency / "src/lib.rs").read_text(),
+                                     "pub fn locally_edited() {}\n")
+                    self.assertTrue((root / "tests/fixtures/ioc_application_consumer/Cargo.toml").is_file())
+                    seen.append(root)
+                return {}
+
+            with patch("sys.argv", argv), \
+                    patch("scripts.check_downstream_compatibility.metadata",
+                          side_effect=metadata_snapshot), \
+                    patch("scripts.check_downstream_compatibility.verify_test") as verify:
+                main()
+            self.assertEqual(len(seen), 1)
+            self.assertEqual(verify.call_count, 7)
+
     def test_worktrees_alias_uses_tracked_snapshots_and_does_not_touch_input_locks(self):
         with tempfile.TemporaryDirectory() as directory:
             core = self.make_input_repository(Path(directory) / "core", "core")
@@ -316,7 +449,7 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             metadata_roots = []
 
             def capture_metadata(root, _features, requested_core, redis_patch, _target,
-                                 *, expected_redis=None):
+                                 *, expected_redis=None, manifest=None, all_features=False):
                 metadata_roots.append(root)
                 self.assertNotIn(root, (redis, task))
                 self.assertEqual((root / "src/lib.rs").read_text(),
@@ -338,13 +471,14 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                     patch("scripts.check_downstream_compatibility.metadata",
                           side_effect=capture_metadata), \
                     patch("scripts.check_downstream_compatibility.verify_test",
-                          side_effect=lambda root, *_args: self.assertIn(
+                          side_effect=lambda root, *_args, **_kwargs: self.assertIn(
                               b"snapshot resolution", (root / "Cargo.lock").read_bytes())) as verify, \
                     contextlib.redirect_stdout(stdout):
                 main()
 
             self.assertEqual([root.name for root in metadata_roots], ["redis", "rs-task"])
-            self.assertEqual(verify.call_count, 3)
+            self.assertEqual(verify.call_count, 4)
+            self.assertIn("IoC checks not selected", stdout.getvalue())
             self.assertEqual((redis / "Cargo.lock").read_bytes(),
                              b"concurrent external update\n")
             self.assertEqual((task / "Cargo.lock").read_bytes(), input_locks[task])
@@ -383,6 +517,7 @@ class DownstreamCompatibilityTests(unittest.TestCase):
         self.assertEqual(error.exception.code, 0)
         self.assertIn("compatibility alias", stdout.getvalue())
         self.assertIn("tracked-source snapshots", stdout.getvalue())
+        self.assertIn("--execution-services-root", stdout.getvalue())
 
 
 if __name__ == "__main__":
