@@ -1079,6 +1079,7 @@ fn attempt_settlement<T>(
     inner.scheduler.set_dispatch_active(control.id, true);
     match result {
         Ok(()) => {
+            let previous_error = delivery.last_error.take();
             if let Err(error) = control
                 .delivery_metrics
                 .record_settlement_duration(started, inner.clock.now())
@@ -1106,6 +1107,7 @@ fn attempt_settlement<T>(
                 );
             }
             delivery.settlement = None;
+            dispose_replaced_settlement_error(previous_error);
             None
         }
         Err(error) => {

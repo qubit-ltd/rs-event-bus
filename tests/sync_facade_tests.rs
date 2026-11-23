@@ -2622,6 +2622,74 @@ fn test_sync_replaced_settlement_error_drop_panic_does_not_interrupt_retry() {
 }
 
 #[test]
+fn test_sync_settlement_success_after_retry_drop_panic_keeps_receiving() {
+    let backend = Arc::new(TestBackend::new());
+    let source_drops = Arc::new(AtomicUsize::new(0));
+    {
+        let mut state = backend.state.lock().expect("state lock");
+        state.fail_settle_always = true;
+        state.settlement_retryability = Some(true);
+        state.panic_on_first_settlement_error_drop = Some(source_drops.clone());
+    }
+    let config = EventBusFacadeConfig::new().with_settlement_retry(
+        SettlementRetryConfig::new(
+            NonZeroU32::new(2).expect("two attempts"),
+            Duration::from_secs(10),
+            Duration::from_millis(100),
+            Duration::from_millis(100),
+        )
+        .expect("valid retry policy"),
+    );
+    let bus =
+        EventBus::with_config(ProviderId::new("sync-test").expect("provider"), backend.clone(), config).expect("bus");
+    let cleanup = SyncBusCleanup::new(bus.clone());
+    let handled = Arc::new(AtomicUsize::new(0));
+    let observed = handled.clone();
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new("sync-success-retry-drop-panic", topic()).expect("request"),
+            move |_: Delivery<String>| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .expect("subscription");
+    backend.enqueue_marked(subscription.id());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while backend.settlement_calls() < 1 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(backend.settlement_calls(), 1);
+    {
+        let mut state = backend.state.lock().expect("state lock");
+        state.fail_settle_always = false;
+    }
+    let retry_deadline = Instant::now() + Duration::from_secs(2);
+    while (backend.settlement_calls() < 2 || source_drops.load(Ordering::Acquire) == 0)
+        && Instant::now() < retry_deadline
+    {
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(backend.settlement_calls(), 2);
+    assert_eq!(source_drops.load(Ordering::Acquire), 1);
+    backend.enqueue_marked(subscription.id());
+    let handler_deadline = Instant::now() + Duration::from_secs(2);
+    while handled.load(Ordering::Acquire) < 2 && Instant::now() < handler_deadline {
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(handled.load(Ordering::Acquire), 2, "worker continues after retry");
+    let settlement_deadline = Instant::now() + Duration::from_secs(2);
+    while backend.settlement_calls() < 3 && Instant::now() < settlement_deadline {
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(backend.settlement_calls(), 3);
+    assert_eq!(backend.settlement_token_states(), ["marked-dead-letter"; 3]);
+    subscription.cancel().expect("receiver closes after retry");
+    assert_eq!(subscription.delivery_metrics().metrics.completed, 2);
+    let _ = cleanup.finish().expect("bus cleanup");
+}
+
+#[test]
 fn test_sync_permanent_settlement_stops_automatically_and_closes_receiver() {
     let (bus, backend) = create_bus();
     let cleanup = SyncBusCleanup::new(bus.clone());

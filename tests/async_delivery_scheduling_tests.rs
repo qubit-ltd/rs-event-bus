@@ -1161,6 +1161,44 @@ fn test_async_replaced_settlement_error_drop_panic_preserves_terminal_retry() {
 }
 
 #[test]
+fn test_async_settlement_success_after_retry_drop_panic_keeps_receiving() {
+    let (bus, fake, probe, clock) = setup(config(1, 4, 4, 2, 4));
+    probe
+        .failures
+        .lock()
+        .expect("injected failure queue mutex must not be poisoned")
+        .push_back(Some(true));
+    probe.panic_next_settlement_source_drop.store(true, Ordering::SeqCst);
+    let mut sub = subscribe(&bus, "async-success-retry-drop-panic");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    enqueue(&fake, sub.id(), 1, "A");
+    let mut run = Box::pin(sub.run(move |_| {
+        observed.fetch_add(1, Ordering::SeqCst);
+        async { Ok(()) }
+    }));
+    poll_pending(run.as_mut());
+    assert_eq!(probe.attempts.lock().expect("attempt log").len(), 1);
+
+    clock.advance(Duration::from_millis(10)).expect("advance retry backoff");
+    poll_pending(run.as_mut());
+    assert_eq!(probe.settlement_source_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    enqueue(&fake, sub.id(), 2, "B");
+    poll_pending(run.as_mut());
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let attempts = probe.attempts.lock().expect("attempt log");
+    assert_eq!(attempts.len(), 3);
+    assert_eq!(attempts[0], attempts[1]);
+    assert_eq!(attempts[2].1, DeliveryDisposition::Accept);
+    drop(attempts);
+    let metrics = sub.delivery_metrics().metrics;
+    assert_eq!((metrics.completed, metrics.abandoned_ephemeral), (2, 0));
+    drop(run);
+    block_on(sub.close()).expect("subscription close must succeed");
+}
+
+#[test]
 fn test_cancelled_settlement_replaces_panicking_old_error_after_recording_pause() {
     let (bus, fake, probe, clock) = setup(config(1, 4, 4, 2, 4));
     probe

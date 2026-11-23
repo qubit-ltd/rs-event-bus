@@ -256,6 +256,15 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// the current callback and start it from an independent caller.
     /// Synchronous waiter wakes caused by returning this runner's session lease
     /// are also covered by the same-bus shutdown reentrancy check.
+    /// A failed dead-letter forward returns
+    /// [`ReceiveError::DeadLetterForwardFailed`]. The original delivery remains
+    /// unsettled, and the error chain contains the forwarding failure for
+    /// diagnosis. After the runner stops, subscribe again and let the provider
+    /// recover the unsettled delivery according to its recovery contract. See
+    /// the dead-letter guidance in the [English user
+    /// guide](../../doc/user_guide.md#keep-an-event-that-fails-for-good)
+    /// and [Chinese user
+    /// guide](../../doc/user_guide.zh_CN.md#保存最终处理失败的事件).
     ///
     /// # Panics
     /// Panics if the session lease invariant is violated internally. If SPI

@@ -239,14 +239,23 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         let ephemeral = self.inner.capabilities.durability() == DurabilityCapability::Ephemeral;
         let abandoned = &self.inner.abandoned_deliveries;
         let metrics = &self.metrics;
-        self.tasks.retain(|task| {
-            let started = task.started.load(Ordering::Acquire);
-            if !started && ephemeral {
+        let mut drop_panicked = false;
+        for task in self.tasks.extract_if(.., |task| !task.started.load(Ordering::Acquire)) {
+            if ephemeral {
                 abandoned.fetch_add(1, Ordering::AcqRel);
                 metrics.record_abandoned_ephemeral();
             }
-            started
-        });
+            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(task))) {
+                dispose_panic_payload(payload);
+                drop_panicked = true;
+            }
+        }
+        if drop_panicked {
+            self.inner.emit(&crate::Diagnostic::InternalFailure {
+                origin: "unstarted_task_drop".into(),
+                message: "unstarted handler task drop panicked".into(),
+            });
+        }
     }
 }
 
@@ -255,6 +264,7 @@ mod tests {
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Arc;
+    use std::sync::Mutex;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
     use std::task::Context;
@@ -345,6 +355,11 @@ mod tests {
     #[test]
     fn test_discard_unstarted_tasks_counts_removed_delivery_before_drop_panic() {
         let (bus, subscription) = setup();
+        let diagnostics = Arc::new(Mutex::new(Vec::new()));
+        let captured = diagnostics.clone();
+        let _observer = bus.observe_diagnostics(move |diagnostic| {
+            captured.lock().expect("diagnostic lock").push(diagnostic.clone());
+        });
         let mut lease = block_on(subscription.control.lease()).expect("session lease");
         let session = lease.session.as_mut().expect("leased session");
         session.inner.scheduler.set_dispatch_active(session.id, true);
@@ -361,25 +376,31 @@ mod tests {
         session.start_pending_task(panicking, handler);
         assert!(poll_once(session.tasks[0].future.as_mut()).is_pending());
         assert!(session.tasks[0].started.load(Ordering::Acquire));
+        lease_receive(session, "ordinary-unstarted", false);
+        let id = session.inner.scheduler.take_ready(session.id).expect("dispatch grant");
+        let unstarted = session.buffered.pop_front().expect("unstarted delivery");
+        assert_eq!(unstarted.lease.id, id);
+        let handler: SharedAsyncHandler<Payload> = Arc::new(|_| Box::pin(std::future::pending()));
+        session.start_pending_task(unstarted, handler);
         session.signals.stop(ShutdownMode::Immediate);
-
-        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            session.discard_unstarted_tasks();
-        }))
-        .expect_err("the unstarted task owns a panicking payload");
-        assert_eq!(panic.downcast_ref::<&str>(), Some(&"abandoned payload probe"));
-        assert_eq!(session.tasks.len(), 1);
-        assert!(session.tasks[0].started.load(Ordering::Acquire));
-        assert_eq!(session.inner.abandoned_deliveries.load(Ordering::Acquire), 1);
-        assert_eq!(subscription.delivery_metrics().metrics.abandoned_ephemeral, 1);
 
         session.discard_unstarted_tasks();
         assert_eq!(session.tasks.len(), 1);
-        assert_eq!(session.inner.abandoned_deliveries.load(Ordering::Acquire), 1);
+        assert!(session.tasks[0].started.load(Ordering::Acquire));
+        assert_eq!(session.inner.abandoned_deliveries.load(Ordering::Acquire), 2);
+        assert_eq!(subscription.delivery_metrics().metrics.abandoned_ephemeral, 2);
+        assert!(diagnostics.lock().expect("diagnostic lock").iter().any(|diagnostic| {
+            matches!(diagnostic, crate::Diagnostic::InternalFailure { origin, .. } if origin.as_ref() == "unstarted_task_drop")
+        }));
+
+        session.discard_unstarted_tasks();
+        assert_eq!(session.tasks.len(), 1);
+        assert_eq!(session.inner.abandoned_deliveries.load(Ordering::Acquire), 2);
+        assert!(block_on(session.close_inner(&subscription.control)).is_ok());
         drop(lease);
         drop(subscription);
         let report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
-        assert_eq!(report.known_abandoned_deliveries, 2);
+        assert_eq!(report.known_abandoned_deliveries, 3);
     }
 
     #[test]

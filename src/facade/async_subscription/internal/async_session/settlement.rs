@@ -448,11 +448,13 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         }
         self.metrics.record_completed();
         let mut pending = self.completed.remove(index).expect("selected owned delivery");
+        let previous_error = pending.settlement.last_error.take();
         self.emit_failure_diagnostic(
             pending.failure_diagnostic.take(),
             pending.event_id.clone(),
             self.topic.name().into(),
         );
+        dispose_previous_settlement_error(previous_error);
     }
 
     /// Releases facade ownership without acknowledging provider-owned durable
