@@ -49,6 +49,8 @@ pub(super) struct NotificationStats {
     pub(super) admission_no_destinations: AtomicU64,
     /// Number of opaque provider acceptance receipts.
     pub(super) admission_opaque_accepted: AtomicU64,
+    /// Number of receipts reporting a send without confirmation.
+    pub(super) admission_sent_unconfirmed: AtomicU64,
     /// Number of receipts reporting an interceptor drop.
     pub(super) admission_dropped: AtomicU64,
 }
@@ -79,6 +81,7 @@ impl NotificationStats {
             admission_none_accepted: load(&self.admission_none_accepted),
             admission_no_destinations: load(&self.admission_no_destinations),
             admission_opaque_accepted: load(&self.admission_opaque_accepted),
+            admission_sent_unconfirmed: load(&self.admission_sent_unconfirmed),
             admission_dropped: load(&self.admission_dropped),
         }
     }
@@ -95,7 +98,7 @@ impl NotificationStats {
             AdmissionOutcome::NoneAccepted(_) => &self.admission_none_accepted,
             AdmissionOutcome::NoDestinations => &self.admission_no_destinations,
             AdmissionOutcome::OpaqueAccepted => &self.admission_opaque_accepted,
-            AdmissionOutcome::SentUnconfirmed => return,
+            AdmissionOutcome::SentUnconfirmed => &self.admission_sent_unconfirmed,
             AdmissionOutcome::Dropped => &self.admission_dropped,
         };
         Self::increment(counter);
@@ -126,6 +129,7 @@ mod tests {
         assert_eq!(0, stats.snapshot().admission_none_accepted());
         assert_eq!(0, stats.snapshot().admission_no_destinations());
         assert_eq!(0, stats.snapshot().admission_opaque_accepted());
+        assert_eq!(0, stats.snapshot().admission_sent_unconfirmed());
         assert_eq!(0, stats.snapshot().admission_dropped());
 
         stats.record_admission(AdmissionOutcome::Accepted(AdmissionSummary::default()));
@@ -141,7 +145,14 @@ mod tests {
         assert_eq!(1, snapshot.admission_none_accepted());
         assert_eq!(1, snapshot.admission_no_destinations());
         assert_eq!(1, snapshot.admission_opaque_accepted());
+        assert_eq!(1, snapshot.admission_sent_unconfirmed());
         assert_eq!(1, snapshot.admission_dropped());
+
+        stats
+            .admission_sent_unconfirmed
+            .store(u64::MAX, std::sync::atomic::Ordering::Relaxed);
+        stats.record_admission(AdmissionOutcome::SentUnconfirmed);
+        assert_eq!(u64::MAX, stats.snapshot().admission_sent_unconfirmed());
 
         stats
             .admission_accepted

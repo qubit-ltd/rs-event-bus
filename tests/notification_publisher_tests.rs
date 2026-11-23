@@ -32,6 +32,7 @@ use qubit_event_bus::NotificationOutcome;
 use qubit_event_bus::NotificationPublisher;
 use qubit_event_bus::TryPublishError;
 use qubit_event_bus::WaitOutcome;
+use qubit_event_bus::WeightedNotificationPublisher;
 use qubit_event_bus::error::PublishError;
 use qubit_event_bus::error::SpiError;
 use qubit_event_bus::local::LocalEventBusConfig;
@@ -173,6 +174,7 @@ fn test_notification_publisher_counts_each_admission_receipt_class() {
             provider_message_id: None,
             metadata: Default::default(),
         },
+        PublishAcknowledgement::SentUnconfirmed,
     ]);
     let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone())
         .expect("valid provider capabilities");
@@ -188,26 +190,63 @@ fn test_notification_publisher_counts_each_admission_receipt_class() {
     let publisher = NotificationPublisher::with_publish_options(
         bus,
         Topic::<String>::new_static("notification.classes"),
-        NonZeroUsize::new(6).unwrap(),
+        NonZeroUsize::new(7).unwrap(),
         options,
         |_| {},
     )
     .unwrap();
 
-    for payload in ["accepted", "partial", "none", "empty", "opaque", "dropped"] {
+    for payload in [
+        "accepted",
+        "partial",
+        "none",
+        "empty",
+        "opaque",
+        "dropped",
+        "unconfirmed",
+    ] {
         publisher.try_publish(payload.to_owned()).unwrap();
     }
     spi.release();
     publisher.close().unwrap();
 
     let stats = publisher.stats();
-    assert_eq!(6, stats.published());
+    assert_eq!(7, stats.published());
+    assert_eq!(1, stats.admission_sent_unconfirmed());
     assert_eq!(1, stats.admission_accepted());
     assert_eq!(1, stats.admission_partially_accepted());
     assert_eq!(1, stats.admission_none_accepted());
     assert_eq!(1, stats.admission_no_destinations());
     assert_eq!(1, stats.admission_opaque_accepted());
     assert_eq!(1, stats.admission_dropped());
+}
+
+#[test]
+fn test_weighted_notification_publisher_counts_sent_unconfirmed_receipt() {
+    let spi = Arc::new(GatedSpi::new());
+    *spi.acknowledgements.lock().unwrap() = VecDeque::from([PublishAcknowledgement::SentUnconfirmed]);
+    let bus = EventBus::from_spi(ProviderId::new("notification-test").unwrap(), spi.clone())
+        .expect("valid provider capabilities");
+    let publisher = WeightedNotificationPublisher::new(
+        bus,
+        Topic::<String>::new_static("notification.weighted.unconfirmed"),
+        NonZeroUsize::new(1).unwrap(),
+        NonZeroUsize::new(8).unwrap(),
+        |_| {},
+    )
+    .unwrap();
+    publisher
+        .try_publish("uncertain".to_owned(), NonZeroUsize::new(1).unwrap())
+        .unwrap();
+    spi.entered
+        .lock()
+        .unwrap()
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+    spi.release();
+    publisher.close().unwrap();
+    assert_eq!(1, publisher.stats().published());
+    assert_eq!(1, publisher.stats().admission_sent_unconfirmed());
 }
 
 #[test]
@@ -485,6 +524,7 @@ fn test_notification_stats_snapshot_exposes_all_counters() {
     assert_eq!(0, snapshot.admission_none_accepted());
     assert_eq!(0, snapshot.admission_no_destinations());
     assert_eq!(1, snapshot.admission_opaque_accepted());
+    assert_eq!(0, snapshot.admission_sent_unconfirmed());
     assert_eq!(0, snapshot.admission_dropped());
 }
 

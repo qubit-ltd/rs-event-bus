@@ -19,7 +19,7 @@ use crate::model::AdmissionOutcome;
 use crate::model::DuplicateRiskPolicy;
 use crate::model::PublishEffect;
 use crate::pipeline::DeadLetterForwardError;
-use crate::pipeline::retry::uncertainty_allows_retry;
+use crate::pipeline::retry::possible_admission_allows_retry;
 
 /// Builds a retry flow using the subscription's bounded retry and backoff
 /// budget.
@@ -49,7 +49,7 @@ pub(crate) fn retry_config(policy: &RetryPolicy) -> Result<RetryConfig<DeadLette
                 )) => PublishEffect::NotAccepted,
                 Some(DeadLetterForwardError::NotAdmitted(_)) | None => PublishEffect::MayHaveBeenAccepted,
             };
-            if uncertainty_allows_retry(effect, DuplicateRiskPolicy::Forbid) {
+            if possible_admission_allows_retry(effect, DuplicateRiskPolicy::Forbid) {
                 RetryDecision::Retry
             } else {
                 RetryDecision::Abort

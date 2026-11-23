@@ -147,7 +147,7 @@ impl PublisherPipeline {
             PublishPreparation::Ready(prepared) => *prepared,
         };
         let PreparedPublish { options, outbound, .. } = &prepared;
-        let seen_unknown = Cell::new(false);
+        let possible_admission_seen = Cell::new(false);
         let seen_admission = Cell::new(false);
         let result = retry::publish_sync(
             spi,
@@ -157,14 +157,16 @@ impl PublisherPipeline {
             options.retry_rule(),
             options.retry_cancellation_token(),
             options.duplicate_risk_policy(),
-            &seen_unknown,
+            &possible_admission_seen,
             &seen_admission,
         );
         match result {
             Ok(acknowledgement) => {
-                Ok(self.finish_publish_success(prepared, acknowledgement, seen_unknown.get(), observers))
+                Ok(self.finish_publish_success(prepared, acknowledgement, possible_admission_seen.get(), observers))
             }
-            Err(error) => Err(self.finish_publish_failure(&prepared, error, seen_unknown.get(), seen_admission.get())),
+            Err(error) => {
+                Err(self.finish_publish_failure(&prepared, error, possible_admission_seen.get(), seen_admission.get()))
+            }
         }
     }
 
@@ -204,7 +206,7 @@ impl PublisherPipeline {
             PublishPreparation::Ready(prepared) => *prepared,
         };
         let PreparedPublish { options, outbound, .. } = &prepared;
-        let seen_unknown = Arc::new(AtomicBool::new(false));
+        let possible_admission_seen = Arc::new(AtomicBool::new(false));
         let seen_admission = Arc::new(AtomicBool::new(false));
         let result = retry::publish_async(
             spi,
@@ -215,7 +217,7 @@ impl PublisherPipeline {
             options.retry_cancellation_token(),
             timer,
             options.duplicate_risk_policy(),
-            seen_unknown.clone(),
+            possible_admission_seen.clone(),
             seen_admission.clone(),
         )
         .await;
@@ -223,13 +225,13 @@ impl PublisherPipeline {
             Ok(acknowledgement) => Ok(self.finish_publish_success(
                 prepared,
                 acknowledgement,
-                seen_unknown.load(Ordering::Acquire),
+                possible_admission_seen.load(Ordering::Acquire),
                 observers,
             )),
             Err(error) => Err(self.finish_publish_failure(
                 &prepared,
                 error,
-                seen_unknown.load(Ordering::Acquire),
+                possible_admission_seen.load(Ordering::Acquire),
                 seen_admission.load(Ordering::Acquire),
             )),
         }
@@ -365,7 +367,7 @@ impl PublisherPipeline {
         })))
     }
 
-    /// Builds a successful receipt without discarding earlier unknown evidence.
+    /// Builds a successful receipt without discarding earlier possible-admission evidence.
     ///
     /// # Type Parameters
     /// - `T`: Thread-safe event payload retained in the prepared publication.
@@ -418,7 +420,7 @@ impl PublisherPipeline {
     /// # Parameters
     /// - `prepared`: Context and handlers prepared once for the publication.
     /// - `error`: Original terminal error returned by the retry adapter.
-    /// - `seen_unknown`: Whether any attempt may have been admitted.
+    /// - `possible_admission_seen`: Whether any attempt may have been admitted.
     /// - `seen_admission`: Whether any attempt acknowledged admission.
     ///
     /// # Returns
@@ -431,11 +433,11 @@ impl PublisherPipeline {
         &self,
         prepared: &PreparedPublish<T>,
         error: PublishError,
-        seen_unknown: bool,
+        possible_admission_seen: bool,
         seen_admission: bool,
     ) -> PipelineFailure {
         let origin = publish_failure_origin(&error);
-        let effect = if seen_unknown || seen_admission {
+        let effect = if possible_admission_seen || seen_admission {
             PublishEffect::MayHaveBeenAccepted
         } else {
             error.publish_effect()

@@ -19,8 +19,10 @@ use std::sync::Arc;
 use qubit_event_bus::SubscriberId;
 use qubit_event_bus::codec::EventCodec;
 use qubit_event_bus::error::CodecError;
+use qubit_event_bus::model::AdmissionStatus;
 use qubit_event_bus::model::BatchPublishResult;
 use qubit_event_bus::model::ContentType;
+use qubit_event_bus::model::DestinationAdmission;
 use qubit_event_bus::model::EventId;
 use qubit_event_bus::model::ProviderId;
 use qubit_event_bus::model::PublishAcknowledgement;
@@ -173,17 +175,25 @@ fn test_publish_receipts_and_batches_report_admission_outcomes() {
         EventId::new("input").expect("valid event ID"),
         Some(EventId::new("dispatched").expect("valid event ID")),
         provider_id,
-        PublishAcknowledgement::Accepted {
-            provider_message_id: Some("message-1".into()),
-            metadata: Default::default(),
-        },
+        PublishAcknowledgement::DestinationAdmissions(vec![
+            DestinationAdmission::new(
+                qubit_id::Id::new(1),
+                SubscriberId::new("partial-accepted").expect("valid subscriber ID"),
+                AdmissionStatus::Accepted,
+            ),
+            DestinationAdmission::new(
+                qubit_id::Id::new(2),
+                SubscriberId::new("partial-rejected").expect("valid subscriber ID"),
+                AdmissionStatus::Rejected("full".into()),
+            ),
+        ]),
     );
     assert_eq!(receipt.input_event_id().as_str(), "input");
     assert_eq!(receipt.dispatched_event_id().map(EventId::as_str), Some("dispatched"));
     assert_eq!(receipt.provider_id().as_str(), "local");
     assert!(matches!(
         receipt.acknowledgement(),
-        PublishAcknowledgement::Accepted { .. }
+        PublishAcknowledgement::DestinationAdmissions(admissions) if admissions.len() == 2
     ));
 
     let dropped = PublishReceipt::new(
@@ -201,7 +211,8 @@ fn test_publish_receipts_and_batches_report_admission_outcomes() {
     let batch = BatchPublishResult::new(vec![Ok(receipt), Ok(dropped), Ok(unconfirmed)]);
     assert_eq!(batch.total_count(), 3);
     assert_eq!(batch.accepted_count(), 1);
+    assert_eq!(batch.sent_unconfirmed_count(), 1);
     assert_eq!(batch.dropped_count(), 1);
-    assert_eq!(batch.failure_count(), 0);
+    assert_eq!(batch.failure_count(), 1);
     assert_eq!(batch.into_items().len(), 3);
 }

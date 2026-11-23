@@ -39,6 +39,20 @@ impl EventBus {
         self.inner.publish_metrics.snapshot()
     }
 
+    /// Returns the number of successful publish receipts reported as sent
+    /// without confirmation.
+    ///
+    /// The count saturates at `u64::MAX`. It is sampled independently from
+    /// [`publish_metrics`](Self::publish_metrics), so concurrent calls can
+    /// observe different instants. `SentUnconfirmed` indicates a provider
+    /// send without admission confirmation; opaque accepted receipts remain
+    /// in the opaque counter instead.
+    #[must_use]
+    #[inline]
+    pub fn sent_unconfirmed_count(&self) -> u64 {
+        self.inner.publish_metrics.sent_unconfirmed_count()
+    }
+
     /// Checks that the configured provider can publish this topic's payload.
     ///
     /// This synchronous configuration query checks codec availability only,
