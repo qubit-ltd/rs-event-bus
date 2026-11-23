@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::pin::pin;
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
@@ -94,6 +95,11 @@ fn weighted_message(dropped: Arc<AtomicBool>, id: &str) -> OutboundMessage {
         TransportPayload::Native(Arc::new(PanicOnDrop(dropped))),
     )
     .with_native_payload_weight_bytes(NonZeroUsize::new(7).expect("positive weight"))
+}
+
+fn non_panicking_message(id: &str) -> OutboundMessage {
+    let already_dropped = Arc::new(AtomicBool::new(true));
+    weighted_message(already_dropped, id)
 }
 
 fn poll<F: Future>(future: F, waker: &Waker) -> Poll<F::Output> {
@@ -365,4 +371,211 @@ fn test_async_shutdown_finishes_state_before_payload_drop_panics() {
     drop(receive);
     assert!(poll(spi.shutdown(ShutdownMode::Immediate), Waker::noop()).is_ready());
     assert!(poll(waiter.receive(Duration::ZERO), Waker::noop()).is_ready());
+}
+
+#[test]
+fn test_sync_close_releases_each_panicking_payload_in_isolated_process() {
+    const CHILD: &str = "LOCAL_CLOSE_PANIC_BATCH_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        run_batch_case(std::env::var("LOCAL_CLOSE_PANIC_BATCH_CASE").expect("case"));
+        return;
+    }
+    for case in [
+        "sync_close",
+        "sync_drop",
+        "sync_shutdown",
+        "async_close",
+        "async_drop",
+        "async_shutdown",
+        "unwind_drop",
+    ] {
+        let status = Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "test_sync_close_releases_each_panicking_payload_in_isolated_process",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("LOCAL_CLOSE_PANIC_BATCH_CASE", case)
+            .status()
+            .expect("spawn isolated regression child");
+        assert!(status.success(), "{case} batch cleanup child must survive: {status}");
+    }
+}
+
+fn batch_spi_config() -> LocalEventBusConfig {
+    LocalEventBusConfig::new()
+        .max_total_outstanding(2)
+        .max_total_outstanding_weight_bytes(NonZeroUsize::new(14).expect("positive weight"))
+}
+
+fn publish_two_sync(spi: &dyn EventBusSpi) -> [Arc<AtomicBool>; 2] {
+    let (first, first_dropped) = message();
+    let (second, second_dropped) = message();
+    let _first_ack = spi.publish(first).expect("first publish");
+    let _second_ack = spi.publish(second).expect("second publish");
+    [first_dropped, second_dropped]
+}
+
+fn publish_two_async(spi: &AsyncLocalEventBusSpi) -> [Arc<AtomicBool>; 2] {
+    let (first, first_dropped) = message();
+    let (second, second_dropped) = message();
+    assert!(matches!(poll(spi.publish(first), Waker::noop()), Poll::Ready(Ok(_))));
+    assert!(matches!(poll(spi.publish(second), Waker::noop()), Poll::Ready(Ok(_))));
+    [first_dropped, second_dropped]
+}
+
+fn assert_both_payloads_released(dropped: &[Arc<AtomicBool>; 2]) {
+    for observed in dropped {
+        assert_payload_was_released(observed);
+    }
+}
+
+fn run_batch_case(case: String) {
+    if case == "unwind_drop" {
+        let spi = sync_spi();
+        let receiver = spi.subscribe(request(904, "local.close.panic")).expect("subscription");
+        let (message, dropped) = message();
+        let _ack = spi.publish(message).expect("publish");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _receiver = receiver;
+            panic!("original unwind must remain primary");
+        }));
+        let original = result.expect_err("outer panic is preserved");
+        assert_eq!(
+            original.downcast_ref::<&str>(),
+            Some(&"original unwind must remain primary")
+        );
+        assert_payload_was_released(&dropped);
+        return;
+    }
+    match case.as_str() {
+        "sync_close" | "sync_drop" | "sync_shutdown" => {
+            let spi = LocalEventBusProvider
+                .create_configured(
+                    &EventBusConfig::default().with_provider_options(batch_spi_config().provider_options()),
+                )
+                .expect("valid sync SPI");
+            let mut receiver = spi.subscribe(request(901, "local.close.panic")).expect("subscription");
+            let dropped = publish_two_sync(spi.as_ref());
+            match case.as_str() {
+                "sync_close" => {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| receiver.close()));
+                    assert!(result.is_err(), "first close destructor panic propagates");
+                    assert!(receiver.close().is_ok(), "repeated close returns its completed result");
+                    let mut replacement = spi.subscribe(request(905, "local.close.panic")).expect("replacement");
+                    for id in ["sync-close-capacity-a", "sync-close-capacity-b"] {
+                        assert!(
+                            matches!(spi.publish(non_panicking_message(id)), Ok(qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(ref admissions)) if admissions.iter().any(|a| a.status() == &qubit_event_bus::model::AdmissionStatus::Accepted)),
+                            "close returns count and weight capacity"
+                        );
+                    }
+                    replacement.close().expect("replacement close");
+                }
+                "sync_drop" => {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(receiver)));
+                    assert!(result.is_err(), "first Drop destructor panic propagates");
+                    let mut replacement = spi.subscribe(request(906, "local.close.panic")).expect("replacement");
+                    for id in ["sync-drop-capacity-a", "sync-drop-capacity-b"] {
+                        assert!(
+                            matches!(spi.publish(non_panicking_message(id)), Ok(qubit_event_bus::model::PublishAcknowledgement::DestinationAdmissions(ref admissions)) if admissions.iter().any(|a| a.status() == &qubit_event_bus::model::AdmissionStatus::Accepted)),
+                            "Drop returns count and weight capacity"
+                        );
+                    }
+                    replacement.close().expect("replacement close");
+                }
+                "sync_shutdown" => {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        spi.shutdown(ShutdownMode::Immediate)
+                    }));
+                    assert!(result.is_err(), "first shutdown destructor panic propagates");
+                    assert_eq!(
+                        spi.shutdown(ShutdownMode::Graceful {
+                            timeout: Duration::ZERO
+                        })
+                        .unwrap(),
+                        ShutdownOutcome::Complete,
+                        "shutdown outcome is cached"
+                    );
+                    assert!(
+                        matches!(receiver.receive(Duration::ZERO), Ok(ReceiveOutcome::Closed)),
+                        "shutdown closes receiver"
+                    );
+                }
+                _ => unreachable!(),
+            }
+            assert_both_payloads_released(&dropped);
+        }
+        "async_close" | "async_drop" | "async_shutdown" => {
+            let spi = AsyncLocalEventBusSpi::new(&batch_spi_config()).expect("valid async SPI");
+            let receiver = poll(spi.subscribe(request(902, "local.close.panic")), Waker::noop());
+            let mut receiver = match receiver {
+                Poll::Ready(Ok(receiver)) => receiver,
+                _ => panic!("subscription is immediate"),
+            };
+            let dropped = publish_two_async(&spi);
+            let wake_counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
+            let waker = Waker::from(wake_counter.clone());
+            match case.as_str() {
+                "async_close" => {
+                    let mut shutdown = Box::pin(spi.shutdown(ShutdownMode::Graceful { timeout: Duration::MAX }));
+                    assert!(shutdown.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+                    let result =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| poll(receiver.close(), &waker)));
+                    assert!(result.is_err(), "first close destructor panic propagates");
+                    assert!(
+                        wake_counter.0.load(Ordering::SeqCst) > 0,
+                        "close notifies shutdown waiter"
+                    );
+                    assert!(
+                        matches!(poll(receiver.close(), Waker::noop()), Poll::Ready(Ok(()))),
+                        "repeated close is cached"
+                    );
+                    assert!(
+                        shutdown.as_mut().poll(&mut Context::from_waker(&waker)).is_ready(),
+                        "graceful shutdown completes"
+                    );
+                }
+                "async_drop" => {
+                    let mut shutdown = Box::pin(spi.shutdown(ShutdownMode::Graceful { timeout: Duration::MAX }));
+                    assert!(shutdown.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(receiver)));
+                    assert!(result.is_err(), "first Drop destructor panic propagates");
+                    assert!(
+                        wake_counter.0.load(Ordering::SeqCst) > 0,
+                        "Drop fallback notifies shutdown waiter"
+                    );
+                    assert!(shutdown.as_mut().poll(&mut Context::from_waker(&waker)).is_ready());
+                }
+                "async_shutdown" => {
+                    let mut waiter = match poll(spi.subscribe(request(903, "local.close.waiter")), Waker::noop()) {
+                        Poll::Ready(Ok(receiver)) => receiver,
+                        _ => panic!("waiter subscription is immediate"),
+                    };
+                    let mut receive = Box::pin(waiter.receive(Duration::MAX));
+                    assert!(receive.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        poll(spi.shutdown(ShutdownMode::Immediate), &waker)
+                    }));
+                    assert!(result.is_err(), "first shutdown destructor panic propagates");
+                    assert!(
+                        wake_counter.0.load(Ordering::SeqCst) > 0,
+                        "shutdown notifies receive waiter"
+                    );
+                    drop(receive);
+                    assert!(
+                        poll(spi.shutdown(ShutdownMode::Immediate), Waker::noop()).is_ready(),
+                        "shutdown outcome is cached"
+                    );
+                    assert!(
+                        poll(waiter.receive(Duration::ZERO), Waker::noop()).is_ready(),
+                        "waiter observes closure"
+                    );
+                }
+                _ => unreachable!(),
+            }
+            assert_both_payloads_released(&dropped);
+        }
+        _ => panic!("unknown batch case: {case}"),
+    }
 }

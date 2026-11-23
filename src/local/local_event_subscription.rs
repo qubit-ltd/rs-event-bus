@@ -16,6 +16,7 @@ use std::time::Instant;
 use super::local_event_bus_spi::invalid_token_error;
 use super::local_event_bus_spi::operation_error;
 use super::local_event_bus_spi::signal_changed;
+use super::release_events;
 use super::state::LocalInFlight;
 use super::state::LocalQueue;
 use super::state::LocalSettlementHandle;
@@ -220,7 +221,7 @@ impl EventSubscriptionSpi for LocalEventSubscription {
         }
         drop(state);
         signal_changed(&self.shared);
-        drop(discarded);
+        release_events(discarded);
         Ok(())
     }
 }

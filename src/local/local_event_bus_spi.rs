@@ -20,6 +20,7 @@ use std::time::Duration;
 use super::LocalCapacityMonitor;
 use super::LocalEventBusConfig;
 use super::local_event_subscription::LocalEventSubscription;
+use super::release_events;
 use super::state::LocalEvent;
 use super::state::LocalQueue;
 use super::state::LocalQueueState;
@@ -529,7 +530,7 @@ impl EventBusSpi for LocalEventBusSpi {
         }
         signal_changed(&self.shared);
         drop(shutdown_gate);
-        drop(discarded);
+        release_events(discarded);
         Ok(outcome)
     }
 }
