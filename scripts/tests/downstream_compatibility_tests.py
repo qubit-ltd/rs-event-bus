@@ -1,5 +1,6 @@
 import contextlib
 import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -12,7 +13,6 @@ from unittest.mock import patch
 from scripts.check_downstream_compatibility import cargo_config
 from scripts.check_downstream_compatibility import main
 from scripts.check_downstream_compatibility import metadata
-from scripts.check_downstream_compatibility import preserve_lockfiles
 from scripts.check_downstream_compatibility import run
 from scripts.check_downstream_compatibility import validate_graph_for_downstream
 from scripts.check_downstream_compatibility import verify_test
@@ -56,6 +56,16 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             }],
         }
         validate_graph_for_downstream(graph, expected_core=Path("/core"), expected_redis=Path("/redis"))
+
+        graph["packages"][1]["manifest_path"] = "/other-redis/Cargo.toml"
+        with self.assertRaisesRegex(ValueError, "expected local Redis provider"):
+            validate_graph_for_downstream(
+                graph, expected_core=Path("/core"), expected_redis=Path("/redis"))
+        graph["packages"][1]["manifest_path"] = "/redis/Cargo.toml"
+        graph["packages"][1]["source"] = "registry+https://github.com/rust-lang/crates.io-index"
+        with self.assertRaisesRegex(ValueError, "expected local Redis provider"):
+            validate_graph_for_downstream(
+                graph, expected_core=Path("/core"), expected_redis=Path("/redis"))
 
     def test_test_listing_and_execution_both_use_locked_resolution(self):
         commands = []
@@ -119,11 +129,12 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             commands.append((command, kwargs))
             return "{}"
 
-        root = Path("/snapshot/rs-task")
+        root = Path("/snapshot/arbitrary-project-name")
         with patch("scripts.check_downstream_compatibility.run", side_effect=fake_run), \
                 patch("scripts.check_downstream_compatibility.validate_graph_for_downstream") as validate:
             graph = metadata(root, "sqlite,event-bus", Path("/core"),
-                              Path("/snapshot/redis"), Path("/target"))
+                              Path("/snapshot/redis"), Path("/target"),
+                              expected_redis=Path("/snapshot/redis"))
 
         self.assertEqual(graph, {})
         self.assertEqual(len(commands), 2)
@@ -133,6 +144,31 @@ class DownstreamCompatibilityTests(unittest.TestCase):
         self.assertEqual(commands[0][1]["env"]["CARGO_TARGET_DIR"], "/target")
         self.assertEqual(validate.call_args.kwargs["expected_core"], Path("/core"))
         self.assertEqual(validate.call_args.kwargs["expected_redis"], Path("/snapshot/redis"))
+
+    def test_metadata_runs_real_graph_validation_for_arbitrary_root_name(self):
+        core_id = "qubit-event-bus 0.21.0 (path+file:///core)"
+        redis_id = "qubit-event-bus-redis 0.7.0 (path+file:///redis)"
+        consumer_id = "consumer 1.0.0 (path+file:///consumer)"
+        graph = {
+            "workspace_members": [consumer_id],
+            "resolve": {"nodes": [
+                {"id": consumer_id, "dependencies": [core_id, redis_id]},
+                {"id": core_id, "dependencies": []},
+                {"id": redis_id, "dependencies": []},
+            ]},
+            "packages": [
+                {"id": core_id, "name": "qubit-event-bus", "version": "0.21.0",
+                 "source": None, "manifest_path": "/core/Cargo.toml"},
+                {"id": redis_id, "name": "qubit-event-bus-redis", "version": "0.7.0",
+                 "source": None, "manifest_path": "/redis/Cargo.toml"},
+            ],
+        }
+        root = Path("/snapshot/arbitrary-project-name")
+        with patch("scripts.check_downstream_compatibility.run", return_value=json.dumps(graph)) as run_command:
+            result = metadata(root, "sqlite,event-bus", Path("/core"), Path("/redis"),
+                              Path("/target"), expected_redis=Path("/redis"))
+        self.assertEqual(result, graph)
+        self.assertEqual(run_command.call_count, 2)
 
     def test_runner_returns_json_stdout_and_reports_failed_command_output(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -221,12 +257,16 @@ class DownstreamCompatibilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             redis = self.make_input_repository(Path(directory) / "redis", "redis")
             task = self.make_input_repository(Path(directory) / "rs-task", "rs-task")
+            for root in (redis, task):
+                (root / "Cargo.lock").write_bytes(b"locally edited tracked lock\n")
             original = {root: ((root / "Cargo.lock").read_bytes(), (root / "Cargo.lock").stat().st_mtime_ns)
                         for root in (redis, task)}
             snapshot_roots = []
 
-            def metadata_snapshot(root, _features, _core, redis_patch, _target):
+            def metadata_snapshot(root, _features, _core, redis_patch, _target, **_kwargs):
                 self.assertNotIn(root, (redis, task))
+                self.assertEqual((root / "Cargo.lock").read_bytes(), b"locally edited tracked lock\n")
+                self.assertEqual((root / "src/lib.rs").read_text(), "pub fn locally_edited() {}\n")
                 snapshot_roots.append(root)
                 with (root / "Cargo.lock").open("ab") as lock:
                     lock.write(b"resolved snapshot\n")
@@ -248,7 +288,7 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             original = {root: ((root / "Cargo.lock").read_bytes(), (root / "Cargo.lock").stat().st_mtime_ns)
                         for root in (redis, task)}
 
-            def metadata_snapshot(root, *_args):
+            def metadata_snapshot(root, *_args, **_kwargs):
                 with (root / "Cargo.lock").open("ab") as lock:
                     lock.write(b"resolved snapshot\n")
                 return {}
@@ -264,29 +304,33 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                                      (root / "Cargo.lock").stat().st_mtime_ns)
                               for root in (redis, task)}, original)
 
-    def test_worktree_mode_uses_direct_roots_without_copying_sources(self):
+    def test_worktrees_alias_uses_tracked_snapshots_and_does_not_touch_input_locks(self):
         with tempfile.TemporaryDirectory() as directory:
             core = self.make_input_repository(Path(directory) / "core", "core")
             redis = self.make_input_repository(Path(directory) / "redis", "redis")
             task = self.make_input_repository(Path(directory) / "rs-task", "rs-task")
-            original_locks = {}
-            for root in (redis, task):
-                lockfile = root / "Cargo.lock"
-                contents = lockfile.read_bytes()
-                stat = lockfile.stat()
-                original_locks[root] = (contents, stat.st_atime_ns, stat.st_mtime_ns)
+            input_locks = {root: (root / "Cargo.lock").read_bytes() for root in (redis, task)}
             argv = ["check_downstream_compatibility.py", "--use-worktrees",
                     "--core-root", str(core), "--redis-root", str(redis),
                     "--task-root", str(task)]
             metadata_roots = []
 
-            def capture_metadata(root, _features, requested_core, redis_patch, _target):
+            def capture_metadata(root, _features, requested_core, redis_patch, _target,
+                                 *, expected_redis=None):
                 metadata_roots.append(root)
-                with (root / "Cargo.lock").open("ab") as lock:
-                    lock.write(b"patched resolution\n")
+                self.assertNotIn(root, (redis, task))
+                self.assertEqual((root / "src/lib.rs").read_text(),
+                                 "pub fn locally_edited() {}\n")
                 self.assertEqual(requested_core, core.resolve())
-                if root == task:
-                    self.assertEqual(redis_patch, redis.resolve())
+                if root.name == "redis":
+                    self.assertIsNone(expected_redis)
+                    # Simulate an input lockfile being changed while Cargo runs.
+                    (redis / "Cargo.lock").write_bytes(b"concurrent external update\n")
+                else:
+                    self.assertEqual(redis_patch, metadata_roots[0])
+                    self.assertEqual(expected_redis, metadata_roots[0])
+                with (root / "Cargo.lock").open("ab") as lock:
+                    lock.write(b"snapshot resolution\n")
                 return {}
 
             stdout = io.StringIO()
@@ -295,102 +339,50 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                           side_effect=capture_metadata), \
                     patch("scripts.check_downstream_compatibility.verify_test",
                           side_effect=lambda root, *_args: self.assertIn(
-                              b"patched resolution", (root / "Cargo.lock").read_bytes())) as verify, \
-                    patch("scripts.check_downstream_compatibility.copy_tracked_source") as copy, \
+                              b"snapshot resolution", (root / "Cargo.lock").read_bytes())) as verify, \
                     contextlib.redirect_stdout(stdout):
                 main()
 
-            self.assertEqual(metadata_roots, [redis.resolve(), task.resolve()])
+            self.assertEqual([root.name for root in metadata_roots], ["redis", "rs-task"])
             self.assertEqual(verify.call_count, 3)
-            self.assertEqual(copy.call_count, 0)
-            for root, (contents, atime_ns, mtime_ns) in original_locks.items():
-                lockfile = root / "Cargo.lock"
-                stat = lockfile.stat()
-                self.assertEqual((stat.st_atime_ns, stat.st_mtime_ns), (atime_ns, mtime_ns))
-                self.assertEqual(lockfile.read_bytes(), contents)
-            self.assertIn(f"core: revision=", stdout.getvalue())
+            self.assertEqual((redis / "Cargo.lock").read_bytes(),
+                             b"concurrent external update\n")
+            self.assertEqual((task / "Cargo.lock").read_bytes(), input_locks[task])
             self.assertIn("downstream compatibility checks passed", stdout.getvalue())
 
-    def test_worktree_mode_restores_locks_when_verify_fails(self):
+    def test_worktrees_alias_preserves_generated_input_lock_after_metadata_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             core = self.make_input_repository(Path(directory) / "core", "core")
             redis = self.make_input_repository(Path(directory) / "redis", "redis")
             task = self.make_input_repository(Path(directory) / "rs-task", "rs-task")
-            original_locks = {}
-            for root in (redis, task):
-                lockfile = root / "Cargo.lock"
-                contents = lockfile.read_bytes()
-                stat = lockfile.stat()
-                original_locks[root] = (contents, stat.st_atime_ns, stat.st_mtime_ns)
+            (redis / "Cargo.lock").unlink()
+            task_lock = (task / "Cargo.lock").read_bytes()
             argv = ["check_downstream_compatibility.py", "--use-worktrees",
                     "--core-root", str(core), "--redis-root", str(redis),
                     "--task-root", str(task)]
 
-            def update_metadata(root, *_args):
-                with (root / "Cargo.lock").open("ab") as lock:
-                    lock.write(b"patched resolution\n")
-                return {}
-
-            def fail_verify(root, *_args):
-                self.assertIn(b"patched resolution", (root / "Cargo.lock").read_bytes())
-                raise RuntimeError("synthetic downstream failure")
+            def fail_metadata(*_args, **_kwargs):
+                (redis / "Cargo.lock").write_bytes(b"generated externally during metadata\n")
+                raise RuntimeError("synthetic metadata parse failure")
 
             with patch("sys.argv", argv), \
                     patch("scripts.check_downstream_compatibility.metadata",
-                          side_effect=update_metadata), \
-                    patch("scripts.check_downstream_compatibility.verify_test",
-                          side_effect=fail_verify), \
-                    patch("scripts.check_downstream_compatibility.copy_tracked_source") as copy:
-                with self.assertRaisesRegex(RuntimeError, "synthetic downstream failure"):
+                          side_effect=fail_metadata):
+                with self.assertRaisesRegex(RuntimeError, "metadata parse failure"):
                     main()
 
-            self.assertEqual(copy.call_count, 0)
-            for root, (contents, atime_ns, mtime_ns) in original_locks.items():
-                lockfile = root / "Cargo.lock"
-                stat = lockfile.stat()
-                self.assertEqual((stat.st_atime_ns, stat.st_mtime_ns), (atime_ns, mtime_ns))
-                self.assertEqual(lockfile.read_bytes(), contents)
+            self.assertEqual((redis / "Cargo.lock").read_bytes(),
+                             b"generated externally during metadata\n")
+            self.assertEqual((task / "Cargo.lock").read_bytes(), task_lock)
 
-    def test_preserve_lockfiles_restores_bytes_on_success_and_error(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            lockfile = root / "Cargo.lock"
-            original = b"original\x00 lock\r\n"
-            lockfile.write_bytes(original)
-            os.utime(lockfile, ns=(1_700_000_001_123_456_789, 1_700_000_002_987_654_321))
-            original_stat = lockfile.stat()
-            original_atime_mtime = (original_stat.st_atime_ns, original_stat.st_mtime_ns)
-            with preserve_lockfiles((root,)):
-                lockfile.write_bytes(b"temporary patched resolution\n")
-                self.assertEqual(lockfile.read_bytes(), b"temporary patched resolution\n")
-            stat = lockfile.stat()
-            self.assertEqual((stat.st_atime_ns, stat.st_mtime_ns), original_atime_mtime)
-            self.assertEqual(lockfile.read_bytes(), original)
-            stat = lockfile.stat()
-            original_atime_mtime = (stat.st_atime_ns, stat.st_mtime_ns)
-
-            with self.assertRaisesRegex(RuntimeError, "synthetic downstream failure"):
-                with preserve_lockfiles((root,)):
-                    lockfile.write_bytes(b"partial cargo output\n")
-                    raise RuntimeError("synthetic downstream failure")
-            stat = lockfile.stat()
-            self.assertEqual((stat.st_atime_ns, stat.st_mtime_ns), original_atime_mtime)
-            self.assertEqual(lockfile.read_bytes(), original)
-
-    def test_preserve_lockfiles_removes_new_lockfiles_after_failure(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            lockfile = root / "Cargo.lock"
-            with preserve_lockfiles((root,)):
-                lockfile.write_bytes(b"generated lock on success\n")
-                self.assertTrue(lockfile.exists())
-            self.assertFalse(lockfile.exists())
-
-            with self.assertRaisesRegex(RuntimeError, "metadata failed"):
-                with preserve_lockfiles((root,)):
-                    lockfile.write_bytes(b"generated lock before failure\n")
-                    raise RuntimeError("metadata failed")
-            self.assertFalse(lockfile.exists())
+    def test_cli_help_describes_snapshot_compatibility_alias(self):
+        with patch("sys.argv", ["check_downstream_compatibility.py", "--help"]), \
+                contextlib.redirect_stdout(io.StringIO()) as stdout:
+            with self.assertRaises(SystemExit) as error:
+                main()
+        self.assertEqual(error.exception.code, 0)
+        self.assertIn("compatibility alias", stdout.getvalue())
+        self.assertIn("tracked-source snapshots", stdout.getvalue())
 
 
 if __name__ == "__main__":
