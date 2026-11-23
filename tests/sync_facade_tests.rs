@@ -5607,6 +5607,128 @@ fn test_unsupported_reject_settlement_is_reported_without_calling_provider_settl
 }
 
 #[test]
+fn test_sync_handler_error_and_untransferred_token_drop_panics_are_isolated() {
+    struct TokenDropPanic(Arc<AtomicUsize>);
+    impl Drop for TokenDropPanic {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+            panic!("untransferred settlement token state drop panic");
+        }
+    }
+
+    let (bus, backend) = create_bus_configured(|backend| {
+        backend.set_settlement_capability(SettlementCapabilities::None);
+    });
+    let error_drops = Arc::new(AtomicUsize::new(0));
+    let token_drops = Arc::new(AtomicUsize::new(0));
+    let diagnostics = Arc::new(Mutex::new(Vec::new()));
+    let captured_diagnostics = diagnostics.clone();
+    let _observer = bus.observe_diagnostics(move |diagnostic| match diagnostic {
+        Diagnostic::InternalFailure { origin, .. } => {
+            captured_diagnostics
+                .lock()
+                .expect("diagnostics")
+                .push(origin.to_string());
+        }
+        Diagnostic::SettlementUnavailable { requested, .. } => {
+            captured_diagnostics
+                .lock()
+                .expect("diagnostics")
+                .push(format!("settlement_unavailable:{requested:?}"));
+        }
+        _ => {}
+    });
+    let (handled_tx, handled_rx) = mpsc::channel();
+    let callback_error_drops = error_drops.clone();
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new("independent-failure-drops", topic()).expect("valid request"),
+            move |delivery: Delivery<String>| {
+                handled_tx
+                    .send(delivery.payload().clone())
+                    .expect("test receiver remains connected");
+                if delivery.payload() == "fail" {
+                    Err(DeliveryError::Handler {
+                        source: Box::new(HandlerErrorDropPanic(callback_error_drops.clone())),
+                    })
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .expect("subscription starts");
+
+    let queue = backend
+        .state
+        .lock()
+        .expect("backend state")
+        .queues
+        .iter()
+        .find(|(id, _)| *id == subscription.id())
+        .expect("subscription queue")
+        .1
+        .clone();
+    let failed = InboundMessage::new(
+        TopicAddress::new("sync.events").expect("valid topic address"),
+        EventId::new("double-drop-panic").expect("valid event ID"),
+        SystemTime::UNIX_EPOCH,
+        Headers::new(),
+        None,
+        TransportPayload::Native(Arc::new(String::from("fail"))),
+        Some(SettlementToken::new(
+            subscription.id(),
+            TokenDropPanic(token_drops.clone()),
+        )),
+        Default::default(),
+    );
+    let later = InboundMessage::new(
+        TopicAddress::new("sync.events").expect("valid topic address"),
+        EventId::new("after-double-drop-panic").expect("valid event ID"),
+        SystemTime::UNIX_EPOCH,
+        Headers::new(),
+        None,
+        TransportPayload::Native(Arc::new(String::from("continue"))),
+        None,
+        Default::default(),
+    );
+    let (lock, ready) = &*queue;
+    lock.lock().expect("queue lock").messages.extend([failed, later]);
+    ready.notify_one();
+
+    let mut handled = [
+        handled_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("failed delivery reaches handler"),
+        handled_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker handles the following good delivery"),
+    ];
+    handled.sort();
+    assert_eq!(handled, ["continue", "fail"]);
+    assert_eq!(
+        bus.wait_for_received_deliveries(&topic(), Some(Duration::from_secs(2)))
+            .expect("both deliveries leave the receive pipeline"),
+        qubit_event_bus::WaitOutcome::Idle
+    );
+
+    assert_eq!(error_drops.load(Ordering::Acquire), 1);
+    assert_eq!(token_drops.load(Ordering::Acquire), 1);
+    assert_eq!(backend.settlement_calls(), 0);
+    let diagnostics = diagnostics.lock().expect("diagnostics");
+    assert!(diagnostics.iter().any(|origin| origin == "handler_error_drop"));
+    assert!(diagnostics.iter().any(|origin| origin == "handler_token_drop"));
+    assert!(
+        diagnostics
+            .iter()
+            .any(|origin| origin == "settlement_unavailable:Reject")
+    );
+    drop(diagnostics);
+
+    subscription.cancel().expect("worker remains cancellable");
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+}
+
+#[test]
 fn test_undecodable_message_respects_settlement_capability_and_reports_unavailable_reject() {
     let (bus, backend) =
         create_bus_configured(|backend| backend.set_settlement_capability(SettlementCapabilities::AcceptOnly));
