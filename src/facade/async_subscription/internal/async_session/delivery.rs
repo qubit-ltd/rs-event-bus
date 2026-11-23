@@ -102,14 +102,18 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         let inner = self.inner.clone();
         let metrics = self.metrics.clone();
         let signals = self.signals.clone();
-        let handler: SharedAsyncHandler<T> = Arc::new(move |delivery| {
-            let duration = super::super::handler_duration_guard::HandlerDurationGuard::new(
-                inner.clone(),
-                metrics.clone(),
-                signals.clone(),
-            );
-            Box::pin(HandlerDurationFuture::new(original_handler(delivery), duration))
-        });
+        let handler = crate::facade::async_subscription::AsyncHandlerOwner::new(
+            move |delivery| {
+                let duration = super::super::handler_duration_guard::HandlerDurationGuard::new(
+                    inner.clone(),
+                    metrics.clone(),
+                    signals.clone(),
+                );
+                Box::pin(HandlerDurationFuture::new(original_handler(delivery), duration))
+            },
+            self.inner.clone(),
+            self.id,
+        );
         let started = Arc::new(AtomicBool::new(false));
         let mut task = DeliveryTaskContext {
             inner: self.inner.clone(),
@@ -215,6 +219,13 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                     )),
                     lease,
                 });
+                if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(error))) {
+                    dispose_panic_payload(payload);
+                    self.inner.emit(&Diagnostic::InternalFailure {
+                        origin: "rejected_codec_error_drop".into(),
+                        message: "rejected codec error drop panicked".into(),
+                    });
+                }
                 return;
             }
         };

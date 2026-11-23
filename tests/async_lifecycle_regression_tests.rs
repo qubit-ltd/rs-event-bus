@@ -347,6 +347,100 @@ fn test_replacing_handler_contains_old_capture_drop_panic_and_runs_new_handler()
 }
 
 #[test]
+fn test_replaced_handler_drop_waits_for_started_task_and_is_reported_once() {
+    struct PanicOnDrop;
+    impl Drop for PanicOnDrop {
+        fn drop(&mut self) {
+            panic!("retired handler capture drop probe");
+        }
+    }
+
+    let bus = ready(AsyncEventBus::local(Default::default())).expect("local bus");
+    let topic = Topic::<usize>::new("regression.retired-handler-task-drop").expect("topic");
+    let mut subscription =
+        ready(bus.subscribe(SubscribeRequest::new("retired-handler-task-drop", topic.clone()).expect("request")))
+            .expect("subscription");
+    let old = Arc::new(PanicOnDrop);
+    let old_weak = Arc::downgrade(&old);
+    let gate = Arc::new(AtomicBool::new(false));
+    let started = Arc::new(AtomicBool::new(false));
+    let mut first_run = {
+        let old = old.clone();
+        let gate = gate.clone();
+        let started = started.clone();
+        Box::pin(subscription.run(move |_| {
+            let _capture = old.clone();
+            let gate = gate.clone();
+            let started = started.clone();
+            async move {
+                started.store(true, Ordering::SeqCst);
+                poll_fn(|cx| {
+                    if gate.load(Ordering::SeqCst) {
+                        Poll::Ready(Ok::<(), DeliveryError>(()))
+                    } else {
+                        cx.waker().wake_by_ref();
+                        Poll::Pending
+                    }
+                })
+                .await
+            }
+        }))
+    };
+    assert!(poll_once(first_run.as_mut(), Waker::noop()).is_pending());
+    let _ = ready(bus.publish(PublishRequest::new(topic.clone(), 1).expect("request"))).expect("publish");
+    for _ in 0..8 {
+        let _ = poll_once(first_run.as_mut(), Waker::noop());
+        if started.load(Ordering::SeqCst) {
+            break;
+        }
+    }
+    assert!(started.load(Ordering::SeqCst), "old handler task started");
+    drop(first_run);
+    drop(old);
+
+    let diagnostics = Arc::new(Mutex::new(Vec::new()));
+    let seen = diagnostics.clone();
+    let _observer = bus.observe_diagnostics(move |entry| seen.lock().unwrap().push(entry.clone()));
+    let replacement_calls = Arc::new(AtomicUsize::new(0));
+    let replacement_calls_for_handler = replacement_calls.clone();
+    let mut resumed = Box::pin(subscription.run(move |_| {
+        replacement_calls_for_handler.fetch_add(1, Ordering::SeqCst);
+        async { Ok::<(), DeliveryError>(()) }
+    }));
+    assert!(poll_once(resumed.as_mut(), Waker::noop()).is_pending());
+    gate.store(true, Ordering::SeqCst);
+    let _ = ready(bus.publish(PublishRequest::new(topic.clone(), 2).expect("request"))).expect("publish");
+    for _ in 0..16 {
+        let _ = poll_once(resumed.as_mut(), Waker::noop());
+        if old_weak.upgrade().is_none() {
+            break;
+        }
+    }
+    assert!(
+        old_weak.upgrade().is_none(),
+        "retired capture is released after task completion"
+    );
+    assert_eq!(1, replacement_calls.load(Ordering::SeqCst));
+    assert_eq!(2, subscription.delivery_metrics().metrics.completed);
+    assert_eq!(
+        1,
+        diagnostics
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|entry| matches!(entry,
+                qubit_event_bus::Diagnostic::InternalFailure { origin, message }
+                    if origin.as_ref() == "replaced_async_handler_drop"
+                        && message.as_ref() == "replaced async handler drop panicked"
+            ))
+            .count()
+    );
+    drop(resumed);
+    ready(subscription.close()).expect("close");
+    let _ = ready(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+}
+
+#[test]
 fn test_closing_paused_run_propagates_current_handler_drop_panic_after_stopped() {
     struct PanicOnDrop;
     impl Drop for PanicOnDrop {

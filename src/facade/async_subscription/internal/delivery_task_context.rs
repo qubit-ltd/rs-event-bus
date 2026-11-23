@@ -151,15 +151,19 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
         let rejected = denied.clone();
         let signals = self.signals.clone();
         let cancellation = self.options.retry_cancellation_token().cloned();
-        let handler: SharedAsyncHandler<T> = Arc::new(move |delivery| {
-            if cancellation.as_ref().is_some_and(|token| token.is_cancelled()) || !signals.admit_handler() {
-                rejected.store(true, Ordering::Release);
-                // The owner observes denial in this same poll and drops the chain.
-                // No synthetic success or failure reaches middleware or failure policy.
-                return Box::pin(pending_future());
-            }
-            handler(delivery)
-        });
+        let handler = crate::facade::async_subscription::AsyncHandlerOwner::new(
+            move |delivery| {
+                if cancellation.as_ref().is_some_and(|token| token.is_cancelled()) || !signals.admit_handler() {
+                    rejected.store(true, Ordering::Release);
+                    // The owner observes denial in this same poll and drops the chain.
+                    // No synthetic success or failure reaches middleware or failure policy.
+                    return Box::pin(pending_future());
+                }
+                handler(delivery)
+            },
+            self.inner.clone(),
+            self.id,
+        );
         let attempts = run_with_retry(
             self.options.clone(),
             delivery.clone(),
