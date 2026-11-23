@@ -2,6 +2,7 @@
 """Validate downstream projects from snapshots or registered worktrees."""
 
 import argparse
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -119,17 +120,38 @@ def metadata(root, features, core, redis, target):
     return graph
 
 
-def metadata_preserving_lock(root, features, core, redis, target):
-    """Run metadata while preserving a direct worktree's lockfile exactly."""
-    lockfile = root / "Cargo.lock"
-    original = lockfile.read_bytes() if lockfile.exists() else None
-    try:
-        return metadata(root, features, core, redis, target)
-    finally:
-        if original is None:
-            lockfile.unlink(missing_ok=True)
+@contextmanager
+def preserve_lockfiles(roots):
+    """Restore direct-worktree lockfiles after patched tests finish or fail."""
+    originals = {}
+    for root in roots:
+        lockfile = root / "Cargo.lock"
+        if lockfile.exists():
+            stat = lockfile.stat()
+            originals[lockfile] = (lockfile.read_bytes(), stat.st_atime_ns, stat.st_mtime_ns)
         else:
-            lockfile.write_bytes(original)
+            originals[lockfile] = None
+    try:
+        yield
+    finally:
+        for lockfile, original in originals.items():
+            if original is None:
+                lockfile.unlink(missing_ok=True)
+            else:
+                contents, atime_ns, mtime_ns = original
+                lockfile.write_bytes(contents)
+                os.utime(lockfile, ns=(atime_ns, mtime_ns))
+
+
+def run_downstream_checks(redis, task, core, target_root):
+    metadata(redis, None, core, None, target_root / "redis")
+    metadata(task, "sqlite,event-bus", core, redis, target_root / "rs-task")
+    for label, _manifest, test_name, command in TESTS:
+        root = task if label == "rs-task-outbox" else redis
+        package = redis if root == task else None
+        env = os.environ.copy()
+        env["CARGO_TARGET_DIR"] = str(target_root / ("rs-task" if root == task else "redis"))
+        verify_test(root, test_name, command, core, package, env)
 
 
 def verify_test(root, name, arguments, core, redis, env):
@@ -202,7 +224,8 @@ def main():
         target_root = temp_root / "target"
         if args.use_worktrees:
             redis, task = (root for _label, root in inputs)
-            metadata_check = metadata_preserving_lock
+            with preserve_lockfiles((redis, task)):
+                run_downstream_checks(redis, task, core, target_root)
         else:
             snapshots = {}
             for label, source in inputs:
@@ -214,15 +237,7 @@ def main():
                 snapshots[label] = snapshot
             redis = snapshots["redis"]
             task = snapshots["rs-task"]
-            metadata_check = metadata
-        metadata_check(redis, None, core, None, target_root / "redis")
-        metadata_check(task, "sqlite,event-bus", core, redis, target_root / "rs-task")
-        for label, manifest, test_name, command in TESTS:
-            root = task if label == "rs-task-outbox" else redis
-            package = redis if root == task else None
-            env = os.environ.copy()
-            env["CARGO_TARGET_DIR"] = str(target_root / ("rs-task" if root == task else "redis"))
-            verify_test(root, test_name, command, core, package, env)
+            run_downstream_checks(redis, task, core, target_root)
     print("downstream compatibility checks passed", flush=True)
 
 
