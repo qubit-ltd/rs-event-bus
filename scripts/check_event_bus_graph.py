@@ -5,8 +5,8 @@ from pathlib import Path
 import subprocess
 import sys
 
-def validate_graph(graph, *, require_bus, expected_core=None):
-    """Validate a resolved cargo metadata graph."""
+def reachable_packages(graph):
+    """Return packages reachable from the selected workspace members."""
     resolve = graph.get("resolve")
     if resolve is None:
         raise ValueError("cargo metadata must include the resolved dependency graph")
@@ -18,9 +18,13 @@ def validate_graph(graph, *, require_bus, expected_core=None):
         if identity not in reachable:
             reachable.add(identity)
             pending.extend(edges[identity])
-    packages = [package for package in graph["packages"]
-                if package["id"] in reachable
-                and package["name"] == "qubit-event-bus"]
+    return [package for package in graph["packages"] if package["id"] in reachable]
+
+
+def validate_graph(graph, *, require_bus, expected_core=None):
+    """Validate a resolved cargo metadata graph."""
+    packages = [package for package in reachable_packages(graph)
+                if package["name"] == "qubit-event-bus"]
     if not packages:
         if require_bus:
             raise ValueError("qubit-event-bus is missing from the resolved graph")
@@ -55,23 +59,33 @@ def main():
     print(f"event-bus graph gate: passed {manifest}", flush=True)
 
 
-def validate_graph_for_downstream(graph, *, expected_core, expected_redis=None):
+def validate_graph_for_downstream(graph, *, expected_core, expected_redis=None,
+                                  allowed_local_roots=None):
     """Validate the selected local core in a downstream workspace graph."""
     validate_graph(graph, require_bus=True, expected_core=expected_core)
+    packages = reachable_packages(graph)
+    allowed = [Path(path).resolve() for path in (allowed_local_roots or ())]
+    for package in packages:
+        if package.get("source") is not None:
+            continue
+        manifest = Path(package["manifest_path"]).resolve()
+        expected_core_manifest = (expected_core / "Cargo.toml").resolve()
+        if package["name"] == "qubit-event-bus" and manifest == expected_core_manifest:
+            continue
+        if package["name"] == "qubit-event-bus-redis" and expected_redis is not None:
+            expected = (expected_redis / "Cargo.toml").resolve()
+            if manifest != expected:
+                raise ValueError(
+                    f"expected local Redis provider {expected}, got {package['id']} at {manifest}"
+                )
+        if not any(manifest == root or root in manifest.parents for root in allowed):
+            raise ValueError(
+                f"reachable local package is outside allowed snapshot roots: "
+                f"{package['name']} at {manifest}"
+            )
     if expected_redis is not None:
-        resolve = graph.get("resolve")
-        if resolve is None:
-            raise ValueError("cargo metadata must include the resolved dependency graph")
-        edges = {node["id"]: node["dependencies"] for node in resolve["nodes"]}
-        reachable = set()
-        pending = list(graph["workspace_members"])
-        while pending:
-            identity = pending.pop()
-            if identity not in reachable:
-                reachable.add(identity)
-                pending.extend(edges[identity])
-        packages = [package for package in graph["packages"]
-                    if package["id"] in reachable and package["name"] == "qubit-event-bus-redis"]
+        packages = [package for package in packages
+                    if package["name"] == "qubit-event-bus-redis"]
         if len(packages) != 1:
             raise ValueError(f"expected exactly one reachable qubit-event-bus-redis package, got {len(packages)}")
         package = packages[0]

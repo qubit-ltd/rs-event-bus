@@ -1,3 +1,4 @@
+import builtins
 import contextlib
 import io
 import json
@@ -22,6 +23,44 @@ from scripts.tests.process_test_support import wait_for_process_exit
 
 
 class DownstreamCompatibilityTests(unittest.TestCase):
+    def test_legacy_cli_and_help_do_not_require_tomllib(self):
+        original_import = builtins.__import__
+
+        def import_without_tomllib(name, *args, **kwargs):
+            if name == "tomllib":
+                raise ModuleNotFoundError("No module named 'tomllib'", name="tomllib")
+            return original_import(name, *args, **kwargs)
+
+        with patch("sys.argv", ["check_downstream_compatibility.py", "--help"]), \
+                patch("builtins.__import__", side_effect=import_without_tomllib):
+            with self.assertRaises(SystemExit) as help_exit:
+                main()
+            self.assertEqual(help_exit.exception.code, 0)
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            core = self.make_input_repository(base / "core", "core")
+            redis = self.make_input_repository(base / "redis", "redis")
+            task = self.make_input_repository(base / "task", "task")
+            argv = ["check_downstream_compatibility.py", "--core-root", str(core),
+                    "--redis-root", str(redis), "--task-root", str(task)]
+            with patch("sys.argv", argv), patch("builtins.__import__",
+                                               side_effect=import_without_tomllib), \
+                    patch("scripts.check_downstream_compatibility.metadata", return_value={}), \
+                    patch("scripts.check_downstream_compatibility.verify_test"):
+                main()
+
+            execution = self.make_input_repository(base / "execution", "execution")
+            argv = ["check_downstream_compatibility.py", "--core-root", str(core),
+                    "--redis-root", str(redis), "--task-root", str(task),
+                    "--execution-services-root", str(execution)]
+            with patch("sys.argv", argv), patch("builtins.__import__",
+                                               side_effect=import_without_tomllib), \
+                    patch("scripts.check_downstream_compatibility.copy_tracked_source") as copy_source:
+                with self.assertRaisesRegex(ValueError, "requires Python 3.11 or newer"):
+                    main()
+            copy_source.assert_not_called()
+
     def test_test_configurations_record_relative_manifest_target_and_exact_test_name(self):
         configurations = {(entry.root, entry.manifest, entry.target, entry.test_name)
                           for entry in TESTS}
@@ -77,6 +116,47 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, r"Cargo.toml.*outside"):
                 discover_local_repositories(manifest, parent)
 
+    def test_execution_services_rejects_absolute_paths_inside_and_outside_sibling_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory) / "siblings"
+            fixture = parent / "rs-execution-services/tests/fixtures/consumer"
+            fixture.mkdir(parents=True)
+            dependency = parent / "rs-local"
+            dependency.mkdir()
+            (dependency / "Cargo.toml").write_text("[package]\nname='local'\n")
+            manifest = fixture / "Cargo.toml"
+            for absolute in (dependency, Path(directory) / "outside"):
+                manifest.write_text(f'[dependencies]\nlocal = {{ path = "{absolute}" }}\n')
+                with self.subTest(path=absolute):
+                    with self.assertRaisesRegex(ValueError, r"absolute local path.*Cargo.toml.*relative"):
+                        discover_local_repositories(manifest, parent)
+
+    def test_main_rejects_absolute_ioc_path_before_any_snapshot_or_cargo_call(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            core = self.make_input_repository(base / "core", "core")
+            redis = self.make_input_repository(base / "rs-event-bus-redis", "redis")
+            task = self.make_input_repository(base / "rs-task", "task")
+            execution = self.make_input_repository(base / "rs-execution-services", "execution")
+            local = self.make_input_repository(base / "local", "local")
+            fixture = execution / "tests/fixtures/ioc_application_consumer"
+            fixture.mkdir(parents=True)
+            manifest = fixture / "Cargo.toml"
+            manifest.write_text(f'[dependencies]\nlocal = {{ path = "{local}" }}\n')
+            argv = ["check_downstream_compatibility.py", "--core-root", str(core),
+                    "--redis-root", str(redis), "--task-root", str(task),
+                    "--execution-services-root", str(execution)]
+            with patch("sys.argv", argv), \
+                    patch("scripts.check_downstream_compatibility.copy_tracked_source") as copy_source, \
+                    patch("scripts.check_downstream_compatibility.metadata") as metadata_call, \
+                    patch("scripts.check_downstream_compatibility.run") as cargo_run:
+                with self.assertRaisesRegex(ValueError, "absolute local path") as error:
+                    main()
+            self.assertIn(str(manifest.resolve()), str(error.exception))
+            copy_source.assert_not_called()
+            metadata_call.assert_not_called()
+            cargo_run.assert_not_called()
+
     def test_cargo_patch_points_at_requested_core_and_redis_checkouts(self):
         args = cargo_config(Path("/core checkout"), Path("/redis checkout"))
         self.assertEqual(args, [
@@ -112,28 +192,65 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                 "manifest_path": "/redis/Cargo.toml",
             }],
         }
-        validate_graph_for_downstream(graph, expected_core=Path("/core"), expected_redis=Path("/redis"))
+        validate_graph_for_downstream(
+            graph, expected_core=Path("/core"), expected_redis=Path("/redis"),
+            allowed_local_roots=(Path("/redis"),))
 
         graph["packages"][0]["manifest_path"] = "/other-core/Cargo.toml"
         with self.assertRaisesRegex(ValueError, "expected local core"):
             validate_graph_for_downstream(graph, expected_core=Path("/core"),
-                                          expected_redis=Path("/redis"))
+                                          expected_redis=Path("/redis"),
+                                          allowed_local_roots=(Path("/redis"),))
         graph["packages"][0]["manifest_path"] = "/core/Cargo.toml"
         graph["packages"][0]["source"] = "registry+https://github.com/rust-lang/crates.io-index"
         with self.assertRaisesRegex(ValueError, "expected local core"):
             validate_graph_for_downstream(graph, expected_core=Path("/core"),
-                                          expected_redis=Path("/redis"))
+                                          expected_redis=Path("/redis"),
+                                          allowed_local_roots=(Path("/redis"),))
         graph["packages"][0]["source"] = None
 
         graph["packages"][1]["manifest_path"] = "/other-redis/Cargo.toml"
         with self.assertRaisesRegex(ValueError, "expected local Redis provider"):
             validate_graph_for_downstream(
-                graph, expected_core=Path("/core"), expected_redis=Path("/redis"))
+                graph, expected_core=Path("/core"), expected_redis=Path("/redis"),
+                allowed_local_roots=(Path("/redis"),))
         graph["packages"][1]["manifest_path"] = "/redis/Cargo.toml"
         graph["packages"][1]["source"] = "registry+https://github.com/rust-lang/crates.io-index"
         with self.assertRaisesRegex(ValueError, "expected local Redis provider"):
             validate_graph_for_downstream(
-                graph, expected_core=Path("/core"), expected_redis=Path("/redis"))
+                graph, expected_core=Path("/core"), expected_redis=Path("/redis"),
+                allowed_local_roots=(Path("/redis"),))
+
+    def test_graph_rejects_reachable_local_package_outside_snapshot_roots(self):
+        graph = {
+            "workspace_members": ["consumer"],
+            "resolve": {"nodes": [
+                {"id": "consumer", "dependencies": ["core", "local"]},
+                {"id": "core", "dependencies": []},
+                {"id": "local", "dependencies": []},
+            ]},
+            "packages": [
+                {"id": "consumer", "name": "consumer", "source": None,
+                 "manifest_path": "/snapshot/consumer/Cargo.toml"},
+                {"id": "core", "name": "qubit-event-bus", "version": "0.21.0",
+                 "source": None, "manifest_path": "/external-core/Cargo.toml"},
+                {"id": "local", "name": "local", "source": None,
+                 "manifest_path": "/snapshot-copy-neighbor/local/Cargo.toml"},
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "local at /snapshot-copy-neighbor/local/Cargo.toml"):
+            validate_graph_for_downstream(
+                graph, expected_core=Path("/external-core"),
+                allowed_local_roots=(Path("/snapshot"),))
+        graph["packages"][2]["manifest_path"] = "/snapshot/local/Cargo.toml"
+        validate_graph_for_downstream(
+            graph, expected_core=Path("/external-core"),
+            allowed_local_roots=(Path("/snapshot"),))
+
+        graph["packages"][2]["manifest_path"] = "/external-core/nested/local/Cargo.toml"
+        with self.assertRaisesRegex(ValueError, "nested/local/Cargo.toml"):
+            validate_graph_for_downstream(graph, expected_core=Path("/external-core"),
+                                          allowed_local_roots=(Path("/snapshot"),))
 
     def test_test_listing_and_execution_both_use_locked_resolution(self):
         commands = []
@@ -213,6 +330,81 @@ class DownstreamCompatibilityTests(unittest.TestCase):
         self.assertEqual(validate.call_args.kwargs["expected_core"], Path("/core"))
         self.assertEqual(validate.call_args.kwargs["expected_redis"], Path("/snapshot/redis"))
 
+    def test_nested_manifest_uses_its_directory_for_all_cargo_stages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "nested/fixture/Cargo.toml"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text("[package]\nname='fixture'\n")
+            env = {"CARGO_TARGET_DIR": "/target"}
+            commands = []
+
+            def fake_run(command, **kwargs):
+                commands.append((command, kwargs))
+                if "metadata" in command:
+                    return "{}"
+                if "--list" in command:
+                    return "target: test\n"
+                return ("test target ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; "
+                        "0 measured; 0 filtered out\n")
+
+            with patch("scripts.check_downstream_compatibility.run", side_effect=fake_run), \
+                    patch("scripts.check_downstream_compatibility.validate_graph_for_downstream"):
+                metadata(Path(directory), "sqlite", Path("/core"), None, Path("/target"),
+                         manifest=manifest)
+                verify_test(Path(directory), "target",
+                            ["--features", "sqlite", "--test", "smoke", "target"],
+                            Path("/core"), None, env, manifest=manifest)
+
+            self.assertEqual(len(commands), 4)
+            self.assertTrue(all(call[1]["cwd"] == manifest.parent for call in commands))
+            self.assertTrue(all(call[1]["env"]["CARGO_TARGET_DIR"] == "/target"
+                                for call in commands))
+            self.assertTrue(all(command[command.index("--features") + 1] == "sqlite"
+                                for command, _kwargs in commands))
+            cargo_configs = []
+            for command, _kwargs in commands:
+                cargo_configs.append(tuple(
+                    command[index + 1] for index, value in enumerate(command[:-1])
+                    if value == "--config"))
+            self.assertEqual(len(set(cargo_configs)), 1)
+
+    def test_cargo_194_offline_fixture_honors_fixture_local_config_for_all_stages(self):
+        cargo_version = subprocess.run(["cargo", "--version"], check=True, text=True,
+                                       capture_output=True).stdout.strip()
+        self.assertIn("cargo 1.94.", cargo_version)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "fixture"
+            (root / ".cargo").mkdir(parents=True)
+            (root / "tests").mkdir()
+            patch_root = root / "local-patch"
+            patch_root.mkdir()
+            core_root = root / "core"
+            core_root.mkdir()
+            (root / "Cargo.toml").write_text(
+                "[package]\nname='offline-consumer'\nversion='0.1.0'\nedition='2021'\n\n"
+                "[dependencies]\nlocal-patch='1'\nqubit-event-bus='0.21'\n")
+            (root / ".cargo/config.toml").write_text(
+                '[patch.crates-io]\nlocal-patch = { path = "local-patch" }\n')
+            (root / "tests/smoke.rs").write_text("#[test] fn offline_fixture_runs() {}\n")
+            (patch_root / "Cargo.toml").write_text(
+                "[package]\nname='local-patch'\nversion='1.0.0'\nedition='2021'\n")
+            (patch_root / "src").mkdir()
+            (patch_root / "src/lib.rs").write_text("")
+            (core_root / "Cargo.toml").write_text(
+                "[package]\nname='qubit-event-bus'\nversion='0.21.0'\nedition='2021'\n")
+            (core_root / "src").mkdir()
+            (core_root / "src/lib.rs").write_text("")
+            env = os.environ.copy()
+            env["CARGO_NET_OFFLINE"] = "true"
+            env["CARGO_TARGET_DIR"] = str(Path(directory) / "target")
+            # The fixture's own patch is resolved by metadata and reused by the
+            # locked metadata, exact test listing, and exact test execution.
+            with patch.dict(os.environ, {"CARGO_NET_OFFLINE": "true"}):
+                metadata(root, None, core_root, None, Path(env["CARGO_TARGET_DIR"]),
+                         manifest=root / "Cargo.toml", allowed_local_roots=(root,))
+                verify_test(root, "offline_fixture_runs", ["--test", "smoke", "offline_fixture_runs"],
+                            core_root, None, env, manifest=root / "Cargo.toml")
+
     def test_metadata_runs_real_graph_validation_for_arbitrary_root_name(self):
         core_id = "qubit-event-bus 0.21.0 (path+file:///core)"
         redis_id = "qubit-event-bus-redis 0.7.0 (path+file:///redis)"
@@ -234,7 +426,8 @@ class DownstreamCompatibilityTests(unittest.TestCase):
         root = Path("/snapshot/arbitrary-project-name")
         with patch("scripts.check_downstream_compatibility.run", return_value=json.dumps(graph)) as run_command:
             result = metadata(root, "sqlite,event-bus", Path("/core"), Path("/redis"),
-                              Path("/target"), expected_redis=Path("/redis"))
+                              Path("/target"), expected_redis=Path("/redis"),
+                              allowed_local_roots=(Path("/redis"),))
         self.assertEqual(result, graph)
         self.assertEqual(run_command.call_count, 2)
 
@@ -449,7 +642,8 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             metadata_roots = []
 
             def capture_metadata(root, _features, requested_core, redis_patch, _target,
-                                 *, expected_redis=None, manifest=None, all_features=False):
+                                 *, expected_redis=None, manifest=None, all_features=False,
+                                 allowed_local_roots=None):
                 metadata_roots.append(root)
                 self.assertNotIn(root, (redis, task))
                 self.assertEqual((root / "src/lib.rs").read_text(),

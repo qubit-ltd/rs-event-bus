@@ -9,7 +9,6 @@ import re
 import subprocess
 import sys
 import tempfile
-import tomllib
 from dataclasses import dataclass
 
 try:
@@ -120,7 +119,7 @@ def cargo_config(core, redis=None):
 
 
 def metadata(root, features, core, redis, target, *, expected_redis=None,
-             manifest=None, all_features=False):
+             manifest=None, all_features=False, allowed_local_roots=None):
     manifest = Path(manifest) if manifest is not None else root / "Cargo.toml"
     command = ["cargo", "metadata", "--format-version", "1", "--manifest-path", str(manifest)]
     command.extend(cargo_config(core, redis))
@@ -139,7 +138,8 @@ def metadata(root, features, core, redis, target, *, expected_redis=None,
                         label=f"metadata-locked:{root.name}:{features or ('all' if all_features else 'default')}",
                         print_stdout=False)
     graph = json.loads(locked_output)
-    validate_graph_for_downstream(graph, expected_core=core, expected_redis=expected_redis)
+    validate_graph_for_downstream(graph, expected_core=core, expected_redis=expected_redis,
+                                  allowed_local_roots=allowed_local_roots)
     return graph
 
 
@@ -152,11 +152,18 @@ def run_downstream_checks(roots, core, target_root, *, include_execution_service
         manifest = root / config.manifest
         package = roots["redis"] if config.root == "rs-task" else None
         target = target_root / config.root
+        if config.root == "redis":
+            allowed_local_roots = (root,)
+        elif config.root == "rs-task":
+            allowed_local_roots = (root, roots["redis"])
+        else:
+            allowed_local_roots = (root.parents[1],)
         key = (manifest, config.features, config.all_features)
         if key not in checked_manifests:
             metadata(root, config.features, core, package, target,
                      expected_redis=package, manifest=manifest,
-                     all_features=config.all_features)
+                     all_features=config.all_features,
+                     allowed_local_roots=allowed_local_roots)
             checked_manifests.add(key)
         env = os.environ.copy()
         env["CARGO_TARGET_DIR"] = str(target)
@@ -201,6 +208,8 @@ def _repository_root(path, boundary):
 
 def discover_local_repositories(manifest, sibling_root, source_root=None):
     """Find sibling repositories required by an IoC fixture's local paths and patches."""
+    import tomllib
+
     manifest = Path(manifest).resolve()
     boundary = Path(sibling_root).resolve()
     source_root = Path(source_root).resolve() if source_root else manifest.parents[3]
@@ -219,6 +228,11 @@ def discover_local_repositories(manifest, sibling_root, source_root=None):
         except (OSError, tomllib.TOMLDecodeError) as error:
             raise ValueError(f"cannot read local dependency manifest {current}: {error}") from error
         for relative in _manifest_paths(data):
+            if Path(relative).is_absolute():
+                raise ValueError(
+                    f"absolute local path in {current}: {relative}; use a path relative "
+                    "to the referencing manifest so it remains valid in the source snapshot"
+                )
             dependency = (current.parent / relative).resolve()
             try:
                 dependency.relative_to(boundary)
@@ -238,14 +252,14 @@ def verify_test(root, name, arguments, core, redis, env, *, manifest=None):
     config = cargo_config(core, redis)
     list_command = ["cargo", "test", "--locked", "--manifest-path", str(manifest), *config,
                     *arguments, "--", "--list", "--exact"]
-    listing = run(list_command, cwd=root, env=env, label=f"list:{root.name}:{name}")
+    listing = run(list_command, cwd=manifest.parent, env=env, label=f"list:{root.name}:{name}")
     matches = [line for line in listing.splitlines() if line.strip() == f"{name}: test"]
     if len(matches) != 1:
         raise RuntimeError(f"expected exactly one test listing for {name!r}, got {len(matches)}")
     command = ["cargo", "test", "--locked", "--manifest-path", str(manifest), *config,
                *arguments, "--", "--exact", "--test-threads=1", "--format", "pretty",
                "--color", "never"]
-    output = run(command, cwd=root, env=env, label=f"test:{root.name}:{name}")
+    output = run(command, cwd=manifest.parent, env=env, label=f"test:{root.name}:{name}")
     target_line = f"test {name} ... ok"
     target_runs = [line.strip() for line in output.splitlines() if line.strip() == target_line]
     if len(target_runs) != 1:
@@ -289,6 +303,15 @@ def main():
     parser.add_argument("--use-worktrees", action="store_true",
                         help="compatibility alias; validate tracked-source snapshots")
     args = parser.parse_args()
+    if args.execution_services_root is not None:
+        try:
+            import tomllib  # noqa: F401
+        except ModuleNotFoundError as error:
+            if error.name == "tomllib":
+                raise ValueError(
+                    "--execution-services-root requires Python 3.11 or newer (tomllib is unavailable)"
+                ) from error
+            raise
     core = (args.core_root or Path(__file__).resolve().parents[1]).resolve()
     inputs = [("redis", args.redis_root.resolve()), ("rs-task", args.task_root.resolve())]
     if args.execution_services_root is not None:
@@ -300,6 +323,14 @@ def main():
         revision, changes = git_revision_and_tracked_changes(root)
         print(f"{label}: revision={revision} root={root} "
               f"tracked_changes={changes!r}", flush=True)
+
+    local_repositories = None
+    if args.execution_services_root is not None:
+        execution_source = args.execution_services_root.resolve()
+        sibling_root = execution_source.parent
+        fixture_manifest = execution_source / "tests/fixtures/ioc_application_consumer/Cargo.toml"
+        local_repositories = discover_local_repositories(
+            fixture_manifest, sibling_root, execution_source)
 
     with tempfile.TemporaryDirectory(prefix="event-bus-downstream-") as temp:
         temp_root = Path(temp)
@@ -314,10 +345,7 @@ def main():
             snapshots[label] = snapshot
         if args.execution_services_root is not None:
             execution_source = args.execution_services_root.resolve()
-            fixture_manifest = execution_source / "tests/fixtures/ioc_application_consumer/Cargo.toml"
             sibling_root = execution_source.parent
-            local_repositories = discover_local_repositories(
-                fixture_manifest, sibling_root, execution_source)
             for repository in local_repositories:
                 relative = repository.relative_to(sibling_root)
                 snapshot = temp_root / "sources" / "siblings" / relative
