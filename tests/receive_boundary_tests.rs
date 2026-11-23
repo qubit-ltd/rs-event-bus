@@ -14,7 +14,6 @@ use std::fmt;
 use std::future::poll_fn;
 use std::io::Error as IoError;
 use std::num::NonZeroUsize;
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
@@ -641,9 +640,8 @@ fn test_header_limit_stops_before_codec_and_settlement_for_sync_and_async() {
 
 #[test]
 fn test_rejected_receive_cleanup_isolates_token_and_transport_panics() {
-    let child_case = std::env::var("RECEIVE_BOUNDARY_CLEANUP_CHILD").ok();
+    let child_case = std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").ok();
     let Some(child_case) = child_case else {
-        let executable = std::env::current_exe().expect("test executable path");
         for asynchronous in [false, true] {
             for headers_rejected in [false, true] {
                 for (token_panics, payload_panics) in [(true, false), (false, true), (true, true)] {
@@ -654,17 +652,10 @@ fn test_rejected_receive_cleanup_isolates_token_and_transport_panics() {
                         u8::from(token_panics),
                         u8::from(payload_panics),
                     );
-                    let output = Command::new(&executable)
-                        .arg("--exact")
-                        .arg("test_rejected_receive_cleanup_isolates_token_and_transport_panics")
-                        .arg("--nocapture")
-                        .env("RECEIVE_BOUNDARY_CLEANUP_CHILD", mode)
-                        .output()
-                        .expect("isolated cleanup subprocess");
-                    assert!(
-                        output.status.success(),
-                        "cleanup subprocess failed: {}",
-                        String::from_utf8_lossy(&output.stderr)
+                    support::isolated_process::run_case_with_timeout(
+                        "test_rejected_receive_cleanup_isolates_token_and_transport_panics",
+                        &mode,
+                        Duration::from_secs(10),
                     );
                 }
             }
