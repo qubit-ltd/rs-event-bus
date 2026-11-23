@@ -267,6 +267,28 @@ mod tests {
     }
 
     #[test]
+    fn test_unregistered_waker_is_not_notified_and_waiter_id_can_be_reused() {
+        let signal = Arc::new(AsyncSignal::default());
+        let probe = Arc::new(CloneDropProbe {
+            signal: Arc::downgrade(&signal),
+            wake_count: AtomicUsize::new(0),
+        });
+        let pointer = Arc::into_raw(Arc::clone(&probe)).cast();
+        // SAFETY: The test vtable balances all Arc ownership operations.
+        let waker = unsafe { Waker::from_raw(RawWaker::new(pointer, &PROBE_VTABLE)) };
+
+        signal.register_waiter(9, &waker);
+        signal.unregister(9);
+        signal.notify();
+        assert_eq!(0, probe.wake_count.load(Ordering::Relaxed));
+
+        signal.register_waiter(9, &waker);
+        signal.notify();
+        assert_eq!(1, probe.wake_count.load(Ordering::Relaxed));
+        drop(waker);
+    }
+
+    #[test]
     fn test_alternating_waker_replaces_registration() {
         let signal = Arc::new(AsyncSignal::default());
         let first_probe = Arc::new(CloneDropProbe {
