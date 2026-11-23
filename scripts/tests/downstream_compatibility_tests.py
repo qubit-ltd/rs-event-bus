@@ -302,6 +302,9 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             lockfile = root / "Cargo.lock"
             original = b"original\x00 lock\r\n"
             lockfile.write_bytes(original)
+            os.utime(lockfile, ns=(1_600_000_000_123_456_789,
+                                   1_600_000_001_987_654_321))
+            original_mtime = lockfile.stat().st_mtime_ns
 
             def mutate(*_args):
                 lockfile.write_bytes(b"cargo changed this\n")
@@ -310,6 +313,7 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             with patch("scripts.check_downstream_compatibility.metadata", side_effect=mutate):
                 metadata_preserving_lock(root, None, root, None, root)
             self.assertEqual(lockfile.read_bytes(), original)
+            self.assertEqual(lockfile.stat().st_mtime_ns, original_mtime)
 
             def mutate_then_fail(*_args):
                 lockfile.write_bytes(b"partial cargo output\n")
@@ -319,6 +323,24 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "metadata failed"):
                     metadata_preserving_lock(root, None, root, None, root)
             self.assertEqual(lockfile.read_bytes(), original)
+            self.assertEqual(lockfile.stat().st_mtime_ns, original_mtime)
+
+            lockfile.unlink()
+            for failure in (False, True):
+                def create_then_finish(*_args):
+                    lockfile.write_bytes(b"cargo generated this\n")
+                    if failure:
+                        raise RuntimeError("metadata failed")
+                    return {}
+
+                with patch("scripts.check_downstream_compatibility.metadata",
+                           side_effect=create_then_finish):
+                    if failure:
+                        with self.assertRaisesRegex(RuntimeError, "metadata failed"):
+                            metadata_preserving_lock(root, None, root, None, root)
+                    else:
+                        metadata_preserving_lock(root, None, root, None, root)
+                self.assertFalse(lockfile.exists())
 
 
 if __name__ == "__main__":

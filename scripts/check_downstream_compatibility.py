@@ -122,7 +122,8 @@ def metadata(root, features, core, redis, target):
 def metadata_preserving_lock(root, features, core, redis, target):
     """Run metadata while preserving a direct worktree's lockfile exactly."""
     lockfile = root / "Cargo.lock"
-    original = lockfile.read_bytes() if lockfile.exists() else None
+    original_stat = lockfile.stat() if lockfile.exists() else None
+    original = lockfile.read_bytes() if original_stat is not None else None
     try:
         return metadata(root, features, core, redis, target)
     finally:
@@ -130,6 +131,7 @@ def metadata_preserving_lock(root, features, core, redis, target):
             lockfile.unlink(missing_ok=True)
         else:
             lockfile.write_bytes(original)
+            os.utime(lockfile, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
 
 
 def verify_test(root, name, arguments, core, redis, env):
