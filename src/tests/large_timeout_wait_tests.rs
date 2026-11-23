@@ -82,8 +82,56 @@ const WAIT_TIMEOUTS: [Duration; 3] = [
 ];
 
 #[test]
+fn test_sync_cancel_causal_regression() {
+    let provider = local_spi();
+    let bus = EventBus::from_spi(ProviderId::new("cancel-regression").unwrap(), Arc::clone(&provider)).unwrap();
+    let topic = Topic::<u32>::new("cancel-regression.idle").unwrap();
+    let request = SubscribeRequest::new("cancel-regression-idle", topic).unwrap();
+    let waiting = test_wait_probe::install("local_receive");
+    let subscription = bus.subscribe(request, |_| {}).unwrap();
+    subscription.test_control().enable_cancellation_probe();
+    waiting
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worker entered its normal provider receive wait");
+    subscription.cancel().unwrap();
+
+    let sample = subscription
+        .test_control()
+        .cancellation_probe_snapshot()
+        .expect("causal probe was enabled");
+    let requested = sample.requested.expect("cancel request was recorded");
+    assert!(
+        !sample.receive_returns_after_request.is_empty(),
+        "worker must return from receive after the cancellation request"
+    );
+    assert!(
+        sample
+            .receive_returns_after_request
+            .iter()
+            .all(|returned| *returned >= requested),
+        "receive return timestamps must follow the cancellation request"
+    );
+    let worker_finished = sample.worker_finished.expect("worker completion was recorded");
+    assert!(
+        worker_finished >= requested,
+        "worker completion must follow the cancellation request"
+    );
+    assert!(
+        sample
+            .receive_returns_after_request
+            .iter()
+            .all(|returned| *returned <= worker_finished),
+        "receive must return before worker completion"
+    );
+
+    let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
+    run_blocked_handler_controls();
+}
+
+#[test]
+#[ignore = "36-case instrumented performance measurement; run explicitly as documented in doc/local-shutdown-measurements-20261109.md"]
 fn test_sync_cancel_causal_probe_and_poll_intervals() {
-    isolated_with_watchdog(
+    isolated_ignored_with_watchdog(
         "test_sync_cancel_causal_probe_and_poll_intervals",
         "sync-cancel-causal",
         Duration::from_secs(120),
@@ -935,6 +983,20 @@ pub(crate) fn isolated(test_name: &str, case: &str, child: impl FnOnce()) {
 }
 
 fn isolated_with_watchdog(test_name: &str, case: &str, watchdog: Duration, child: impl FnOnce()) {
+    isolated_with_watchdog_and_ignore(test_name, case, watchdog, false, child);
+}
+
+fn isolated_ignored_with_watchdog(test_name: &str, case: &str, watchdog: Duration, child: impl FnOnce()) {
+    isolated_with_watchdog_and_ignore(test_name, case, watchdog, true, child);
+}
+
+fn isolated_with_watchdog_and_ignore(
+    test_name: &str,
+    case: &str,
+    watchdog: Duration,
+    include_ignored: bool,
+    child: impl FnOnce(),
+) {
     if std::env::var(CASE_ENV).as_deref() == Ok(case) {
         child();
         return;
@@ -952,8 +1014,12 @@ fn isolated_with_watchdog(test_name: &str, case: &str, watchdog: Duration, child
         .collect::<Vec<_>>();
     assert_eq!(1, matching.len(), "test name resolves exactly once");
     let exact_name = matching[0].trim_end_matches(": test");
-    let mut child = Command::new(executable)
-        .args(["--exact", exact_name, "--nocapture", "--test-threads=1"])
+    let mut command = Command::new(executable);
+    command.args(["--exact", exact_name, "--nocapture", "--test-threads=1"]);
+    if include_ignored {
+        command.arg("--ignored");
+    }
+    let mut child = command
         .env(CASE_ENV, case)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
