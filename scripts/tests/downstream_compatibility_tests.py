@@ -12,6 +12,7 @@ from unittest.mock import patch
 from scripts.check_downstream_compatibility import cargo_config
 from scripts.check_downstream_compatibility import main
 from scripts.check_downstream_compatibility import metadata
+from scripts.check_downstream_compatibility import metadata_preserving_lock
 from scripts.check_downstream_compatibility import run
 from scripts.check_downstream_compatibility import validate_graph_for_downstream
 from scripts.check_downstream_compatibility import verify_test
@@ -294,6 +295,30 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             self.assertEqual(copy.call_count, 0)
             self.assertIn(f"core: revision=", stdout.getvalue())
             self.assertIn("downstream compatibility checks passed", stdout.getvalue())
+
+    def test_metadata_preserving_lock_restores_bytes_on_success_and_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lockfile = root / "Cargo.lock"
+            original = b"original\x00 lock\r\n"
+            lockfile.write_bytes(original)
+
+            def mutate(*_args):
+                lockfile.write_bytes(b"cargo changed this\n")
+                return {}
+
+            with patch("scripts.check_downstream_compatibility.metadata", side_effect=mutate):
+                metadata_preserving_lock(root, None, root, None, root)
+            self.assertEqual(lockfile.read_bytes(), original)
+
+            def mutate_then_fail(*_args):
+                lockfile.write_bytes(b"partial cargo output\n")
+                raise RuntimeError("metadata failed")
+
+            with patch("scripts.check_downstream_compatibility.metadata", side_effect=mutate_then_fail):
+                with self.assertRaisesRegex(RuntimeError, "metadata failed"):
+                    metadata_preserving_lock(root, None, root, None, root)
+            self.assertEqual(lockfile.read_bytes(), original)
 
 
 if __name__ == "__main__":
