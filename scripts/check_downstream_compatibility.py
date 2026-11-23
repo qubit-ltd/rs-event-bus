@@ -300,15 +300,17 @@ def _is_workspace_member(package_dir, root, root_data):
             current_data = tomllib.loads(current_manifest.read_text())
         except (OSError, tomllib.TOMLDecodeError):
             continue
-        paths = list(_manifest_paths(current_data))
+        paths = [(relative, current) for relative in _manifest_paths(current_data)]
         if "workspace" in current_data:
-            paths.extend(_inherited_workspace_paths(current_data, current_data))
+            paths.extend((relative, current)
+                         for relative in _inherited_workspace_paths(current_data, current_data))
         else:
-            paths.extend(_inherited_workspace_paths(current_data, root_data))
-        for relative in paths:
+            paths.extend((relative, root)
+                         for relative in _inherited_workspace_paths(current_data, root_data))
+        for relative, base in paths:
             if Path(relative).is_absolute():
                 continue
-            dependency = (current / relative).resolve()
+            dependency = (base / relative).resolve()
             try:
                 dependency.relative_to(root.resolve())
             except ValueError:

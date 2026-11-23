@@ -242,6 +242,51 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             self._assert_cargo_snapshot_discovers_only_reachable_packages(
                 parent, package / "Cargo.toml", "workspace-dependency")
 
+    def test_cargo_1_94_transitive_inherited_path_from_implicit_member_is_discovered(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory) / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution-services", "execution")
+            dependency = self.make_input_repository(parent / "rs-transitive-dependency", "transitive")
+            (dependency / "Cargo.toml").write_text(
+                '[package]\nname="transitive-dependency"\nversion="0.1.0"\n'
+                'edition="2021"\n')
+            (dependency / "Cargo.lock").write_text("")
+            consumer = execution / "members/consumer"
+            consumer.mkdir(parents=True)
+            (consumer / "Cargo.toml").write_text(
+                '[package]\nname="consumer"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\nimplicit-member={workspace=true}\n')
+            (consumer / "src").mkdir()
+            (consumer / "src/lib.rs").write_text("pub fn consumer() {}\n")
+            implicit_member = execution / "packages/implicit-member"
+            implicit_member.mkdir(parents=True)
+            (implicit_member / "Cargo.toml").write_text(
+                '[package]\nname="implicit-member"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\ntransitive-dependency={workspace=true}\n')
+            (implicit_member / "src").mkdir()
+            (implicit_member / "src/lib.rs").write_text("pub fn implicit_member() {}\n")
+            (execution / "Cargo.toml").write_text(
+                '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                '[workspace]\nmembers=["members/consumer"]\n'
+                '[workspace.dependencies]\nimplicit-member={path="packages/implicit-member"}\n'
+                'transitive-dependency={path="../rs-transitive-dependency"}\n')
+            (execution / "Cargo.lock").write_text("")
+            for root in (execution, dependency):
+                subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+                subprocess.run(["git", "-C", str(root), "commit", "-qm", "cargo fixture"], check=True)
+
+            source_manifest = consumer / "Cargo.toml"
+            source_graph = json.loads(self._cargo_metadata_offline(source_manifest).stdout)
+            self._cargo_metadata_offline(source_manifest, locked=True)
+            packages = {package["name"]: package for package in source_graph["packages"]}
+            self.assertIn(packages["implicit-member"]["id"], source_graph["workspace_members"])
+            self.assertEqual(Path(packages["transitive-dependency"]["manifest_path"]),
+                             dependency / "Cargo.toml")
+
+            discovered = discover_local_repositories(source_manifest, parent, execution)
+            self.assertEqual(set(discovered), {execution.resolve(), dependency.resolve()})
+
     def test_cargo_1_94_fixture_config_path_patch_is_snapshotted(self):
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory) / "siblings"
