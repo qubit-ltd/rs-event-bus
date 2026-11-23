@@ -12,6 +12,7 @@ mod support;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -22,6 +23,7 @@ use std::task::RawWakerVTable;
 use std::task::Waker;
 use std::time::Duration;
 
+use qubit_event_bus::AsyncSubscription;
 use qubit_event_bus::DeliveryError;
 use qubit_event_bus::facade::AsyncEventBus;
 use qubit_event_bus::model::ProviderId;
@@ -159,6 +161,136 @@ fn drop_panic_waker(state: &Arc<DropPanicState>) -> Waker {
     let data = Arc::into_raw(Arc::clone(state)).cast();
     // SAFETY: DROP_PANIC_WAKER_VTABLE maintains one Arc reference per waker.
     unsafe { Waker::from_raw(RawWaker::new(data, &DROP_PANIC_WAKER_VTABLE)) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReentryResult {
+    WouldDeadlock,
+    Pending,
+    OtherReady,
+}
+
+struct ReentryWakerState {
+    fired: AtomicBool,
+    subscription: Arc<AsyncSubscription<u32>>,
+    result: Mutex<Option<ReentryResult>>,
+}
+
+unsafe fn clone_reentry_waker(data: *const ()) -> RawWaker {
+    // SAFETY: Every raw pointer is an owned Arc<ReentryWakerState>.
+    unsafe { Arc::<ReentryWakerState>::increment_strong_count(data.cast()) };
+    RawWaker::new(data, &REENTRY_WAKER_VTABLE)
+}
+
+unsafe fn wake_reentry_waker(data: *const ()) {
+    // SAFETY: wake consumes this RawWaker's owned Arc reference.
+    drop(unsafe { Arc::<ReentryWakerState>::from_raw(data.cast()) });
+}
+
+unsafe fn wake_reentry_waker_by_ref(_: *const ()) {}
+
+unsafe fn drop_reentry_waker(data: *const ()) {
+    // SAFETY: drop consumes this RawWaker's owned Arc reference.
+    let state = unsafe { Arc::<ReentryWakerState>::from_raw(data.cast()) };
+    if !state.fired.swap(true, Ordering::AcqRel) {
+        let mut run = Box::pin(state.subscription.run(|_| async { Ok::<(), DeliveryError>(()) }));
+        let result = match poll_once(run.as_mut()) {
+            Poll::Pending => ReentryResult::Pending,
+            Poll::Ready(Err(qubit_event_bus::ReceiveError::WouldDeadlock)) => ReentryResult::WouldDeadlock,
+            Poll::Ready(_) => ReentryResult::OtherReady,
+        };
+        *state.result.lock().expect("probe result lock") = Some(result);
+    }
+}
+
+static REENTRY_WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(
+    clone_reentry_waker,
+    wake_reentry_waker,
+    wake_reentry_waker_by_ref,
+    drop_reentry_waker,
+);
+
+fn reentry_waker(subscription: Arc<AsyncSubscription<u32>>) -> (Waker, Arc<ReentryWakerState>) {
+    let state = Arc::new(ReentryWakerState {
+        fired: AtomicBool::new(false),
+        subscription,
+        result: Mutex::new(None),
+    });
+    let data = Arc::into_raw(Arc::clone(&state)).cast();
+    // SAFETY: REENTRY_WAKER_VTABLE maintains one Arc reference per RawWaker.
+    (
+        unsafe { Waker::from_raw(RawWaker::new(data, &REENTRY_WAKER_VTABLE)) },
+        state,
+    )
+}
+
+#[test]
+fn test_lease_registration_reentry_and_waiter_handoff() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let provider: Arc<dyn AsyncEventBusSpi> = spi.clone();
+    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").expect("provider"), provider)
+        .expect("valid provider capabilities");
+    let topic = Topic::<u32>::new("lease-registration-reentry").expect("topic");
+
+    block_on(async {
+        let subscription = Arc::new(
+            bus.subscribe(SubscribeRequest::new("lease-reentry", topic).expect("request"))
+                .await
+                .expect("subscription"),
+        );
+        let (outer_waker, outer_state) = reentry_waker(Arc::clone(&subscription));
+        let mut outer_context = Context::from_waker(&outer_waker);
+        let mut outer = Box::pin(subscription.run(|_| async { Ok::<(), DeliveryError>(()) }));
+        assert!(matches!(
+            Future::poll(Pin::as_mut(&mut outer), &mut outer_context),
+            Poll::Pending
+        ));
+        assert_eq!(
+            Some(ReentryResult::WouldDeadlock),
+            *outer_state.result.lock().expect("probe result lock")
+        );
+
+        let (old_waker, old_state) = reentry_waker(Arc::clone(&subscription));
+        let (new_waker, new_state) = reentry_waker(Arc::clone(&subscription));
+        let mut old_context = Context::from_waker(&old_waker);
+        let mut new_context = Context::from_waker(&new_waker);
+        let mut waiting = Box::pin(subscription.run(|_| async { Ok::<(), DeliveryError>(()) }));
+        assert!(matches!(
+            Future::poll(Pin::as_mut(&mut waiting), &mut old_context),
+            Poll::Pending
+        ));
+        assert!(matches!(
+            Future::poll(Pin::as_mut(&mut waiting), &mut new_context),
+            Poll::Pending
+        ));
+        assert_eq!(
+            Some(ReentryResult::WouldDeadlock),
+            *old_state.result.lock().expect("probe result lock")
+        );
+
+        drop(waiting);
+        assert_eq!(
+            Some(ReentryResult::WouldDeadlock),
+            *new_state.result.lock().expect("probe result lock")
+        );
+        drop(outer);
+        assert_eq!(
+            qubit_event_bus::AsyncSubscriptionRunState::Paused,
+            subscription.run_state()
+        );
+
+        let mut successor = Box::pin(subscription.run(|_| async { Ok::<(), DeliveryError>(()) }));
+        assert!(matches!(poll_once(successor.as_mut()), Poll::Pending));
+        assert_eq!(
+            qubit_event_bus::AsyncSubscriptionRunState::Running,
+            subscription.run_state()
+        );
+        drop(successor);
+        let _report = bus.shutdown(ShutdownMode::Immediate).await.expect("shutdown");
+        drop(outer_waker);
+        drop(old_waker);
+        drop(new_waker);
+    });
 }
 
 #[test]
