@@ -3318,11 +3318,12 @@ fn test_async_failure_with_unsupported_reject_reports_unavailable_without_spi_ca
             Default::default(),
         ));
         let runner = std::thread::spawn(move || {
-            block_on(subscription.run(|_| async {
+            let result = block_on(subscription.run(|_| async {
                 Err(DeliveryError::Handler {
                     source: Box::new(std::io::Error::other("expected")),
                 })
-            }))
+            }));
+            (result, subscription.delivery_metrics())
         });
         for _ in 0..100 {
             if diagnostics
@@ -3336,13 +3337,238 @@ fn test_async_failure_with_unsupported_reject_reports_unavailable_without_spi_ca
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         let _ = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
-        runner.join().unwrap().unwrap();
+        let (result, metrics) = runner.join().unwrap();
+        result.unwrap();
+        assert_eq!(metrics.metrics.completed, 0, "unsupported Reject is unresolved");
+        assert_eq!(
+            metrics.metrics.abandoned_ephemeral, 1,
+            "ephemeral delivery is counted once"
+        );
     });
     assert_eq!(spi.settlement_count(), 0);
     assert!(diagnostics.lock().unwrap().iter().any(|item| matches!(item,
         Diagnostic::SettlementUnavailable { event_id, requested: DeliveryDisposition::Reject, .. }
             if event_id.as_str() == "unsettled-event"
     )));
+}
+
+#[test]
+fn test_async_accept_without_settlement_capability_only_completes_without_token() {
+    for with_token in [false, true] {
+        let spi = Arc::new(FakeAsyncEventBusSpi::with_capabilities(
+            crate::support::fake_spi::native_no_settlement_capabilities(),
+        ));
+        let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone())
+            .expect("valid provider capabilities");
+        let mut subscription = block_on(bus.subscribe(SubscribeRequest::new("accept-no-settlement", topic()).unwrap()))
+            .expect("subscription");
+        spi.enqueue(InboundMessage::new(
+            TopicAddress::new("test.topic").unwrap(),
+            EventId::new(if with_token {
+                "accept-with-token"
+            } else {
+                "accept-without-token"
+            })
+            .unwrap(),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            TransportPayload::Native(Arc::new(5_u32)),
+            with_token.then(|| SettlementToken::new(subscription.id(), "accept-token")),
+            Default::default(),
+        ));
+        let mut runner = Box::pin(subscription.run(|_| async { Ok::<(), DeliveryError>(()) }));
+        let mut metrics = subscription.delivery_metrics().metrics;
+        for _ in 0..128 {
+            let _ = crate::support::manual_async::poll_once(runner.as_mut());
+            metrics = subscription.delivery_metrics().metrics;
+            if metrics.completed + metrics.abandoned_ephemeral > 0 {
+                break;
+            }
+        }
+        if with_token {
+            assert_eq!(0, metrics.completed, "unsupported token settlement is unresolved");
+            assert_eq!(1, metrics.abandoned_ephemeral, "ephemeral token is abandoned once");
+            assert_eq!(0, spi.settlement_count());
+        } else {
+            assert_eq!(
+                1, metrics.completed,
+                "no-token Accept completes without provider settlement"
+            );
+            assert_eq!(0, metrics.abandoned_ephemeral);
+        }
+        drop(runner);
+        block_on(subscription.close()).expect("close subscription");
+        let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown bus");
+    }
+}
+
+#[test]
+fn test_async_unsupported_durable_accept_does_not_count_ephemeral_abandonment() {
+    let capabilities = EventBusCapabilities::new(
+        PayloadModes::Native,
+        SettlementCapabilities::None,
+        OrderingCapability::None,
+        DelayedDeliveryCapability::None,
+        DurabilityCapability::Durable,
+        SubscriptionModes::DURABLE,
+        false,
+        ReplayCapability::None,
+        PublishGuarantee::Accepted,
+        PublishVisibility::Opaque,
+    );
+    let spi = Arc::new(FakeAsyncEventBusSpi::with_capabilities(capabilities));
+    let bus = AsyncEventBus::from_spi(ProviderId::new("durable-no-settlement").unwrap(), spi.clone())
+        .expect("valid provider capabilities");
+    let options = SubscribeOptions::<u32>::builder()
+        .durability(SubscriptionDurability::Durable)
+        .build();
+    let mut subscription = block_on(
+        bus.subscribe(
+            SubscribeRequest::new("durable-accept", topic())
+                .unwrap()
+                .with_options(options),
+        ),
+    )
+    .expect("subscription");
+    spi.enqueue(InboundMessage::new(
+        TopicAddress::new("test.topic").unwrap(),
+        EventId::new("durable-accept-event").unwrap(),
+        SystemTime::UNIX_EPOCH,
+        Headers::new(),
+        None,
+        TransportPayload::Native(Arc::new(8_u32)),
+        Some(SettlementToken::new(subscription.id(), "durable-accept-token")),
+        Default::default(),
+    ));
+    let mut runner = Box::pin(subscription.run(|_| async { Ok::<(), DeliveryError>(()) }));
+    let mut metrics = subscription.delivery_metrics().metrics;
+    for _ in 0..128 {
+        let _ = crate::support::manual_async::poll_once(runner.as_mut());
+        metrics = subscription.delivery_metrics().metrics;
+        if metrics.completed > 0 {
+            break;
+        }
+    }
+    assert_eq!(0, metrics.completed);
+    assert_eq!(0, metrics.abandoned_ephemeral);
+    assert_eq!(0, spi.settlement_count());
+    drop(runner);
+    block_on(subscription.close()).expect("close subscription");
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown bus");
+}
+
+#[test]
+fn test_async_unsupported_retry_is_abandoned_without_spi_call() {
+    let spi = Arc::new(FakeAsyncEventBusSpi::with_capabilities(
+        crate::support::fake_spi::native_no_settlement_capabilities(),
+    ));
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
+    let options = SubscribeOptions::<u32>::builder()
+        .error_handler(|_, _| FailureDirective::Requeue)
+        .build();
+    let mut subscription = block_on(
+        bus.subscribe(
+            SubscribeRequest::new("unsupported-retry", topic())
+                .unwrap()
+                .with_options(options),
+        ),
+    )
+    .expect("subscription");
+    spi.enqueue(crate::support::fake_spi::inbound_message(Some(SettlementToken::new(
+        subscription.id(),
+        "unsupported-retry-token",
+    ))));
+    let mut runner = Box::pin(subscription.run(|_| async {
+        Err(DeliveryError::Handler {
+            source: Box::new(std::io::Error::other("retry this delivery")),
+        })
+    }));
+    let mut metrics = subscription.delivery_metrics().metrics;
+    for _ in 0..128 {
+        let _ = crate::support::manual_async::poll_once(runner.as_mut());
+        metrics = subscription.delivery_metrics().metrics;
+        if metrics.abandoned_ephemeral > 0 {
+            break;
+        }
+    }
+    assert_eq!(0, metrics.completed);
+    assert_eq!(1, metrics.abandoned_ephemeral);
+    assert_eq!(0, spi.settlement_count());
+    drop(runner);
+    block_on(subscription.close()).expect("close subscription");
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown bus");
+}
+
+#[test]
+fn test_async_codec_reject_without_settlement_capability_is_unresolved() {
+    struct Utf8Codec(ContentType);
+    impl EventCodec<String> for Utf8Codec {
+        fn content_type(&self) -> &ContentType {
+            &self.0
+        }
+        fn schema_id(&self) -> Option<&SchemaId> {
+            None
+        }
+        fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
+            Ok(Arc::from(value.as_bytes()))
+        }
+        fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
+            String::from_utf8(payload.bytes().to_vec()).map_err(|source| CodecError::Decode {
+                source: Box::new(source),
+            })
+        }
+    }
+    let capabilities = EventBusCapabilities::new(
+        PayloadModes::Encoded,
+        SettlementCapabilities::None,
+        OrderingCapability::None,
+        DelayedDeliveryCapability::None,
+        DurabilityCapability::Ephemeral,
+        SubscriptionModes::EPHEMERAL,
+        false,
+        ReplayCapability::None,
+        PublishGuarantee::Accepted,
+        PublishVisibility::Opaque,
+    );
+    let spi = Arc::new(FakeAsyncEventBusSpi::with_capabilities(capabilities));
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
+    let topic = Topic::<String>::new("async.unsupported-codec-reject")
+        .unwrap()
+        .with_codec(Utf8Codec(ContentType::TEXT_PLAIN));
+    let mut subscription =
+        block_on(bus.subscribe(SubscribeRequest::new("codec-reject", topic).unwrap())).expect("subscription");
+    spi.enqueue(InboundMessage::new(
+        TopicAddress::new("async.unsupported-codec-reject").unwrap(),
+        EventId::new("unsupported-codec-reject").unwrap(),
+        SystemTime::UNIX_EPOCH,
+        Headers::new(),
+        None,
+        TransportPayload::Encoded(EncodedPayload::new(
+            Arc::from(b"not utf8".as_slice()),
+            ContentType::TEXT_PLAIN,
+            None,
+        )),
+        Some(SettlementToken::new(subscription.id(), "codec-reject-token")),
+        Default::default(),
+    ));
+    let mut runner = Box::pin(subscription.run(|_| async { Ok::<(), DeliveryError>(()) }));
+    let mut metrics = subscription.delivery_metrics().metrics;
+    for _ in 0..128 {
+        let _ = crate::support::manual_async::poll_once(runner.as_mut());
+        metrics = subscription.delivery_metrics().metrics;
+        if metrics.abandoned_ephemeral > 0 {
+            break;
+        }
+    }
+    assert_eq!(0, metrics.completed);
+    assert_eq!(1, metrics.abandoned_ephemeral);
+    assert_eq!(0, spi.settlement_count());
+    drop(runner);
+    block_on(subscription.close()).expect("close subscription");
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown bus");
 }
 
 #[test]

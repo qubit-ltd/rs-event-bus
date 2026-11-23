@@ -128,7 +128,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 subscriber_id: self.subscriber_id.clone(),
                 requested: disposition,
             });
-            self.finish_completed(index);
+            self.abandon_completed(index);
             return true;
         }
         if let Some(error) = pending.settlement.infrastructure_error.take() {

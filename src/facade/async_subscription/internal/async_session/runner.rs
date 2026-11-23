@@ -166,7 +166,15 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         let handler: SharedAsyncHandler<T> = Arc::new(move |delivery| Box::pin(handler(delivery)));
         let previous_handler = self.handler.replace(handler.clone());
         let bus_key = Arc::as_ptr(&self.inner) as usize;
-        with_subscription_scope(bus_key, self.id, || drop(previous_handler));
+        with_subscription_scope(bus_key, self.id, || {
+            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(previous_handler))) {
+                dispose_panic_payload(payload);
+                self.inner.emit(&Diagnostic::InternalFailure {
+                    origin: "replaced_async_handler_drop".into(),
+                    message: "replaced async handler drop panicked".into(),
+                });
+            }
+        });
         let result = self.run_loop(handler).await;
         let closed = self.close_inner(control).await;
         result?;

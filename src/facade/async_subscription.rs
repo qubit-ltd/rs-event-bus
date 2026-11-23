@@ -271,6 +271,9 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// close succeeds, the handle becomes `Stopped` after local deregistration
     /// and handler cleanup have been attempted, before a receiver or handler
     /// destructor panic is propagated.
+    /// Replacing a previously retained handler uses the same-bus subscription
+    /// context; its destructor panic is contained and reported as an internal
+    /// failure so the new run can proceed.
     pub async fn run<H, F>(&self, handler: H) -> Result<(), ReceiveError>
     where
         H: Fn(Delivery<T>) -> F + Send + Sync + 'static,

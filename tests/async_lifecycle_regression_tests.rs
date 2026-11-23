@@ -288,6 +288,102 @@ fn test_resuming_run_drops_replaced_handler_in_subscription_context() {
 }
 
 #[test]
+fn test_replacing_handler_contains_old_capture_drop_panic_and_runs_new_handler() {
+    struct PanicOnDrop;
+    impl Drop for PanicOnDrop {
+        fn drop(&mut self) {
+            panic!("old handler capture drop probe");
+        }
+    }
+
+    let bus = ready(AsyncEventBus::local(Default::default())).expect("local bus");
+    let topic = Topic::<usize>::new("regression.replaced-handler-drop-panic").expect("topic");
+    let mut subscription =
+        ready(bus.subscribe(SubscribeRequest::new("replaced-handler-drop-panic", topic.clone()).expect("request")))
+            .expect("subscription");
+    let old = Arc::new(PanicOnDrop);
+    let mut first_run = {
+        let old = old.clone();
+        Box::pin(subscription.run(move |_| {
+            let _capture = &old;
+            async { Ok::<(), DeliveryError>(()) }
+        }))
+    };
+    assert!(poll_once(first_run.as_mut(), Waker::noop()).is_pending());
+    drop(first_run);
+    drop(old);
+
+    let diagnostics = Arc::new(Mutex::new(Vec::new()));
+    let seen = diagnostics.clone();
+    let _observer = bus.observe_diagnostics(move |entry| seen.lock().unwrap().push(entry.clone()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let new_calls = calls.clone();
+    let mut resumed = Box::pin(subscription.run(move |_| {
+        new_calls.fetch_add(1, Ordering::SeqCst);
+        async { Ok::<(), DeliveryError>(()) }
+    }));
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert!(poll_once(resumed.as_mut(), Waker::noop()).is_pending());
+        }))
+        .is_ok()
+    );
+    let _ = ready(bus.publish(PublishRequest::new(topic, 1).expect("publish request"))).expect("publish");
+    for _ in 0..8 {
+        if calls.load(Ordering::SeqCst) > 0 {
+            break;
+        }
+        let _ = poll_once(resumed.as_mut(), Waker::noop());
+    }
+    assert_eq!(1, calls.load(Ordering::SeqCst));
+    assert!(diagnostics.lock().unwrap().iter().any(|entry| matches!(entry,
+        qubit_event_bus::Diagnostic::InternalFailure { origin, message }
+            if origin.as_ref() == "replaced_async_handler_drop"
+                && message.as_ref() == "replaced async handler drop panicked"
+    )));
+    drop(resumed);
+    ready(subscription.close()).expect("subscription close");
+    let _ = ready(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
+}
+
+#[test]
+fn test_closing_paused_run_propagates_current_handler_drop_panic_after_stopped() {
+    struct PanicOnDrop;
+    impl Drop for PanicOnDrop {
+        fn drop(&mut self) {
+            panic!("current handler capture drop probe");
+        }
+    }
+
+    let bus = ready(AsyncEventBus::local(Default::default())).expect("local bus");
+    let topic = Topic::<usize>::new("regression.paused-handler-drop-panic").expect("topic");
+    let mut subscription =
+        ready(bus.subscribe(SubscribeRequest::new("paused-handler-drop-panic", topic).expect("request")))
+            .expect("subscription");
+    let capture = Arc::new(PanicOnDrop);
+    let mut runner = {
+        let capture = capture.clone();
+        Box::pin(subscription.run(move |_| {
+            let _capture = &capture;
+            async { Ok::<(), DeliveryError>(()) }
+        }))
+    };
+    assert!(poll_once(runner.as_mut(), Waker::noop()).is_pending());
+    drop(runner);
+    drop(capture);
+    assert_eq!(AsyncSubscriptionRunState::Paused, subscription.run_state());
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ready(subscription.close())))
+        .expect_err("explicit close propagates the current handler destructor panic");
+    assert_eq!(
+        "current handler capture drop probe",
+        panic.downcast_ref::<&str>().copied().unwrap()
+    );
+    assert_eq!(AsyncSubscriptionRunState::Stopped, subscription.run_state());
+    let _ = ready(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
+}
+
+#[test]
 fn test_recursive_run_returns_would_deadlock_before_waiting_for_lease() {
     let bus = ready(AsyncEventBus::local(Default::default())).expect("local bus");
     let topic = Topic::<usize>::new("regression.recursive-run").expect("topic");
