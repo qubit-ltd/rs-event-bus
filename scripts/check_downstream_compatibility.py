@@ -119,6 +119,19 @@ def metadata(root, features, core, redis, target):
     return graph
 
 
+def metadata_preserving_lock(root, features, core, redis, target):
+    """Run metadata while preserving a direct worktree's lockfile exactly."""
+    lockfile = root / "Cargo.lock"
+    original = lockfile.read_bytes() if lockfile.exists() else None
+    try:
+        return metadata(root, features, core, redis, target)
+    finally:
+        if original is None:
+            lockfile.unlink(missing_ok=True)
+        else:
+            lockfile.write_bytes(original)
+
+
 def verify_test(root, name, arguments, core, redis, env):
     manifest = root / "Cargo.toml"
     config = cargo_config(core, redis)
@@ -189,6 +202,7 @@ def main():
         target_root = temp_root / "target"
         if args.use_worktrees:
             redis, task = (root for _label, root in inputs)
+            metadata_check = metadata_preserving_lock
         else:
             snapshots = {}
             for label, source in inputs:
@@ -200,8 +214,9 @@ def main():
                 snapshots[label] = snapshot
             redis = snapshots["redis"]
             task = snapshots["rs-task"]
-        metadata(redis, None, core, None, target_root / "redis")
-        metadata(task, "sqlite,event-bus", core, redis, target_root / "rs-task")
+            metadata_check = metadata
+        metadata_check(redis, None, core, None, target_root / "redis")
+        metadata_check(task, "sqlite,event-bus", core, redis, target_root / "rs-task")
         for label, manifest, test_name, command in TESTS:
             root = task if label == "rs-task-outbox" else redis
             package = redis if root == task else None
