@@ -239,14 +239,19 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         let ephemeral = self.inner.capabilities.durability() == DurabilityCapability::Ephemeral;
         let abandoned = &self.inner.abandoned_deliveries;
         let metrics = &self.metrics;
+        let bus_key = Arc::as_ptr(&self.inner) as usize;
+        let subscription_id = self.id;
         let mut drop_panicked = false;
         for task in self.tasks.extract_if(.., |task| !task.started.load(Ordering::Acquire)) {
             if ephemeral {
                 abandoned.fetch_add(1, Ordering::AcqRel);
                 metrics.record_abandoned_ephemeral();
             }
-            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(task))) {
-                dispose_panic_payload(payload);
+            let result = with_subscription_scope(bus_key, subscription_id, || {
+                catch_unwind(AssertUnwindSafe(|| drop(task)))
+            });
+            if let Err(payload) = result {
+                with_subscription_scope(bus_key, subscription_id, || dispose_panic_payload(payload));
                 drop_panicked = true;
             }
         }
@@ -262,6 +267,8 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
 #[cfg(test)]
 mod tests {
     use std::future::Future;
+    use std::panic::AssertUnwindSafe;
+    use std::panic::catch_unwind;
     use std::pin::Pin;
     use std::sync::Arc;
     use std::sync::Mutex;
@@ -287,6 +294,7 @@ mod tests {
     struct Payload {
         panic_on_drop: AtomicBool,
         drops: Option<Arc<AtomicUsize>>,
+        scope_panic: Option<(usize, qubit_id::Id, Arc<AtomicBool>)>,
     }
 
     impl Drop for Payload {
@@ -295,8 +303,41 @@ mod tests {
                 drops.fetch_add(1, Ordering::AcqRel);
             }
             if self.panic_on_drop.swap(false, Ordering::AcqRel) {
+                if let Some((bus_key, subscription_id, observed)) = self.scope_panic.take() {
+                    std::panic::panic_any(SubscriptionScopePanicPayload {
+                        bus_key,
+                        subscription_id,
+                        observed,
+                    });
+                }
                 panic!("abandoned payload probe");
             }
+        }
+    }
+
+    struct SubscriptionScopePanicPayload {
+        bus_key: usize,
+        subscription_id: qubit_id::Id,
+        observed: Arc<AtomicBool>,
+    }
+
+    impl Drop for SubscriptionScopePanicPayload {
+        fn drop(&mut self) {
+            self.observed.store(
+                crate::facade::async_subscription::internal::is_current_subscription_poll(
+                    self.bus_key,
+                    self.subscription_id,
+                ),
+                Ordering::Release,
+            );
+        }
+    }
+
+    struct DropDuringUnwind<T>(Option<T>);
+
+    impl<T> Drop for DropDuringUnwind<T> {
+        fn drop(&mut self) {
+            drop(self.0.take());
         }
     }
 
@@ -339,6 +380,7 @@ mod tests {
             TransportPayload::Native(Arc::new(Payload {
                 panic_on_drop: AtomicBool::new(panic_on_drop),
                 drops: None,
+                scope_panic: None,
             })),
             None,
             Default::default(),
@@ -480,6 +522,7 @@ mod tests {
         let (bus, subscription) = setup();
         let payload_drops = Arc::new(AtomicUsize::new(0));
         let token_drops = Arc::new(AtomicUsize::new(0));
+        let panic_payload_scope_observed = Arc::new(AtomicBool::new(false));
         let mut lease = block_on(subscription.control.lease()).expect("session lease");
         let session = lease.session.as_mut().expect("leased session");
         session.inner.scheduler.set_dispatch_active(session.id, true);
@@ -492,6 +535,11 @@ mod tests {
         let payload = Arc::new(Payload {
             panic_on_drop: AtomicBool::new(true),
             drops: Some(payload_drops.clone()),
+            scope_panic: Some((
+                Arc::as_ptr(&session.inner) as usize,
+                session.id,
+                panic_payload_scope_observed.clone(),
+            )),
         });
         let message = InboundMessage::new(
             crate::spi::TopicAddress::new("close.test").expect("topic address"),
@@ -529,17 +577,66 @@ mod tests {
         assert!(!handler_started.load(Ordering::Acquire));
         assert_eq!(payload_drops.load(Ordering::Acquire), 1);
         assert_eq!(token_drops.load(Ordering::Acquire), 1);
+        assert!(panic_payload_scope_observed.load(Ordering::Acquire));
         assert_eq!(session.inner.abandoned_deliveries.load(Ordering::Acquire), 1);
         assert_eq!(subscription.delivery_metrics().metrics.abandoned_ephemeral, 1);
         assert!(session.inner.scheduler.take_settlement_ready(session.id).is_none());
         assert!(session.tasks.is_empty());
         session.discard_unstarted_tasks();
         assert_eq!(session.inner.abandoned_deliveries.load(Ordering::Acquire), 1);
+
+        session.inner.scheduler.request_receive(session.id);
+        let id = session
+            .inner
+            .scheduler
+            .take_receive_reservation(session.id)
+            .expect("second receive reservation");
+        let message = InboundMessage::new(
+            crate::spi::TopicAddress::new("close.test").expect("topic address"),
+            EventId::new("unwind-during-task-drop").expect("event id"),
+            std::time::SystemTime::UNIX_EPOCH,
+            Default::default(),
+            None,
+            TransportPayload::Native(Arc::new(Payload {
+                panic_on_drop: AtomicBool::new(true),
+                drops: Some(payload_drops.clone()),
+                scope_panic: None,
+            })),
+            Some(SettlementToken::new(
+                session.id,
+                TokenProbe {
+                    drops: token_drops.clone(),
+                    panic_on_drop: true,
+                },
+            )),
+            Default::default(),
+        );
+        session.prepare_message(message, OwnedDeliveryLease::new(id, &session.inner));
+        let grant = session
+            .inner
+            .scheduler
+            .take_ready(session.id)
+            .expect("second dispatch grant");
+        let pending = session.buffered.pop_front().expect("second pending delivery");
+        assert_eq!(pending.lease.id, grant);
+        let handler: SharedAsyncHandler<Payload> = Arc::new(|_| Box::pin(std::future::pending()));
+        session.start_pending_task(pending, handler);
+        session.inner.abandoned_deliveries.fetch_add(1, Ordering::AcqRel);
+        session.metrics.record_abandoned_ephemeral();
+        let task = session.tasks.pop().expect("second task");
+        let unwind_result = catch_unwind(AssertUnwindSafe(move || {
+            let _drop_during_unwind = DropDuringUnwind(Some(task));
+            panic!("begin unrelated unwind");
+        }));
+        assert!(unwind_result.is_err());
+        assert_eq!(payload_drops.load(Ordering::Acquire), 2);
+        assert_eq!(token_drops.load(Ordering::Acquire), 2);
+        assert_eq!(session.inner.abandoned_deliveries.load(Ordering::Acquire), 2);
         assert!(block_on(session.close_inner(&subscription.control)).is_ok());
         drop(lease);
         drop(subscription);
         let report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
-        assert_eq!(report.known_abandoned_deliveries, 1);
+        assert_eq!(report.known_abandoned_deliveries, 2);
     }
 
     #[test]
