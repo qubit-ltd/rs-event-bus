@@ -68,7 +68,8 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         if *self.inner.state.lock().unwrap_or_else(PoisonError::into_inner) == BusState::Closed {
             return Ok(());
         }
-        self.signals.stop(ShutdownMode::Immediate);
+        let bus_key = Arc::as_ptr(&self.inner) as usize;
+        with_subscription_scope(bus_key, self.id, || self.signals.stop(ShutdownMode::Immediate));
         if let Some(handler) = self.handler.clone()
             && let Err(error) = self.run_loop(handler).await
             && !matches!(error, ReceiveError::Stopped(_))
@@ -101,7 +102,8 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         &mut self,
         control: &AsyncSubscriptionControl<T>,
     ) -> Result<(), Arc<SubscriptionCloseFailure>> {
-        self.signals.stop(ShutdownMode::Immediate);
+        let bus_key = Arc::as_ptr(&self.inner) as usize;
+        with_subscription_scope(bus_key, self.id, || self.signals.stop(ShutdownMode::Immediate));
         self.inner.scheduler.stop_subscription(self.id);
         self.inner.notify_scheduler();
         let _close = {
@@ -446,6 +448,8 @@ mod tests {
         let control = Arc::clone(&subscription.control);
         let lease = block_on(control.lease()).expect("test holds the session lease");
         let signal = lease.session.as_ref().expect("session").signals.signal();
+        // Public close is the natural entry point; the test waiter is injected
+        // because close's exclusive borrow cannot coexist with an active run.
         let waiter_id = signal.next_waiter_id();
         let observed = Arc::new(Mutex::new(None));
         let observed_by_waker = observed.clone();
@@ -477,6 +481,40 @@ mod tests {
             poll_once(close.as_mut()).is_ready(),
             "close proceeds after lease return"
         );
+    }
+
+    #[test]
+    fn test_close_inner_stop_waker_rejects_same_bus_shutdown() {
+        let (bus, subscription) = setup();
+        let control = Arc::clone(&subscription.control);
+        let mut lease = block_on(control.lease()).expect("test holds the session lease");
+        let session = lease.session.as_mut().expect("session");
+        let signals = Arc::clone(&session.signals);
+        let signal = signals.signal();
+        // close_inner is reached from close/run after their run-loop phase;
+        // this direct call isolates its second stop notification with an
+        // explicitly injected waiter.
+        let waiter_id = signal.next_waiter_id();
+        let observed = Arc::new(Mutex::new(None));
+        let observed_by_waker = observed.clone();
+        let nested_bus = bus.clone();
+        let waker = Waker::from(Arc::new(RunOnWake(Mutex::new(Some(Box::new(move || {
+            let mut nested = Box::pin(nested_bus.shutdown(ShutdownMode::Immediate));
+            *observed_by_waker.lock().expect("observation lock") = Some(poll_once(nested.as_mut()));
+        }))))));
+        signal.register_waiter(waiter_id, &waker);
+
+        assert!(block_on(session.close_inner(&control)).is_ok());
+        assert!(matches!(
+            observed.lock().expect("observation lock").as_ref(),
+            Some(Poll::Ready(Err(crate::error::ShutdownError::Lifecycle(
+                crate::error::LifecycleError::WouldDeadlock { operation: "shutdown" }
+            ))))
+        ));
+        signal.unregister(waiter_id);
+        drop(lease);
+        drop(subscription);
+        assert!(block_on(bus.shutdown(ShutdownMode::Immediate)).is_ok());
     }
 
     #[test]

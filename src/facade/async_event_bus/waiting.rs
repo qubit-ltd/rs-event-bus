@@ -101,10 +101,11 @@ pub(in crate::facade) async fn await_shutdown_or_immediate<F: Future>(
     deadline: Option<&mut TimerFuture>,
     signal: &AsyncSignal,
     immediate: &AtomicBool,
+    bus_key: usize,
 ) -> Result<ShutdownWait<F::Output>, LifecycleError> {
     let mut future = Box::pin(future);
     let mut deadline = deadline;
-    let registration = SignalRegistration::new(signal);
+    let registration = SignalRegistration::new_with_bus_scope(signal, bus_key);
     poll_fn(|cx| {
         if immediate.load(Ordering::Acquire) {
             return Poll::Ready(Ok(ShutdownWait::ImmediateRequested));
@@ -178,10 +179,11 @@ pub(in crate::facade) async fn await_until_deadline<F: Future>(
 pub(in crate::facade) async fn wait_until_deadline(
     signal: &AsyncSignal,
     deadline: Option<&mut TimerFuture>,
+    bus_key: usize,
     mut ready: impl FnMut() -> bool,
 ) -> Result<WaitOutcome, LifecycleError> {
     let Some(deadline) = deadline else {
-        let registration = SignalRegistration::new(signal);
+        let registration = SignalRegistration::new_with_bus_scope(signal, bus_key);
         return poll_fn(|cx| {
             if ready() {
                 return Poll::Ready(Ok(WaitOutcome::Idle));
@@ -194,7 +196,7 @@ pub(in crate::facade) async fn wait_until_deadline(
         })
         .await;
     };
-    let registration = SignalRegistration::new(signal);
+    let registration = SignalRegistration::new_with_bus_scope(signal, bus_key);
     poll_fn(|cx| {
         if ready() {
             return Poll::Ready(Ok(WaitOutcome::Idle));
