@@ -3001,6 +3001,160 @@ fn test_sync_final_cleanup_releases_two_panicking_deliveries() {
 }
 
 #[test]
+fn test_sync_final_cleanup_releases_panicking_payload_and_token_of_one_delivery() {
+    const CASE: &str = "one-final-cleanup-payload-and-token-panic";
+    if std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok(CASE) {
+        crate::support::isolated_process::run_case_with_timeout(
+            "test_sync_final_cleanup_releases_panicking_payload_and_token_of_one_delivery",
+            CASE,
+            Duration::from_secs(10),
+        );
+        return;
+    }
+
+    struct PanickingToken(Option<Arc<AtomicUsize>>);
+    impl Drop for PanickingToken {
+        fn drop(&mut self) {
+            if let Some(drops) = &self.0 {
+                drops.fetch_add(1, Ordering::SeqCst);
+                panic!("final token drop probe");
+            }
+        }
+    }
+
+    let (bus, backend) = create_bus_with_scheduler(2, 2);
+    let cleanup = SyncBusCleanup::new(bus.clone());
+    backend.fail_all_settles();
+    let topic = Topic::<CleanupPayload>::new("sync.cleanup-payload-token-panic").expect("valid topic");
+    let options = SubscribeOptions::builder()
+        .ordering_policy(OrderingPolicy::PerKey)
+        .build();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_a_tx, release_a_rx) = mpsc::channel();
+    let (release_b_tx, release_b_rx) = mpsc::channel();
+    let release_a_rx = Arc::new(Mutex::new(release_a_rx));
+    let release_b_rx = Arc::new(Mutex::new(release_b_rx));
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new("sync-final-cleanup-payload-token-panic", topic.clone())
+                .expect("valid subscriber ID")
+                .with_options(options),
+            move |delivery: Delivery<CleanupPayload>| {
+                started_tx
+                    .send(delivery.payload().label)
+                    .expect("started receiver remains alive");
+                let receiver = if delivery.payload().label == "A" {
+                    &release_a_rx
+                } else {
+                    &release_b_rx
+                };
+                receiver
+                    .lock()
+                    .expect("handler release lock")
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("release handler");
+                Ok(())
+            },
+        )
+        .expect("subscription starts");
+
+    let payload_drops = Arc::new(AtomicUsize::new(0));
+    let token_drops = Arc::new(AtomicUsize::new(0));
+    let (_, queue) = backend
+        .state
+        .lock()
+        .expect("test state lock")
+        .queues
+        .iter()
+        .find(|(id, _)| *id == subscription.id())
+        .cloned()
+        .expect("subscription queue");
+    {
+        let (lock, ready) = &*queue;
+        let mut state = lock.lock().expect("queue lock");
+        for (label, event_id) in [("A", "cleanup-pair-a"), ("B", "cleanup-pair-b")] {
+            state.messages.push_back(InboundMessage::new(
+                TopicAddress::new(topic.name()).expect("valid topic address"),
+                EventId::new(event_id).expect("valid event ID"),
+                SystemTime::UNIX_EPOCH,
+                Headers::new(),
+                Some(OrderingKey::new(event_id).expect("valid ordering key")),
+                TransportPayload::Native(Arc::new(CleanupPayload {
+                    label,
+                    cleanup_drops: (label == "B").then(|| payload_drops.clone()),
+                })),
+                Some(SettlementToken::new(
+                    subscription.id(),
+                    if label == "B" {
+                        PanickingToken(Some(token_drops.clone()))
+                    } else {
+                        PanickingToken(None)
+                    },
+                )),
+                Default::default(),
+            ));
+        }
+        ready.notify_all();
+    }
+
+    let mut started = vec![
+        started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("first handler starts"),
+        started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("second handler starts"),
+    ];
+    started.sort_unstable();
+    assert_eq!(started, ["A", "B"]);
+
+    release_a_tx.send(()).expect("A handler remains blocked");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while subscription.terminal_failure().is_none() && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    let reason = subscription
+        .terminal_failure()
+        .expect("permanent settlement stops automatically");
+    assert!(matches!(
+        &*reason,
+        SubscriptionStopReason::Settlement {
+            attempts: 1,
+            termination: SettlementTermination::PermanentError,
+            ..
+        }
+    ));
+
+    release_b_tx.send(()).expect("B handler remains blocked");
+    assert!(matches!(
+        subscription.cancel(),
+        Err(LifecycleError::Spi(SpiError::Operation {
+            kind: "worker_panicked",
+            ..
+        }))
+    ));
+    assert!(matches!(
+        subscription.cancel(),
+        Err(LifecycleError::Spi(SpiError::Operation {
+            kind: "worker_panicked",
+            ..
+        }))
+    ));
+    assert_eq!(payload_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(token_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(backend.settlement_calls(), 1);
+    assert_eq!(backend.close_calls(), 1);
+    assert_eq!(subscription.delivery_metrics().metrics.abandoned_ephemeral, 2);
+    assert!(Arc::ptr_eq(
+        &reason,
+        &subscription.terminal_failure().expect("retained settlement reason")
+    ));
+    let report = bus.shutdown(ShutdownMode::Immediate).expect("provider shutdown");
+    assert_eq!(report.known_abandoned_deliveries, 2);
+    drop(cleanup);
+}
+
+#[test]
 fn test_per_key_scheduler_runs_other_keys_concurrently_and_keeps_same_key_serial() {
     let (bus, backend) = create_bus_with_scheduler(3, 8);
     let options = SubscribeOptions::builder()
