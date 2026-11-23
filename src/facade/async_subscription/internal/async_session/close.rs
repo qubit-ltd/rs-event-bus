@@ -266,6 +266,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
     use std::task::Context;
     use std::task::Poll;
@@ -279,18 +280,35 @@ mod tests {
     use crate::model::SubscribeRequest;
     use crate::model::Topic;
     use crate::spi::InboundMessage;
+    use crate::spi::SettlementToken;
     use crate::spi::ShutdownMode;
     use crate::spi::TransportPayload;
 
     struct Payload {
         panic_on_drop: AtomicBool,
+        drops: Option<Arc<AtomicUsize>>,
     }
 
     impl Drop for Payload {
         fn drop(&mut self) {
+            if let Some(drops) = &self.drops {
+                drops.fetch_add(1, Ordering::AcqRel);
+            }
             if self.panic_on_drop.swap(false, Ordering::AcqRel) {
                 panic!("abandoned payload probe");
             }
+        }
+    }
+
+    struct TokenProbe {
+        drops: Arc<AtomicUsize>,
+        panic_on_drop: bool,
+    }
+
+    impl Drop for TokenProbe {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::AcqRel);
+            assert!(!self.panic_on_drop, "abandoned token probe");
         }
     }
 
@@ -320,6 +338,7 @@ mod tests {
             None,
             TransportPayload::Native(Arc::new(Payload {
                 panic_on_drop: AtomicBool::new(panic_on_drop),
+                drops: None,
             })),
             None,
             Default::default(),
@@ -412,6 +431,115 @@ mod tests {
         drop(subscription);
         let report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
         assert_eq!(report.known_abandoned_deliveries, 3);
+    }
+
+    #[test]
+    fn test_discard_unstarted_task_releases_panicking_payload_and_token_independently() {
+        const CASE_ENV: &str = "QEB_CLOSE_PANICKING_TASK_DROP_CHILD";
+        const CASE: &str = "unstarted_payload_and_token";
+        if std::env::var(CASE_ENV).as_deref() != Ok(CASE) {
+            let executable = std::env::current_exe().expect("unit test executable exists");
+            let listing = std::process::Command::new(&executable)
+                .args(["--list", "--format", "terse"])
+                .output()
+                .expect("unit test names can be listed");
+            assert!(listing.status.success());
+            let listing = String::from_utf8(listing.stdout).expect("test list is UTF-8");
+            let matching = listing
+                .lines()
+                .filter(|line| {
+                    line.ends_with(
+                        "::test_discard_unstarted_task_releases_panicking_payload_and_token_independently: test",
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(matching.len(), 1, "test resolves exactly once");
+            let exact_name = matching[0].trim_end_matches(": test");
+            let mut child = std::process::Command::new(executable)
+                .args(["--exact", exact_name, "--nocapture", "--test-threads=1"])
+                .env(CASE_ENV, CASE)
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .spawn()
+                .expect("isolated child starts");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                if let Some(status) = child.try_wait().expect("child status is available") {
+                    assert!(status.success(), "isolated task cancellation child failed");
+                    return;
+                }
+                if std::time::Instant::now() >= deadline {
+                    child.kill().expect("hung child is killed");
+                    child.wait().expect("killed child is reaped");
+                    panic!("isolated task cancellation child exceeded watchdog");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+
+        let (bus, subscription) = setup();
+        let payload_drops = Arc::new(AtomicUsize::new(0));
+        let token_drops = Arc::new(AtomicUsize::new(0));
+        let mut lease = block_on(subscription.control.lease()).expect("session lease");
+        let session = lease.session.as_mut().expect("leased session");
+        session.inner.scheduler.set_dispatch_active(session.id, true);
+        session.inner.scheduler.request_receive(session.id);
+        let id = session
+            .inner
+            .scheduler
+            .take_receive_reservation(session.id)
+            .expect("receive reservation");
+        let payload = Arc::new(Payload {
+            panic_on_drop: AtomicBool::new(true),
+            drops: Some(payload_drops.clone()),
+        });
+        let message = InboundMessage::new(
+            crate::spi::TopicAddress::new("close.test").expect("topic address"),
+            EventId::new("panicking-payload-and-token").expect("event id"),
+            std::time::SystemTime::UNIX_EPOCH,
+            Default::default(),
+            None,
+            TransportPayload::Native(payload),
+            Some(SettlementToken::new(
+                session.id,
+                TokenProbe {
+                    drops: token_drops.clone(),
+                    panic_on_drop: true,
+                },
+            )),
+            Default::default(),
+        );
+        session.prepare_message(message, OwnedDeliveryLease::new(id, &session.inner));
+        let grant = session.inner.scheduler.take_ready(session.id).expect("dispatch grant");
+        let pending = session.buffered.pop_front().expect("pending delivery");
+        assert_eq!(pending.lease.id, grant);
+        let handler_started = Arc::new(AtomicBool::new(false));
+        let started = handler_started.clone();
+        let handler: SharedAsyncHandler<Payload> = Arc::new(move |_| {
+            started.store(true, Ordering::Release);
+            Box::pin(std::future::pending())
+        });
+        session.start_pending_task(pending, handler);
+        assert_eq!(session.tasks.len(), 1);
+        assert!(!session.tasks[0].started.load(Ordering::Acquire));
+
+        session.signals.stop(ShutdownMode::Immediate);
+        session.discard_unstarted_tasks();
+
+        assert!(!handler_started.load(Ordering::Acquire));
+        assert_eq!(payload_drops.load(Ordering::Acquire), 1);
+        assert_eq!(token_drops.load(Ordering::Acquire), 1);
+        assert_eq!(session.inner.abandoned_deliveries.load(Ordering::Acquire), 1);
+        assert_eq!(subscription.delivery_metrics().metrics.abandoned_ephemeral, 1);
+        assert!(session.inner.scheduler.take_settlement_ready(session.id).is_none());
+        assert!(session.tasks.is_empty());
+        session.discard_unstarted_tasks();
+        assert_eq!(session.inner.abandoned_deliveries.load(Ordering::Acquire), 1);
+        assert!(block_on(session.close_inner(&subscription.control)).is_ok());
+        drop(lease);
+        drop(subscription);
+        let report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+        assert_eq!(report.known_abandoned_deliveries, 1);
     }
 
     #[test]

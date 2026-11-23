@@ -13,6 +13,7 @@ use std::future::poll_fn;
 use std::io::Error;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
+use std::panic::resume_unwind;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -370,5 +371,25 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
         if let Some(pending) = self.pending.as_mut() {
             pending.failure_diagnostic = Some((attempts, error));
         }
+    }
+}
+
+impl<T: 'static> Drop for DeliveryTaskContext<T> {
+    fn drop(&mut self) {
+        let Some(pending) = self.pending.take() else {
+            return;
+        };
+        let bus_key = Arc::as_ptr(&self.inner) as usize;
+        let subscription_id = self.id;
+        let already_panicking = std::thread::panicking();
+        super::with_subscription_scope(bus_key, subscription_id, || {
+            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| pending.drop_independently())) {
+                if already_panicking {
+                    dispose_panic_payload(payload);
+                } else {
+                    resume_unwind(payload);
+                }
+            }
+        });
     }
 }
