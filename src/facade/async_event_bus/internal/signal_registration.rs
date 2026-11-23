@@ -41,6 +41,11 @@ impl SignalRegistration<'_> {
     }
 
     /// Registers a waiter whose waker callbacks belong to one bus poll.
+    ///
+    /// # Parameters
+    /// - `signal`: signal to observe until this registration is dropped.
+    /// - `bus_key`: identity of the bus whose callback context scopes waker
+    ///   operations.
     #[inline]
     pub(in crate::facade) fn new_with_bus_scope(signal: &AsyncSignal, bus_key: usize) -> SignalRegistration<'_> {
         SignalRegistration {
