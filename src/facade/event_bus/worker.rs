@@ -650,13 +650,7 @@ fn run_subscription_worker_body<T>(
     // Provider close is the recovery boundary for every unresolved token.
     let mut first_panic = None;
     for (_, delivery) in owned.drain() {
-        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(delivery))) {
-            if first_panic.is_none() {
-                first_panic = Some(payload);
-            } else {
-                dispose_panic_payload(payload);
-            }
-        }
+        release_owned_sync_delivery(delivery, &mut first_panic);
     }
     release_resource(spi_subscription, &mut first_panic);
     release_resource(handler, &mut first_panic);
@@ -681,6 +675,93 @@ fn release_resource<T>(resource: T, first_panic: &mut Option<Box<dyn Any + Send>
             dispose_panic_payload(payload);
         }
     }
+}
+
+/// Releases one receiver-owned delivery's payload and settlement token through
+/// independent panic boundaries, then releases its tracking and lease guards.
+fn release_owned_sync_delivery<T: Send + Sync + 'static>(
+    delivery: OwnedSyncDelivery<'_, T>,
+    first_panic: &mut Option<Box<dyn Any + Send>>,
+) {
+    let OwnedSyncDelivery {
+        inbound,
+        delivery: decoded_delivery,
+        token,
+        settlement,
+        session,
+        directive,
+        due,
+        attempts,
+        result,
+        running,
+        handler_finished,
+        retry_pending,
+        settlement_granted,
+        abandoned,
+        lifecycle_failed,
+        retry,
+        first_attempt,
+        next_attempt,
+        last_error,
+        _tracker,
+        _lease,
+    } = delivery;
+
+    if let Some((message, decoded)) = inbound {
+        let (topic, event_id, timestamp, headers, ordering_key, payload, message_token, metadata) =
+            message.into_parts();
+        release_resource(payload, first_panic);
+        release_resource(decoded, first_panic);
+        release_resource(message_token, first_panic);
+        release_resource(
+            (topic, event_id, timestamp, headers, ordering_key, metadata),
+            first_panic,
+        );
+    }
+    release_resource(decoded_delivery, first_panic);
+    release_resource(token, first_panic);
+    if let Some(message) = settlement {
+        match message {
+            CoordinatorMessage::Settlement {
+                lease_id,
+                token,
+                disposition,
+                event_id,
+                topic,
+                subscription_id,
+                subscriber_id,
+            } => {
+                release_resource(token, first_panic);
+                release_resource(
+                    (lease_id, disposition, event_id, topic, subscription_id, subscriber_id),
+                    first_panic,
+                );
+            }
+            other => release_resource(other, first_panic),
+        }
+    }
+
+    release_resource(
+        (
+            session,
+            directive,
+            due,
+            attempts,
+            result,
+            running,
+            handler_finished,
+            retry_pending,
+            settlement_granted,
+            abandoned,
+            lifecycle_failed,
+            retry,
+            first_attempt,
+            next_attempt,
+            last_error,
+        ),
+        first_panic,
+    );
+    release_resource((_tracker, _lease), first_panic);
 }
 
 /// Advances handler results and provider settlements for receiver-owned work.
