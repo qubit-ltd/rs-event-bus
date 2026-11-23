@@ -418,12 +418,17 @@ fn run_subscription_worker_body<T>(
                                     error: Arc::new(error),
                                 });
                                 inner.scheduler.cancel_subscription(control.id);
-                                drop(token);
                                 count_abandoned(&inner, control.id);
-                                drop(lease_guard);
                                 if first {
                                     inner.emit_internal("receive_boundary", text);
                                 }
+                                cleanup_rejected_receive_resource(&inner, token, "settlement token cleanup panicked");
+                                cleanup_rejected_receive_resource(
+                                    &inner,
+                                    payload,
+                                    "transport payload cleanup panicked",
+                                );
+                                drop(lease_guard);
                                 continue;
                             }
                             let decoded = decode_payload(
@@ -443,12 +448,17 @@ fn run_subscription_worker_body<T>(
                                     error: Arc::new(error),
                                 });
                                 inner.scheduler.cancel_subscription(control.id);
-                                drop(token);
                                 count_abandoned(&inner, control.id);
-                                drop(lease_guard);
                                 if first {
                                     inner.emit_internal("receive_boundary", text);
                                 }
+                                cleanup_rejected_receive_resource(&inner, token, "settlement token cleanup panicked");
+                                cleanup_rejected_receive_resource(
+                                    &inner,
+                                    payload,
+                                    "transport payload cleanup panicked",
+                                );
+                                drop(lease_guard);
                                 continue;
                             }
                             let lane = if options.ordering_policy() == crate::model::OrderingPolicy::PerKey {
@@ -656,6 +666,15 @@ fn run_subscription_worker_body<T>(
     release_resource(handler, &mut first_panic);
     if let Some(payload) = first_panic {
         resume_unwind(payload);
+    }
+}
+
+/// Releases one resource from a receive-stop branch without allowing its
+/// destructor panic to skip cleanup of the remaining transport state.
+fn cleanup_rejected_receive_resource<T>(inner: &EventBusInner, resource: T, message: &'static str) {
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(resource))) {
+        dispose_panic_payload(payload);
+        inner.emit_internal("receive_boundary", message.into());
     }
 }
 

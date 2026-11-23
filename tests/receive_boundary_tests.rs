@@ -14,6 +14,7 @@ use std::fmt;
 use std::future::poll_fn;
 use std::io::Error as IoError;
 use std::num::NonZeroUsize;
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
@@ -230,6 +231,22 @@ struct Source {
     ephemeral: bool,
     content: ContentType,
     oversized_headers: bool,
+    observed_payload: Option<(Arc<AtomicUsize>, bool)>,
+    observed_token: Option<(Arc<AtomicUsize>, bool)>,
+}
+
+struct DropProbe {
+    drops: Arc<AtomicUsize>,
+    panic: bool,
+}
+
+impl Drop for DropProbe {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::SeqCst);
+        if self.panic {
+            panic!("injected receive cleanup panic");
+        }
+    }
 }
 struct Receiver {
     source: Source,
@@ -253,6 +270,8 @@ impl Source {
             ephemeral: false,
             content: ContentType::new("application/test").expect("content"),
             oversized_headers: false,
+            observed_payload: None,
+            observed_token: None,
         }
     }
     /// Advertises encoded messages and durable settlement recovery.
@@ -311,7 +330,12 @@ impl Receiver {
             return ReceiveOutcome::Closed;
         }
         self.delivered += 1;
-        let payload = if self.source.native {
+        let payload = if let Some((drops, panic)) = &self.source.observed_payload {
+            TransportPayload::Native(Arc::new(DropProbe {
+                drops: drops.clone(),
+                panic: *panic,
+            }))
+        } else if self.source.native {
             TransportPayload::Native(Arc::new("wrong native type"))
         } else {
             TransportPayload::Encoded(EncodedPayload::new(
@@ -335,7 +359,18 @@ impl Receiver {
             },
             None,
             payload,
-            Some(SettlementToken::new(self.id, "source-record")),
+            Some(SettlementToken::new(
+                self.id,
+                self.source.observed_token.as_ref().map_or_else(
+                    || Box::new("source-record") as Box<dyn std::any::Any + Send>,
+                    |(drops, panic)| {
+                        Box::new(DropProbe {
+                            drops: drops.clone(),
+                            panic: *panic,
+                        }) as Box<dyn std::any::Any + Send>
+                    },
+                ),
+            )),
             Default::default(),
         ))
     }
@@ -572,6 +607,173 @@ fn test_header_limit_stops_before_codec_and_settlement_for_sync_and_async() {
             assert_eq!(probe.decode.load(Ordering::SeqCst), 0);
             assert_eq!(source.settled.load(Ordering::SeqCst), 0);
             assert!(source.dispositions.lock().expect("settlement log").is_empty());
+        }
+    }
+}
+
+#[test]
+fn test_rejected_receive_cleanup_isolates_token_and_transport_panics() {
+    let child_case = std::env::var("RECEIVE_BOUNDARY_CLEANUP_CHILD").ok();
+    let Some(child_case) = child_case else {
+        let executable = std::env::current_exe().expect("test executable path");
+        for asynchronous in [false, true] {
+            for headers_rejected in [false, true] {
+                for (token_panics, payload_panics) in [(true, false), (false, true), (true, true)] {
+                    let mode = format!(
+                        "{}:{}:{}:{}",
+                        u8::from(asynchronous),
+                        u8::from(headers_rejected),
+                        u8::from(token_panics),
+                        u8::from(payload_panics),
+                    );
+                    let output = Command::new(&executable)
+                        .arg("--exact")
+                        .arg("test_rejected_receive_cleanup_isolates_token_and_transport_panics")
+                        .arg("--nocapture")
+                        .env("RECEIVE_BOUNDARY_CLEANUP_CHILD", mode)
+                        .output()
+                        .expect("isolated cleanup subprocess");
+                    assert!(
+                        output.status.success(),
+                        "cleanup subprocess failed: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                }
+            }
+        }
+        return;
+    };
+    let mut modes = child_case.split(':').map(|part| part == "1");
+    let expected_async = modes.next().expect("async mode");
+    let expected_headers = modes.next().expect("header mode");
+    let token_panics = modes.next().expect("token panic mode");
+    let payload_panics = modes.next().expect("payload panic mode");
+    assert!(modes.next().is_none(), "valid cleanup child mode");
+    for asynchronous in [false, true] {
+        for headers_rejected in [false, true] {
+            if asynchronous != expected_async || headers_rejected != expected_headers {
+                continue;
+            }
+            let token_drops = Arc::new(AtomicUsize::new(0));
+            let payload_drops = Arc::new(AtomicUsize::new(0));
+            let mut source_value = Source::new(1, Some(SchemaId::new("v1").expect("schema")));
+            source_value.ephemeral = true;
+            source_value.oversized_headers = headers_rejected;
+            source_value.observed_payload = Some((payload_drops.clone(), payload_panics));
+            source_value.observed_token = Some((token_drops.clone(), token_panics));
+            let source = Arc::new(source_value);
+            let (diagnostic_sender, diagnostic_receiver) = mpsc::channel::<Box<str>>();
+            let mut config = config();
+            if headers_rejected {
+                config = config.with_header_limits(HeaderLimits::new(
+                    NonZeroUsize::new(1).expect("count"),
+                    NonZeroUsize::new(1).expect("bytes"),
+                ));
+            }
+            let topic = Topic::new("boundary").expect("topic").with_shared_codec(Probe::new());
+            if asynchronous {
+                let bus =
+                    AsyncEventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config)
+                        .expect("bus");
+                let _observer = bus.observe_diagnostics(move |diagnostic| {
+                    if let Diagnostic::InternalFailure { origin, message } = diagnostic
+                        && origin.as_ref() == "receive_boundary"
+                    {
+                        let _ = diagnostic_sender.send(message.clone());
+                    }
+                });
+                let mut subscription =
+                    manual_async::block_on(bus.subscribe(SubscribeRequest::new("cleanup", topic).expect("request")))
+                        .expect("subscription");
+                let error = manual_async::block_on(subscription.run(|_| async { panic!("rejected delivery") }))
+                    .expect_err("terminal receive error");
+                let ReceiveError::Stopped(reason) = error else {
+                    panic!("rejection keeps a structured stop reason")
+                };
+                assert!(matches!(
+                    (headers_rejected, reason.as_ref()),
+                    (true, SubscriptionStopReason::Headers { .. }) | (false, SubscriptionStopReason::Codec { .. })
+                ));
+                manual_async::block_on(subscription.close()).expect("close after cleanup panic");
+                assert_eq!(subscription.delivery_metrics().metrics.abandoned_ephemeral, 1);
+                let _ = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+            } else {
+                let bus = EventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config)
+                    .expect("bus");
+                let _observer = bus.observe_diagnostics(move |diagnostic| {
+                    if let Diagnostic::InternalFailure { origin, message } = diagnostic
+                        && origin.as_ref() == "receive_boundary"
+                    {
+                        let _ = diagnostic_sender.send(message.clone());
+                    }
+                });
+                let subscription = bus
+                    .subscribe(SubscribeRequest::new("cleanup", topic).expect("request"), |_| {})
+                    .expect("subscription");
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while source.closed.load(Ordering::SeqCst) == 0 {
+                    assert!(
+                        Instant::now() < deadline,
+                        "receiver close completes after cleanup panic"
+                    );
+                    thread::yield_now();
+                }
+                assert!(matches!(
+                    (headers_rejected, subscription.terminal_failure().as_deref()),
+                    (true, Some(SubscriptionStopReason::Headers { .. }))
+                        | (false, Some(SubscriptionStopReason::Codec { .. }))
+                ));
+                subscription.cancel().expect("cancel");
+                let report = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+                assert_eq!(report.known_abandoned_deliveries, 1);
+            }
+            assert_eq!(token_drops.load(Ordering::SeqCst), 1, "token state released");
+            assert_eq!(payload_drops.load(Ordering::SeqCst), 1, "transport payload released");
+            assert_eq!(source.settled.load(Ordering::SeqCst), 0);
+            assert!(source.dispositions.lock().expect("settlement log").is_empty());
+            assert_eq!(source.closed.load(Ordering::SeqCst), 1);
+            let expected_cleanup_count = usize::from(token_panics) + usize::from(payload_panics);
+            let messages = (0..(1 + expected_cleanup_count))
+                .map(|_| {
+                    diagnostic_receiver
+                        .recv_timeout(Duration::from_secs(1))
+                        .expect("original and cleanup diagnostics")
+                })
+                .collect::<Vec<_>>();
+            let cleanup_messages = messages
+                .iter()
+                .filter(|message| {
+                    message.as_ref() == "settlement token cleanup panicked"
+                        || message.as_ref() == "transport payload cleanup panicked"
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut expected_cleanup_messages = Vec::new();
+            if token_panics {
+                expected_cleanup_messages.push("settlement token cleanup panicked".into());
+            }
+            if payload_panics {
+                expected_cleanup_messages.push("transport payload cleanup panicked".into());
+            }
+            expected_cleanup_messages.sort();
+            let mut cleanup_messages = cleanup_messages;
+            cleanup_messages.sort();
+            assert_eq!(cleanup_messages, expected_cleanup_messages);
+            assert_eq!(
+                messages
+                    .iter()
+                    .filter(|message| {
+                        message.as_ref() != "settlement token cleanup panicked"
+                            && message.as_ref() != "transport payload cleanup panicked"
+                    })
+                    .count(),
+                1,
+                "original receive diagnostic is preserved"
+            );
+            assert!(
+                diagnostic_receiver.try_recv().is_err(),
+                "no duplicate cleanup diagnostics"
+            );
         }
     }
 }

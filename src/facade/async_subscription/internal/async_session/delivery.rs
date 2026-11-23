@@ -10,6 +10,8 @@
 #![allow(clippy::too_many_arguments)]
 
 use std::collections::VecDeque;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -28,6 +30,8 @@ use crate::facade::async_subscription::SharedAsyncHandler;
 use crate::facade::async_subscription::internal::OwnedDeliveryTask;
 use crate::facade::async_subscription::internal::PendingDelivery;
 use crate::facade::async_subscription::internal::delivery_task_context::DeliveryTaskContext;
+use crate::facade::async_subscription::internal::with_subscription_scope;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::EventEnvelope;
 use crate::model::EventId;
 use crate::model::SubscribeOptions;
@@ -152,17 +156,19 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             crate::facade::internal::validate_headers(&headers, self.inner.facade_config.header_limits())
         {
             let message = error.to_string();
-            self.record_abandoned_delivery();
-            if self.signals.fail_receive(SubscriptionStopReason::Headers {
+            let first = self.signals.fail_receive(SubscriptionStopReason::Headers {
                 event_id,
                 error: Arc::new(error),
-            }) {
+            });
+            self.record_abandoned_delivery();
+            if first {
                 self.inner.emit(&Diagnostic::InternalFailure {
                     origin: "receive_boundary".into(),
                     message: message.into(),
                 });
             }
-            drop(token);
+            self.cleanup_rejected_receive_resource(token, "settlement token cleanup panicked");
+            self.cleanup_rejected_receive_resource(transport_payload, "transport payload cleanup panicked");
             return;
         }
         let payload = match decode_payload(
@@ -174,18 +180,20 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             Err(error) => {
                 if receive_failure_action(&error) == ReceiveFailureAction::StopUnsettled {
                     let message = crate::pipeline::format_diagnostic_error(&error, "codec error formatting panicked");
-                    self.record_abandoned_delivery();
-                    if self.signals.fail_receive(SubscriptionStopReason::Codec {
+                    let first = self.signals.fail_receive(SubscriptionStopReason::Codec {
                         event_id,
                         error: Arc::new(error),
-                    }) {
+                    });
+                    self.record_abandoned_delivery();
+                    if first {
                         self.inner.emit(&Diagnostic::InternalFailure {
                             origin: "receive_boundary".into(),
                             message: message.into(),
                         });
                     }
                     // Receiver owns recovery. No settlement callback observes this token.
-                    drop(token);
+                    self.cleanup_rejected_receive_resource(token, "settlement token cleanup panicked");
+                    self.cleanup_rejected_receive_resource(transport_payload, "transport payload cleanup panicked");
                     return;
                 }
                 self.inner.scheduler.enqueue_settlement(lease.id, lane);
@@ -232,6 +240,23 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             failure_diagnostic: None,
             lease,
         });
+    }
+
+    /// Drops one rejected transport resource under its subscription context.
+    /// A panic is contained so cleanup of the other resource can continue.
+    fn cleanup_rejected_receive_resource<R>(&self, resource: R, message: &'static str) {
+        let bus_key = Arc::as_ptr(&self.inner) as usize;
+        let subscription_id = self.id;
+        let result = with_subscription_scope(bus_key, subscription_id, || {
+            catch_unwind(AssertUnwindSafe(|| drop(resource)))
+        });
+        if let Err(payload) = result {
+            with_subscription_scope(bus_key, subscription_id, || dispose_panic_payload(payload));
+            self.inner.emit(&Diagnostic::InternalFailure {
+                origin: "receive_boundary".into(),
+                message: message.into(),
+            });
+        }
     }
 }
 
