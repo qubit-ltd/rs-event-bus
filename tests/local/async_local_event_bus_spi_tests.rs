@@ -217,6 +217,67 @@ fn test_local_state_machine_cleanup_release_seed() {
     local_state_machine_tests::run(&seed(&[[0, 0, 0], [1, 0, 28], [10, 0, 1], [1, 0, 28]]));
 }
 
+/// Checks a delayed lane head blocks its successor while another lane stays ready.
+#[test]
+fn test_local_state_machine_delayed_lane_head_seed() {
+    local_state_machine_tests::run(&seed(&[
+        [0, 0, 0],
+        [1, 0, 32], // lane 0, weight 1, delay 1 ms
+        [1, 0, 0],  // lane 0 successor is immediate but blocked
+        [1, 0, 1],  // lane 1 remains independently deliverable
+        [2, 0, 0],
+        [2, 0, 0],
+        [10, 0, 0], // exact deadline
+        [2, 0, 0],
+        [2, 0, 0],
+    ]));
+}
+
+/// Checks Retry restores an expired delayed head before its same-key successor.
+#[test]
+fn test_local_state_machine_delayed_retry_order_seed() {
+    local_state_machine_tests::run(&seed(&[
+        [0, 0, 0],
+        [1, 0, 32],
+        [1, 0, 0],
+        [10, 0, 0],
+        [2, 0, 0],
+        [4, 0, 0],
+        [2, 0, 0],
+        [3, 0, 1],
+        [2, 0, 0],
+    ]));
+}
+
+/// Checks closing a receiver releases delayed count and weight ownership.
+#[test]
+fn test_local_state_machine_delayed_close_releases_capacity_seed() {
+    local_state_machine_tests::run(&seed(&[
+        [0, 0, 0],
+        [0, 1, 0],
+        [1, 0, 36], // weight 2 and delay 1 ms, admitted to both receivers
+        [1, 0, 36],
+        [1, 0, 36],
+        [8, 0, 0],  // releases three delayed events and six weight bytes
+        [1, 0, 40], // weight 3 fits only after the delayed ownership is released
+    ]));
+}
+
+/// Checks closing a full count-only queue lets the other receiver reuse slots.
+#[test]
+fn test_local_state_machine_delayed_close_releases_total_count_seed() {
+    local_state_machine_tests::run(&seed(&[
+        [0, 0, 0],
+        [0, 1, 0],
+        [1, 0, 32],
+        [1, 0, 32],
+        [1, 0, 32],
+        [1, 0, 32], // fills both four-event receiver queues
+        [8, 0, 0],
+        [1, 0, 32], // reuses the four globally released slots
+    ]));
+}
+
 /// Checks native weight missing weight against this provider.
 #[test]
 fn test_native_weight_missing_weight() {

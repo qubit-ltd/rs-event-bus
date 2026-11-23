@@ -7,10 +7,9 @@
 // =============================================================================
 //! Bounded stateful operations against the real public asynchronous local SPI.
 //!
-//! Messages have no delay: local queue deadlines currently use Instant
-//! directly. The injected manual timer and deterministic timestamps do not
-//! claim to model delayed delivery. No operation waits, sleeps, or accesses the
-//! network.
+//! Publication arguments select bounded delays while preserving the original
+//! lane and weight bits. The injected manual timer drives delayed delivery;
+//! no operation sleeps or accesses the network.
 
 use std::any::TypeId;
 use std::collections::BTreeMap;
@@ -65,20 +64,30 @@ struct PendingEvent {
     id: u64,
     lane: u8,
     weight: usize,
+    due_at: Duration,
 }
 
 type PendingByLane = BTreeMap<u8, VecDeque<PendingEvent>>;
 
-fn consume_lane(pending: &mut PendingByLane, lane: u8, id: u64) -> Result<PendingEvent, &'static str> {
+fn consume_lane(pending: &mut PendingByLane, lane: u8, id: u64, now: Duration) -> Result<PendingEvent, &'static str> {
     let queue = pending.get_mut(&lane).ok_or("receive lane has no pending event")?;
     if queue.front().is_none_or(|event| event.id != id) {
         return Err("receive must consume the same-key FIFO head");
+    }
+    if queue.front().is_some_and(|event| event.due_at > now) {
+        return Err("receive cannot consume an event before its deadline");
     }
     let event = queue.pop_front().expect("validated queue head");
     if queue.is_empty() {
         pending.remove(&lane);
     }
     Ok(event)
+}
+
+fn has_ready_event(pending: &PendingByLane, now: Duration) -> bool {
+    pending
+        .values()
+        .any(|queue| queue.front().is_some_and(|event| event.due_at <= now))
 }
 
 fn record_disposition(record: &mut TokenRecord, disposition: DeliveryDisposition) -> bool {
@@ -131,7 +140,7 @@ impl Subscription {
 
     /// Records one real received message and transfers its non-cloneable token
     /// once.
-    fn received(&mut self, mut message: InboundMessage) {
+    fn received(&mut self, mut message: InboundMessage, now: Duration) {
         let event = message
             .id()
             .as_str()
@@ -143,7 +152,8 @@ impl Subscription {
             .as_str()
             .parse::<u8>()
             .expect("numeric lane");
-        let event = consume_lane(&mut self.pending, lane, event).expect("receive must consume the same-key FIFO head");
+        let event =
+            consume_lane(&mut self.pending, lane, event, now).expect("receive must consume a due same-key FIFO head");
         assert!(
             matches!(message.payload(), TransportPayload::Native(payload) if payload.downcast_ref::<Vec<u8>>().is_some_and(|bytes| bytes.len() <= MAX_PAYLOAD))
         );
@@ -185,7 +195,14 @@ fn request(id: u64) -> SpiSubscriptionRequest {
 }
 
 /// Creates a bounded native message with an input-selected lane and weight.
-fn message(event: u64, lane: u8, weight: usize, timestamp: SystemTime, payload: &[u8]) -> OutboundMessage {
+fn message(
+    event: u64,
+    lane: u8,
+    weight: usize,
+    delay: Duration,
+    timestamp: SystemTime,
+    payload: &[u8],
+) -> OutboundMessage {
     let declared = NonZeroUsize::new(weight).expect("positive bounded test weight");
     let message = OutboundMessage::new(
         TopicAddress::new("fuzz.local").expect("valid topic"),
@@ -193,7 +210,7 @@ fn message(event: u64, lane: u8, weight: usize, timestamp: SystemTime, payload: 
         timestamp,
         Default::default(),
         Some(OrderingKey::new(&lane.to_string()).expect("valid ordering key")),
-        None,
+        (delay > Duration::ZERO).then_some(delay),
         TransportPayload::Native(Arc::new(payload[..payload.len().min(MAX_PAYLOAD)].to_vec())),
     )
     .with_native_payload_weight_bytes(declared);
@@ -262,10 +279,12 @@ fn run_scenario(input: &[u8], weight_limit: Option<NonZeroUsize>) {
                 let event = publications as u64;
                 let lane = (argument % 4) as u8;
                 let weight = 1 + (argument / 4) % 8;
+                let delay = Duration::from_millis((argument / 32) as u64);
                 let acknowledgement = ready(spi.publish(message(
                     event,
                     lane,
                     weight,
+                    delay,
                     SystemTime::UNIX_EPOCH + elapsed,
                     chunk.get(3..).unwrap_or_default(),
                 )));
@@ -333,6 +352,7 @@ fn run_scenario(input: &[u8], weight_limit: Option<NonZeroUsize>) {
                                 id: event,
                                 lane,
                                 weight,
+                                due_at: elapsed.checked_add(delay).expect("bounded delay deadline"),
                             });
                             outstanding += 1;
                             outstanding_weight += weight;
@@ -349,14 +369,14 @@ fn run_scenario(input: &[u8], weight_limit: Option<NonZeroUsize>) {
                         future.as_mut().poll(&mut Context::from_waker(Waker::noop()))
                     };
                     match result {
-                        Poll::Ready(Ok(ReceiveOutcome::Message(message))) => subscription.received(message),
+                        Poll::Ready(Ok(ReceiveOutcome::Message(message))) => subscription.received(message, elapsed),
                         Poll::Ready(Ok(ReceiveOutcome::TimedOut)) => {
-                            assert!(subscription.pending.values().all(VecDeque::is_empty))
+                            assert!(!has_ready_event(&subscription.pending, elapsed));
                         }
                         Poll::Ready(Ok(ReceiveOutcome::Closed)) => assert!(subscription.closed),
                         Poll::Pending => {
                             assert_eq!(opcode, 7);
-                            assert!(subscription.pending.values().all(VecDeque::is_empty));
+                            assert!(!has_ready_event(&subscription.pending, elapsed));
                         }
                         _ => panic!("unexpected local receive outcome"),
                     }
@@ -505,6 +525,7 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::DeliveryDisposition;
+    use super::Duration;
     use super::Id;
     use super::PendingByLane;
     use super::PendingEvent;
@@ -514,15 +535,35 @@ mod tests {
     use super::record_disposition;
 
     fn event(id: u64, lane: u8, weight: usize) -> PendingEvent {
-        PendingEvent { id, lane, weight }
+        PendingEvent {
+            id,
+            lane,
+            weight,
+            due_at: Duration::ZERO,
+        }
     }
 
     #[test]
     fn test_local_state_machine_oracle_rejects_same_key_reordering() {
         let mut pending = PendingByLane::from([(1, VecDeque::from([event(1, 1, 1), event(2, 1, 1)]))]);
         assert_eq!(
-            consume_lane(&mut pending, 1, 2),
+            consume_lane(&mut pending, 1, 2, Duration::ZERO),
             Err("receive must consume the same-key FIFO head")
+        );
+    }
+
+    #[test]
+    fn test_local_state_machine_oracle_rejects_early_delivery() {
+        let mut pending = PendingByLane::from([(
+            1,
+            VecDeque::from([PendingEvent {
+                due_at: Duration::from_millis(1),
+                ..event(1, 1, 1)
+            }]),
+        )]);
+        assert_eq!(
+            consume_lane(&mut pending, 1, 1, Duration::ZERO),
+            Err("receive cannot consume an event before its deadline")
         );
     }
 
