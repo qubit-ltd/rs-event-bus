@@ -38,6 +38,17 @@ type AsyncHandler<T> = dyn Fn(Delivery<T>) -> SpiFuture<'static, Result<(), Deli
 /// - `T`: payload type accepted by the handler.
 pub(in crate::facade::async_subscription) type SharedAsyncHandler<T> = Arc<AsyncHandlerOwner<T>>;
 
+/// Shared callback used only by an internal delivery wrapper.
+pub(in crate::facade::async_subscription) type SharedAsyncCallback<T> = Arc<AsyncHandler<T>>;
+
+/// Shares an internal callback in a single allocation.
+pub(in crate::facade::async_subscription) fn share_async_callback<T, F>(callback: F) -> SharedAsyncCallback<T>
+where
+    F: Fn(Delivery<T>) -> SpiFuture<'static, Result<(), DeliveryError>> + Send + Sync + 'static,
+{
+    Arc::new(callback)
+}
+
 /// Shared callback owner that contains destruction only after replacement.
 ///
 /// # Type Parameters
@@ -151,5 +162,42 @@ impl<T: 'static> Drop for AsyncHandlerOwner<T> {
                 });
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::DeliveryError;
+    use crate::facade::async_subscription::internal::async_handler_owner::share_async_callback;
+    use crate::pipeline::subscriber_pipeline::tests::start_allocation_count;
+    use crate::pipeline::subscriber_pipeline::tests::stop_allocation_count;
+    use crate::spi::SpiFuture;
+
+    #[test]
+    fn test_duration_wrapper_callback_uses_one_allocation() {
+        let capture = Arc::new(());
+        start_allocation_count();
+        let wrapper = share_async_callback::<(), _>(move |_| {
+            let _keep_owner = &capture;
+            Box::pin(async { Ok(()) }) as SpiFuture<'static, Result<(), DeliveryError>>
+        });
+        let allocations = stop_allocation_count();
+        drop(wrapper);
+        assert_eq!(allocations, 1);
+    }
+
+    #[test]
+    fn test_start_gate_wrapper_callback_uses_one_allocation() {
+        let capture = Arc::new(());
+        start_allocation_count();
+        let wrapper = share_async_callback::<(), _>(move |_| {
+            let _keep_owner = &capture;
+            Box::pin(async { Ok(()) }) as SpiFuture<'static, Result<(), DeliveryError>>
+        });
+        let allocations = stop_allocation_count();
+        drop(wrapper);
+        assert_eq!(allocations, 1);
     }
 }

@@ -47,6 +47,7 @@ mod delivery_task;
 
 pub(super) use internal::BusContextFuture;
 pub(in crate::facade::async_subscription) use internal::async_handler_owner::AsyncHandlerOwner;
+pub(in crate::facade::async_subscription) use internal::async_handler_owner::SharedAsyncCallback;
 use internal::async_handler_owner::SharedAsyncHandler;
 pub(super) use internal::is_current_bus_poll;
 pub(super) use internal::with_bus_scope;

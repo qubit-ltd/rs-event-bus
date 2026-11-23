@@ -27,7 +27,7 @@ use crate::Diagnostic;
 use crate::error::DeliveryAttemptError;
 use crate::facade::async_subscription::AsyncEventBusInner;
 use crate::facade::async_subscription::RetryFailure;
-use crate::facade::async_subscription::SharedAsyncHandler;
+use crate::facade::async_subscription::SharedAsyncCallback;
 use crate::facade::async_subscription::choose_terminal_directive;
 use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::AsyncSubscriberInterceptor;
@@ -57,7 +57,7 @@ use crate::pipeline::is_retry_rule_failure;
 pub(in crate::facade) async fn run_one_attempt<T: Send + Sync + 'static>(
     options: &SubscribeOptions<T>,
     delivery: Delivery<T>,
-    handler: SharedAsyncHandler<T>,
+    handler: SharedAsyncCallback<T>,
     attempt: u32,
     global_interceptors: &[Arc<AsyncSubscriberInterceptor<T>>],
 ) -> DeliveryOutcome {
@@ -91,7 +91,7 @@ pub(in crate::facade) async fn run_one_attempt<T: Send + Sync + 'static>(
 pub(in crate::facade) async fn run_with_retry<T: Send + Sync + 'static>(
     options: SubscribeOptions<T>,
     delivery: Delivery<T>,
-    handler: SharedAsyncHandler<T>,
+    handler: SharedAsyncCallback<T>,
     inner: &Arc<AsyncEventBusInner>,
     global_interceptors: Vec<Arc<AsyncSubscriberInterceptor<T>>>,
 ) -> Result<u32, RetryFailure> {
