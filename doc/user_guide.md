@@ -1886,9 +1886,9 @@ Startup order is: create the bus, register every handler, then start accepting b
 
 Stop business ingress first, close notification sources with a deadline, and keep subscription handles alive while calling `try_shutdown` from the outer application shutdown path. The async equivalent is `try_shutdown_async` in the same compiled file. Each helper retries exactly once only when the first caller deadline expires, using `Graceful` waits of 2 seconds then 1 second. It returns the full report for the first call that returns a report, including a provider `TimedOut` outcome; a second caller timeout is returned as `ShutdownError::TimedOut`. These waits do not guarantee that provider-side queued messages were drained.
 
-<!-- event-bus-source: tests/fixtures/documentation_consumer/src/bounded_shutdown.rs -->
 The compiled helper below reads the cached report with `shutdown_report()`. That API requires source or a release that includes the change after the `v0.21.4` tag. With `v0.21.4`, preserve and return the original shutdown error, including `ShutdownError::SubscriptionClose`, and omit the cached-report read.
 
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/bounded_shutdown.rs -->
 ```rust
 //! Two bounded waits hand unresolved cleanup back to the application
 //! supervisor.
@@ -2175,9 +2175,11 @@ Use `publish_checked(request, AdmissionRequirement::AtLeastOneAccepted)` only wh
 
 ### Migrate from 0.20 to 0.21
 
-The 0.21 release includes source-level changes accumulated since 0.20. Update the core dependency and the affected call sites together.
+Upgrade the core dependency and affected call sites together. The version notes below distinguish registry releases from source changes; do not infer compatibility with a provider release from a local path build.
 
-- Core 0.21.1 introduced the default facade header limits: 1,024 headers and 65,536 aggregate UTF-8 bytes. Configure `EventBusFacadeConfig::with_header_limits(...)` when an application needs larger boundaries. Publications over the configured limit return `PublishError::Headers`; receive stops with `SubscriptionStopReason::Headers` before decode or handler invocation. `SubscriptionStopReason` is exhaustive, so add the new variant to exhaustive matches. This does not alter encoded payload limits or provider transport limits.
+The API requirements in this section are present in the tagged [core 0.21.1 source](https://github.com/qubit-ltd/rs-event-bus/tree/v0.21.1); the header-limit bullet identifies the change introduced specifically in 0.21.1. Check the exact version used by your application before applying later source-only notes.
+
+- **Core 0.21.1 — facade header limits.** The [v0.21.1 release source](https://github.com/qubit-ltd/rs-event-bus/tree/v0.21.1) sets defaults of 1,024 headers and 65,536 aggregate UTF-8 bytes. Configure `EventBusFacadeConfig::with_header_limits(...)` when an application needs larger boundaries. Publications over the configured limit return `PublishError::Headers`; receive stops with `SubscriptionStopReason::Headers` before decode or handler invocation. `SubscriptionStopReason` is exhaustive, so add the new variant to exhaustive matches. This does not alter encoded payload limits or provider transport limits.
 
 - `Diagnostic::AdmissionRejected` construction requires the actual `subscription_id`; exhaustive destructuring must add the field or use `..`.
 - `ReceiveError::DeadLetterForwardFailed` now requires a `source` when constructed, and full field destructuring must include it; matches that use selected fields can add `..`. The dead-letter failure guidance above shows how to traverse sources and inspect `qubit_retry::RetryError<DeadLetterForwardError>` metadata. Depend directly on `qubit-retry`; core does not re-export it.
@@ -2185,7 +2187,7 @@ The 0.21 release includes source-level changes accumulated since 0.20. Update th
 - `SubscriptionCloseErrors::len()` and `iter()` expose at most 256 retained samples. Use `total_count()`, `omitted_count()`, and `is_truncated()` for aggregate counts.
 - A `retry_rule` or `retry_cancellation_token` without `retry_policy` is rejected by request builders and facade execution. Add an explicit policy or remove the unused rule/token.
 - Local publish pre-admission failures use `SpiError::Publish`; callers matching the previous `SpiError::Operation` must inspect `kind()`, `retryable()`, and `publish_effect()`.
-- `rs-event-bus-redis`, `rs-task`, `rs-ioc`, and `rs-execution-services` checkouts can have manifests or transitive dependencies fixed to 0.20. For local sibling validation, update each relevant checkout's core constraint, keep one core minor across public type boundaries, and run that project's own locked checks. The published Redis 0.7 and task 0.10 releases target core 0.20; a local core 0.21 path graph does not claim those releases are compatible. Published support requires a consumer release built and tested against registry core 0.21.
+- **Registry releases versus local checkouts.** The published [Redis 0.7 manifest and lock](https://github.com/qubit-ltd/rs-event-bus-redis/tree/v0.7.0) and [task 0.10 manifest and lock](https://github.com/qubit-ltd/rs-task/tree/v0.10.0) describe released dependency graphs targeting core 0.20; that is registry-release evidence, not evidence that a working-tree checkout supports core 0.21. The Redis 0.7 checkout examined for this guide is a separate local source revision; its manifest uses a core 0.21 path dependency, which establishes only local manifest alignment. Likewise, the [rs-ioc fixture](https://github.com/qubit-ltd/rs-ioc/tree/main) and the [execution-services IoC fixture](https://github.com/qubit-ltd/rs-execution-services/blob/main/tests/fixtures/ioc_application_consumer/src/managed_event_bus.rs) are source examples, not published compatibility declarations. For sibling validation, update the relevant local core constraints, keep one core minor across public type boundaries, and run each project's locked checks. A local path graph does not establish compatibility of registry releases; published support needs consumer releases built and tested against registry core 0.21.
 - A later source change makes delivery metric snapshots observational only; it is newer than `v0.21.4` and has no assigned release tag yet. On upgrade to a release containing it, let `oldest_owned_age == None` mean the sample is unavailable and use `terminal_failure()` or async `run()` to detect stopped subscriptions. See the [migration guide](migration.md#delivery-metric-snapshots-after-core-0214).
 
 ## Boundaries and a practice checklist

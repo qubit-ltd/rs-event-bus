@@ -1884,9 +1884,9 @@ worker 完成状态包含资源清理，也包含 observer 捕获对象的析构
 
 先停止业务入口，在期限内关闭通知来源，并保留订阅句柄；然后从最外层应用关闭流程调用 `try_shutdown`，异步路径调用同文件的 `try_shutdown_async`。只有第一次调用方 deadline 到期时，helper 才会使用 `Graceful` 再重试一次，等待时间分别为 2 秒和 1 秒。首次返回报告（包括 provider 的 `TimedOut` outcome）会完整保留；第二次调用方超时则作为 `ShutdownError::TimedOut` 返回。helper 不保证 provider 队列中的消息都已排空。
 
-<!-- event-bus-source: tests/fixtures/documentation_consumer/src/bounded_shutdown.rs -->
 下面编译的 helper 会通过 `shutdown_report()` 读取缓存报告；这要求源码或包含 `v0.21.4` tag 之后该变更的发行版。使用 `v0.21.4` 时，应保留并返回原始停机错误（包括 `ShutdownError::SubscriptionClose`），并省略读取缓存报告的分支。
 
+<!-- event-bus-source: tests/fixtures/documentation_consumer/src/bounded_shutdown.rs -->
 ```rust
 //! Two bounded waits hand unresolved cleanup back to the application
 //! supervisor.
@@ -2164,9 +2164,11 @@ provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过
 
 ### 从 0.20 迁移到 0.21
 
-0.21 版本包含自 0.20 以来累积的源码变化。请同步更新 core 依赖和受影响调用点。
+请同步升级 core 依赖和受影响调用点。以下版本说明区分 registry 发行版与源码变更；本地 path 构建不能证明某个 provider 发行版兼容。
 
-- Core 0.21.1 引入默认 facade headers 限额：1,024 项及 key/value UTF-8 累计 65,536 字节。应用需要更大边界时可配置 `EventBusFacadeConfig::with_header_limits(...)`。发布超限返回 `PublishError::Headers`；接收会在解码或调用 handler 前以 `SubscriptionStopReason::Headers` 停止。`SubscriptionStopReason` 是穷尽 enum，穷尽匹配须增加该变体。此限额不改变编码载荷限额或 provider transport 限额。
+本节列出的 API 要求均可在带标签的 [core 0.21.1 源码](https://github.com/qubit-ltd/rs-event-bus/tree/v0.21.1)中确认；headers 限额条目标明了具体在 0.21.1 引入的变更。应用升级时仍须核对所用的精确版本，尤其是后续仅存在于源码中的说明。
+
+- **Core 0.21.1 — facade headers 限额。** [v0.21.1 发布源码](https://github.com/qubit-ltd/rs-event-bus/tree/v0.21.1) 将默认值设为 1,024 项及 key/value UTF-8 累计 65,536 字节。应用需要更大边界时可配置 `EventBusFacadeConfig::with_header_limits(...)`。发布超限返回 `PublishError::Headers`；接收会在解码或调用 handler 前以 `SubscriptionStopReason::Headers` 停止。`SubscriptionStopReason` 是穷尽 enum，穷尽匹配须增加该变体。此限额不改变编码载荷限额或 provider transport 限额。
 
 - 构造 `Diagnostic::AdmissionRejected` 时须提供真实 `subscription_id`；完整解构须添加该字段或使用 `..`。
 - 构造 `ReceiveError::DeadLetterForwardFailed` 时须提供新的 `source`，完整解构也须处理该字段；只匹配部分字段时可用 `..`。本手册前面的死信失败说明展示了如何遍历错误链、读取 `qubit_retry::RetryError<DeadLetterForwardError>` 元数据。应用应直接依赖 `qubit-retry`；core 不会重新导出它。
@@ -2174,7 +2176,7 @@ provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过
 - `SubscriptionCloseErrors::len()` 与 `iter()` 最多暴露 256 条保留样本；聚合数量使用 `total_count()`、`omitted_count()` 和 `is_truncated()`。
 - 没有 `retry_policy` 的 `retry_rule` 或 `retry_cancellation_token` 会在请求构造及 facade 执行时被拒绝。请添加显式策略或删除未使用的 rule/token。
 - local 发布前拒绝改用 `SpiError::Publish`；匹配旧 `SpiError::Operation` 的调用方应检查 `kind()`、`retryable()` 和 `publish_effect()`。
-- `rs-event-bus-redis`、`rs-task`、`rs-ioc`、`rs-execution-services` checkout 的清单或传递依赖可能仍固定在 0.20。本地 sibling 联用时，请更新相关 checkout 的 core 约束、确保公共类型边界使用同一 core minor，并运行各项目自身的 locked 检查。已发布的 Redis 0.7 和 task 0.10 面向 core 0.20；core 0.21 本地 path 图通过不表示这些发布版本兼容。发布支持需要消费者发布并测试依赖 registry core 0.21 的版本。
+- **Registry 发行版与本地 checkout。** 已发布的 [Redis 0.7 manifest 和 lock](https://github.com/qubit-ltd/rs-event-bus-redis/tree/v0.7.0) 及 [task 0.10 manifest 和 lock](https://github.com/qubit-ltd/rs-task/tree/v0.10.0) 记录了面向 core 0.20 的发行依赖图；这是 registry 发行版证据，不能证明工作树 checkout 支持 core 0.21。本指南核对的 Redis 0.7 是另一个本地源码版本：其 manifest 使用 core 0.21 路径依赖，只能说明本地清单对齐。同样，[rs-ioc fixture](https://github.com/qubit-ltd/rs-ioc/tree/main) 和 [execution-services IoC fixture](https://github.com/qubit-ltd/rs-execution-services/blob/main/tests/fixtures/ioc_application_consumer/src/managed_event_bus.rs) 是源码示例，不是已发布的兼容声明。使用 sibling 时，请更新相关本地 core 约束、确保公共类型边界使用相同 core minor，并运行各项目自身的 locked 检查。本地 path 图不能证明 registry 发行版兼容；发布支持需要消费者发行版依赖 registry core 0.21 并经过测试。
 - 后续源码变更使投递指标快照只用于观察；该变更晚于 `v0.21.4`，尚无对应发行标签。升级到包含它的发行版后，应把 `oldest_owned_age == None` 视为样本不可用，并通过 `terminal_failure()` 或异步 `run()` 判断订阅是否停止。详见[迁移指南](migration.zh_CN.md#core-0214-之后的投递指标快照)。
 
 ## 边界与实践清单
