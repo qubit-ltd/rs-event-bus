@@ -14,11 +14,13 @@ from dataclasses import dataclass
 try:
     from scripts.check_event_bus_graph import validate_graph_for_downstream
     from scripts.downstream_source_snapshot import copy_tracked_source
+    from scripts.downstream_source_snapshot import tracked_source_files
     from scripts.run_conformance_watchdog import process_group_options
     from scripts.run_conformance_watchdog import terminate_process_group
 except ModuleNotFoundError:
     from check_event_bus_graph import validate_graph_for_downstream
     from downstream_source_snapshot import copy_tracked_source
+    from downstream_source_snapshot import tracked_source_files
     from run_conformance_watchdog import process_group_options
     from run_conformance_watchdog import terminate_process_group
 
@@ -344,15 +346,18 @@ def _inherited_workspace_paths(data, workspace_data):
 
 
 def _cargo_config_paths(manifest, source_root):
-    """Find Cargo configs discovered from the fixture cwd inside the checkout."""
+    """Find tracked Cargo configs discovered from cwd and copied into snapshots."""
     source_root = source_root.resolve()
+    if not (source_root / ".git").exists():
+        return []
+    tracked_files = set(tracked_source_files(source_root))
     current = manifest.parent.resolve()
     configs = []
     while True:
         if current == source_root or source_root in current.parents:
             for name in ("config", "config.toml"):
                 candidate = current / ".cargo" / name
-                if candidate.is_file():
+                if candidate.is_file() and candidate.relative_to(source_root) in tracked_files:
                     configs.append(candidate)
         if current == source_root or current.parent == current:
             break

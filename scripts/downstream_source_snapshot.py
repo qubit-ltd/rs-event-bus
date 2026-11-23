@@ -41,6 +41,14 @@ def _tracked_entries(source):
     return entries
 
 
+def tracked_source_files(source):
+    """Return the validated tracked paths that a source snapshot would copy."""
+    source = Path(source).resolve(strict=True)
+    if not source.is_dir() or not (source / ".git").exists():
+        raise ValueError(f"source is not a Git worktree: {source}")
+    return _tracked_entries(source)
+
+
 def copy_tracked_source(source: Path, destination: Path) -> None:
     """Copy current tracked files, including edits and lockfiles, without untracked files."""
     source = Path(source).resolve(strict=True)
@@ -55,7 +63,7 @@ def copy_tracked_source(source: Path, destination: Path) -> None:
     else:
         destination.mkdir(parents=True)
 
-    for relative in _tracked_entries(source):
+    for relative in tracked_source_files(source):
         label = relative.as_posix()
         source_path = source / relative
         try:

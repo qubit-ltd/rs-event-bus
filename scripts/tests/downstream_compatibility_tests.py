@@ -276,6 +276,69 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             self._assert_cargo_snapshot_discovers_only_reachable_packages(
                 parent, fixture / "Cargo.toml", "config-dependency")
 
+    def test_ignored_cargo_config_does_not_mask_tracked_config_toml(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution-services", "execution")
+            dependency = self.make_input_repository(parent / "rs-tracked-dependency", "tracked-dependency")
+            (dependency / "Cargo.toml").write_text(
+                '[package]\nname="config-dependency"\nversion="0.1.0"\n'
+                'edition="2021"\n')
+            (dependency / "Cargo.lock").write_text("")
+            fixture = execution / "tests/fixtures/ioc_application_consumer"
+            fixture.mkdir(parents=True)
+            (fixture / "Cargo.toml").write_text(
+                '[package]\nname="ioc-consumer"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\nconfig-dependency="0.1.0"\n')
+            (fixture / "Cargo.lock").write_text("")
+            cargo_dir = fixture / ".cargo"
+            cargo_dir.mkdir()
+            tracked_config = cargo_dir / "config.toml"
+            tracked_config.write_text(
+                '[patch.crates-io]\nconfig-dependency={path="../../../../rs-tracked-dependency"}\n')
+            (fixture / "src").mkdir()
+            (fixture / "src/lib.rs").write_text("pub fn fixture() {}\n")
+            (execution / ".gitignore").write_text("**/.cargo/config\n")
+            subprocess.run(["git", "-C", str(execution), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(execution), "commit", "-qm", "tracked Cargo config"],
+                           check=True)
+
+            ignored_config = cargo_dir / "config"
+            ignored_config.write_text(
+                '[patch.crates-io]\nconfig-dependency={path="../../../../../outside-dependency"}\n')
+            ignored = subprocess.run(["git", "-C", str(execution), "check-ignore", str(ignored_config)],
+                                     capture_output=True, text=True, check=False)
+            self.assertEqual(ignored.returncode, 0, ignored.stderr)
+
+            snapshots_root = base / "snapshot/siblings"
+            copy_tracked_source(execution, snapshots_root / execution.name)
+            copy_tracked_source(dependency, snapshots_root / dependency.name)
+            snapshot_config_dir = (snapshots_root / execution.name /
+                                   "tests/fixtures/ioc_application_consumer/.cargo")
+            self.assertTrue((snapshot_config_dir / "config.toml").is_file())
+            self.assertFalse((snapshot_config_dir / "config").exists())
+
+            discovered = discover_local_repositories(fixture / "Cargo.toml", parent, execution)
+            self.assertEqual(set(discovered), {execution.resolve(), dependency.resolve()})
+            (execution / ".gitignore").write_text("")
+            no_longer_ignored = subprocess.run(
+                ["git", "-C", str(execution), "check-ignore", str(ignored_config)],
+                capture_output=True, text=True, check=False)
+            self.assertEqual(no_longer_ignored.returncode, 1)
+            discovered_unignored = discover_local_repositories(
+                fixture / "Cargo.toml", parent, execution)
+            self.assertEqual(set(discovered_unignored), {execution.resolve(), dependency.resolve()})
+            snapshot_manifest = (snapshots_root / execution.name /
+                                 "tests/fixtures/ioc_application_consumer/Cargo.toml")
+            self._cargo_metadata_offline(snapshot_manifest)
+            graph = json.loads(self._cargo_metadata_offline(snapshot_manifest, locked=True).stdout)
+            package = next(item for item in graph["packages"]
+                           if item["name"] == "config-dependency")
+            self.assertEqual(Path(package["manifest_path"]),
+                             snapshots_root / dependency.name / "Cargo.toml")
+
     def test_execution_services_rejects_missing_and_out_of_bounds_path_with_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory) / "siblings"
@@ -293,6 +356,8 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             config = fixture / ".cargo/config.toml"
             config.parent.mkdir()
             config.write_text('[patch.crates-io]\nmissing={path="../../../../config-missing"}\n')
+            subprocess.run(["git", "-C", str(fixture.parents[2]), "init", "-q"], check=True)
+            subprocess.run(["git", "-C", str(fixture.parents[2]), "add", "-A"], check=True)
             with self.assertRaisesRegex(ValueError, r"config.toml.*config-missing"):
                 discover_local_repositories(manifest, parent)
             config.write_text('[patch.crates-io]\noutside={path="../../../../../outside"}\n')
