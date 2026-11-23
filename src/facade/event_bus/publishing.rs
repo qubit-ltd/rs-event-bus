@@ -32,8 +32,12 @@ use crate::spi::PublishVisibility;
 impl EventBus {
     /// Returns the shared publication counters for this facade and its clones.
     ///
+    /// Each counter is sampled independently, so concurrent publication can
+    /// make the fields represent different instants rather than one atomic
+    /// snapshot. The result is intended for observation, not synchronization.
+    ///
     /// # Returns
-    /// A point-in-time snapshot of publication counters.
+    /// A snapshot of independently sampled publication counters.
     #[inline]
     pub fn publish_metrics(&self) -> PublishMetricsSnapshot {
         self.inner.publish_metrics.snapshot()

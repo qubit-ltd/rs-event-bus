@@ -231,7 +231,7 @@ payload。该异常路径可能泄漏二次 payload 持有的资源，泄漏量�
 | `SubscriberId` | 应用给订阅者的稳定名字 | 1..=128 字节，首字符字母或数字，其余允许 `.`、`_`、`-`、`:`；用于死信记录、consumer group 语义与 provider 侧可读标识 |
 | `subscription::Id` | facade 内部分配的订阅唯一 ID | 单调递增整数，同一 bus 内不重复；provider 用它索引订阅，与 `SubscriberId` 无关 |
 | `EventId` | 每个 `EventEnvelope` 的唯一 ID | 默认由 `qubit-id` 生成 UUID v4；也可 `EventId::new` 传入外部 ID（1..=128 字节，无首尾空白与控制字符） |
-| `ProviderId` | provider 标识 | 来自 `qubit-spi`；内置 `local` 另有别名 `memory`、`in-process` |
+| `ProviderId` | provider 标识 | facade 自有类型为 `qubit_event_bus::model::ProviderId`，要求文本非空白，且首尾没有空白或控制字符。registry descriptor 使用 `qubit_spi::ProviderId`，其 canonical 规则要求小写 ASCII token、首尾为字母或数字，中间只允许 `-`、`_`、`.`、`+` 分隔符。同步和异步 adapter 都把 descriptor 文本转换为 facade ID；registry 规则在构造 descriptor 时生效，直接创建 facade ID 时则应用 facade 规则。内置 `local` 另有别名 `memory`、`in-process` |
 
 `SubscriberId` 与 `subscription::Id` 分离是刻意的：前者是**业务身份**
 （可能被多个订阅复用，也用于死信归因），后者是**运行期实例身份**。
@@ -1232,9 +1232,9 @@ shutdown(mode)                         → request_shutdown(mode) + ticket.wait(
 
 `request_shutdown` 关闭接纳并向固定池 scheduler 发信号；不会在请求线程执行排队的 handler 或结算回调。scheduler 标记 graceful drain 或 immediate cancel，然后唤醒 receiver owner。owner 自行释放 delivery lease 和保留的 payload；已经获得许可的 handler 回调仍由固定线程池执行。独立协调线程等待并 join owners 和 pool worker，之后才进行唯一一次 provider shutdown。Immediate 可以加强当前 Graceful 代次，但不能中断已经开始的回调或 provider 调用。
 
-每个 ticket 保留一个确切代次的结果，直到 ticket 被丢弃。并发请求可加入当前代次；bus 已关闭时返回携带缓存报告的就绪 ticket。`wait` 超时只限制这次观察，后台清理继续。`wait_async` 为观察者注册独立、可取消的 waker，不阻塞线程也不要求特定运行时。它首次轮询时会先检查当前上下文是否属于 ticket 所属的同步 bus，再检查代次；同一 bus 上下文会返回 `LifecycleError::WouldDeadlock { operation: "shutdown" }`，缓存 ticket 也一样。在该上下文中创建 future 是允许的，从另一 bus 轮询则不会被此检查拒绝。取消观察 future 只移除自己的 waker 登记；保留 ticket 后可以再次观察。协调线程启动失败归属于该代次的 ticket，即使后续请求启动了新代也不改变旧结果。
+每个 ticket 保留一个确切代次的结果，直到 ticket 被丢弃。并发请求可加入当前代次；bus 已关闭时返回携带缓存报告的就绪 ticket。`wait` 超时只限制这次观察，后台清理继续。`wait_async` 为观察者注册独立、可取消的 waker，不阻塞线程也不要求特定运行时。它在入口检查当前上下文是否属于 ticket 所属的同步 bus（缓存 ticket 也检查），并在活动等待的每次 poll 检查；同一 bus 上下文会返回 `LifecycleError::WouldDeadlock { operation: "shutdown" }`。在该上下文中创建 future 是允许的，从另一 bus 轮询则不会被此检查拒绝。同一 bus 的拒绝发生在本次 poll 登记 waker 之前。若先前挂起的等待之后在同一 bus 工作中再次 poll，丢弃被拒绝的等待会释放此前登记的 waker；保留同一 ticket，回调结束后可从外部重新观察。协调线程启动失败归属于该代次的 ticket，即使后续请求启动了新代也不改变旧结果。
 
-`request_shutdown` 不等待当前回调，因此可以在 bus 回调中调用。若同步 `shutdown` 或 `EventBusShutdown::wait` 必须等当前回调结束才会完成，则返回 `WouldDeadlock`；同一同步 bus 的 ticket 在 `wait_async` 首次轮询时也应用此保护。它只拒绝此次观察，不会取消清理，回调返回后仍可等待同一个 ticket。报告包含 facade 已知放弃的 ephemeral delivery 数量，以及 provider 可能放弃未能精确计数工作的标志。`EventBus` 没有 `Drop` 停机逻辑；丢弃 bus 句柄或 ticket 都不会取消后台清理。
+`request_shutdown` 不等待当前回调，因此可以在 bus 回调中调用。若同步 `shutdown` 或 `EventBusShutdown::wait` 必须等当前回调结束才会完成，则返回 `WouldDeadlock`；同一同步 bus 的 ticket 在 `wait_async` 入口和活动等待的每次 poll 也应用此保护。它只拒绝此次观察，不会取消清理，回调返回后仍可等待同一个 ticket。报告包含 facade 已知放弃的 ephemeral delivery 数量，以及 provider 可能放弃未能精确计数工作的标志。`EventBus` 没有 `Drop` 停机逻辑；丢弃 bus 句柄或 ticket 都不会取消后台清理。
 
 ---
 
@@ -1340,8 +1340,9 @@ ephemeral 投递累计数。它可能包含 handler 已运行但 settlement 尚�
 终止/关闭过程中记录的放弃数量；无法据此判断 handler 是否已产生业务副作用。provider
 自有队列中的工作不计入该值，由 `provider_may_have_abandoned_deliveries` 表达相应不确定性。
 
-此处 provider shutdown 成功是指 SPI 调用返回 `Ok(outcome)`；`Ok(ShutdownOutcome::TimedOut)`
-不表示所有 provider 后台工作都已完成。provider shutdown 失败或取消不会触发最终 control
+此处 provider shutdown 成功是指 SPI 调用返回 `Ok(outcome)`。`Complete` 和 `TimedOut`
+都表示 provider 已完成 shutdown procedure；`TimedOut` 说明 provider 自身的 graceful
+期限先到，之后才完成清理。provider shutdown 失败或取消不会触发最终 control
 处置。provider shutdown 成功后，资源处置与报告 receiver close 错误可以同时发生。重复
 shutdown 返回缓存的 report 或保留的规范化 close errors，不会抹掉关闭错误。
 
@@ -1709,8 +1710,9 @@ wrapper 中的身份和效果；透明错误传播保留底层 source 链。
 | `SettlementUnavailable` | 需要 settle 但能力不允许或已放弃（如 `Immediate` 停机） |
 | `InternalFailure` | facade 内部不应发生的错误（如协调线程 receive 返回 Err） |
 
-`PublishMetricsSnapshot`（`publish_metrics()`）提供发布侧计数（字段见 §7.3 第 10 步），
-用于测试与轻量监控；它不是完整指标系统。异步侧只有 future 被首次 poll 时才计入
+`PublishMetricsSnapshot`（`publish_metrics()`）提供发布侧计数（字段见 §7.3 第 10 步）。
+每个字段独立采样，并发更新时可能对应不同时间点；它适用于测试与轻量监控，
+不是具备事务一致性的完整指标系统。异步侧只有 future 被首次 poll 时才计入
 `attempts`，构造后未 poll 即丢弃的 publish future 不计数。
 
 设计取舍：诊断是**推**模型而不是日志——本 crate 不依赖 `log`/`tracing`，
@@ -2225,6 +2227,8 @@ pub fn settle_without_borrowing_token<'a>(
 稀疏唤醒场景确实表现出二次方 poll 增长，但 256 个 receiver 的 P95 为 4.584 ms，低于 200 ms 判定阈值。这组隔离测量没有证明线上部署需要更复杂的就绪驱动调度，因此保留现有关闭迭代方式。
 
 ## 使用下游消费者验证当前 core
+
+旧 Redis/task 命令支持 Python 3.10。通过 `--execution-services-root` 选择完整 IoC 检查时，需要 Python 3.11 或更新版本提供的 `tomllib`；缺少时会在创建快照或运行 Cargo 前失败。Cargo metadata 更新、locked metadata 校验、精确测试枚举和测试执行都以所选 manifest 的父目录作为工作目录。保留相对布局时可以使用指向同级仓库的相对路径。绝对 `path` 依赖会被拒绝，因为复制后的 manifest 仍指向原 checkout；应改为相对于引用 manifest 的路径，并保持仓库处于支持的同级布局。
 
 发版评审，或修改 SPI、接纳语义、生命周期契约时，使用指定的 Redis 和 rs-task 源码版本验证当前 core：
 

@@ -1348,7 +1348,7 @@ let bus = registry.create(&EventBusConfig::default())?;
 总线创建后，可用 `RequiredCapabilities::missing_from(bus.capabilities())` 比较已声明的能力。空列表表示声明满足要求。这只是本地值比较：不会调用 provider、改变 metrics 或触发注册表 fallback，也不能证明后端当前健康。非空结果如何报告由应用决定。
 
 
-`PublishGuarantee` 按强度累积。`FireAndForget` 只承诺 provider 完成发送／提交尝试；`Accepted` 增加 provider 声明边界上的接纳（可能只是内存队列）；`Confirmed` 增加接收传输端返回且 provider 已观察到的明确正向确认；`DurablyStored` 增加进入已说明故障模型的持久存储边界。任何等级都不表示 handler 已完成或恰好一次投递。内置 local 与 Redis 当前均声明 `Accepted`；Redis 的 `XADD` 成功本身不足以升级为 `Confirmed` 或 `DurablyStored`。 声明 `FireAndForget` 的 provider 可以返回 `PublishAcknowledgement::SentUnconfirmed`；facade 也会把该保证等级下旧版 `Accepted` 回执归一为此结果。该回执只表示发送尝试已完成，不确认接纳；它保留事件 ID 和 provider ID，没有接纳摘要，所有 `check_admission` 条件都会以 `VisibilityUnavailable` 失败，checked publish 会在 `CheckedPublishError::Admission` 中返回完整回执。逐目标结果保持原样。批次和通知接纳计数不会把未确认发送归类为已接纳、拒绝、丢弃或失败，普通发布仍会成功返回。发送可能已经产生外部副作用，因此不要自动重发。
+`PublishGuarantee` 按强度累积。`FireAndForget` 只承诺 provider 完成发送／提交尝试；`Accepted` 增加 provider 声明边界上的接纳（可能只是内存队列）；`Confirmed` 增加接收传输端返回且 provider 已观察到的明确正向确认；`DurablyStored` 增加进入已说明故障模型的持久存储边界。任何等级都不表示 handler 已完成或恰好一次投递。内置 local 与 Redis 当前均声明 `Accepted`；Redis 的 `XADD` 成功本身不足以升级为 `Confirmed` 或 `DurablyStored`。 声明 `FireAndForget` 的 provider 可以返回 `PublishAcknowledgement::SentUnconfirmed`；facade 也会把该保证等级下旧版 `Accepted` 回执归一为此结果。该回执只表示发送尝试已完成，不确认接纳；它保留事件 ID 和 provider ID，没有接纳摘要，所有 `check_admission` 条件都会以 `VisibilityUnavailable` 失败，checked publish 会在 `CheckedPublishError::Admission` 中返回完整回执。逐目标结果保持原样。批次结果和通知统计会分别通过 `sent_unconfirmed_count()` 与 `admission_sent_unconfirmed()` 记录未确认发送；它不会被归类为已接纳、拒绝、丢弃或失败，普通发布仍会成功返回。发送可能已经产生外部副作用，因此不要自动重发。
 
 ### 对照 local 与 Redis 的实际能力
 
@@ -2134,6 +2134,8 @@ if !cleanup_errors.is_empty() {
 示例保留 runner 结果以及 shutdown 报告或错误，供应用记录。`try_shutdown_async` 仅在第一次调用方 deadline 到期时，再执行一轮有界 Graceful 停机。它会返回首次获得的完整报告，包括 provider 报告的 `TimedOut` outcome；第二次调用方超时则作为 `ShutdownError::TimedOut` 返回。如果返回 `ShutdownError::SubscriptionClose`，应保留原始错误，并通过同一条总线读取 `bus.shutdown_report()`：provider 清理完成时，缓存报告包含最终 outcome、已知放弃数和 provider 不确定性，即使 receiver close 失败也一样。`None` 仅表示尚未发布报告；读取不会推进清理。示例会连同 runner 错误报告非 `Complete` 或已知放弃计数非零的停机报告，并继续执行应用的其他清理。已知放弃数是总线累计值，不能说明 handler 是否已经产生业务副作用。provider 报告的可能放弃表示不确定性：本示例会记录它，但不会据此认定消息确已丢失。不要无限期等待 runner 的 JoinHandle；应把快照和进程处置交给外部监督器。如果总线仍为 `Running`，且应用需要单独观察 provider receiver close 错误，可在应用自己的 deadline 内调用 `close().await`。停机已经开始后，`close().await` 可能返回 `LifecycleError::Closed`；此时应继续驱动 shutdown 并观察其清理结果。丢弃 shutdown future 会停止当前驱动。应用必须再次调用 `AsyncEventBus::shutdown` 并持续 poll 该 future 才能继续清理；异步停机没有后台协调器。库不会隐式 spawn 来脱离调用方运行时。
 
 异步总线没有 `wait_for_idle`；`wait_for_received_deliveries` 只统计 facade 已接收的工作。async local 关闭会丢弃仍在 provider 中的积压，durable provider 依其恢复协议保留尚未终结的工作。
+
+旧 Redis/task 命令支持 Python 3.10；选择带 `--execution-services-root` 的完整 IoC 检查需要 Python 3.11 或更新版本提供的 `tomllib`，缺少时会在创建快照或运行 Cargo 前失败。Cargo 的 metadata 更新、locked metadata 校验、精确测试枚举和测试执行都以所选 manifest 的父目录作为工作目录。保留相对布局时可以使用指向同级仓库的相对路径；绝对 `path` 依赖会被拒绝，因为复制后的 manifest 仍会指向原 checkout。请把这类声明改为相对于引用 manifest 的路径，并保持仓库处于支持的同级布局。
 
 在完整 Git checkout 根目录（即同时包含仓库 `Cargo.toml` 和 `scripts/run_conformance_watchdog.py` 的目录）运行：构建可运行的生命周期示例（`async_shutdown` 展示异步总线的有界停机，`notification_close` 展示 observer 仍在运行时关闭通知发布器），再分别通过有界进程 watchdog 运行：
 

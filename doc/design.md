@@ -253,7 +253,7 @@ configuration errors that `build()` should already have rejected.
 | `SubscriberId` | The application's stable name for a subscriber | 1..=128 bytes. The first character is a letter or digit; the rest may also be `.`, `_`, `-`, or `:`. Used in dead-letter records, consumer-group semantics, and as a readable id on the provider side |
 | `subscription::Id` | The facade-assigned id of one subscription instance | A monotonically increasing integer, unique within one bus. Providers index subscriptions by it. It is unrelated to `SubscriberId` |
 | `EventId` | The id of one `EventEnvelope` | Defaults to a UUID v4 from `qubit-id`. `EventId::new` accepts an external id (1..=128 bytes, no leading or trailing whitespace, no control characters) |
-| `ProviderId` | Provider identity | From `qubit-spi`. The built-in `local` provider also answers to the aliases `memory` and `in-process` |
+| `ProviderId` | Provider identity | The facade owns `qubit_event_bus::model::ProviderId`, which accepts nonblank text without surrounding whitespace or control characters. Registry descriptors use `qubit_spi::ProviderId`, whose canonical grammar is a lowercase ASCII token with alphanumeric endpoints and only `-`, `_`, `.`, or `+` separators. Sync and async adapters convert the descriptor text into the facade ID; registry grammar applies when constructing the descriptor, while facade validation applies to facade IDs created directly. The built-in `local` provider also answers to the aliases `memory` and `in-process` |
 
 `SubscriberId` and `subscription::Id` are separate on purpose. The first is a
 **business identity** (several subscriptions may share it, and dead-letter records
@@ -1331,9 +1331,9 @@ shutdown(mode)                         → request_shutdown(mode) + ticket.wait(
 
 `request_shutdown` closes admission and signals the fixed-pool scheduler; it does not run queued handler or settlement callbacks on the requesting thread. The scheduler marks graceful drain or immediate cancellation, then wakes receiver owners. Owners release their own delivery leases and retained payloads; already granted handler callbacks continue on the fixed pool. A separate coordinator joins owners and pool workers before the single provider shutdown call. Immediate strengthens a running Graceful generation, but cannot interrupt a callback or provider call already in progress.
 
-Each ticket retains one exact generation's result until it is dropped. Concurrent requests can join the current generation, and a closed bus returns a ready ticket with the cached report. `wait` timeout limits only that observation; background cleanup continues. `wait_async` registers an independent cancelable waker and neither blocks a thread nor requires a runtime. Its first poll checks whether the current context belongs to this ticket's synchronous bus before examining its generation, including when the ticket has a cached result; it returns `LifecycleError::WouldDeadlock { operation: "shutdown" }` in that context. Creating the future there is allowed, and polling it from another bus is not rejected by this check. Cancelling an observation future removes only its waker registration; a retained ticket can be observed again. A coordinator start failure remains associated with tickets for that generation even if a later request starts a retry generation.
+Each ticket retains one exact generation's result until it is dropped. Concurrent requests can join the current generation, and a closed bus returns a ready ticket with the cached report. `wait` timeout limits only that observation; background cleanup continues. `wait_async` registers an independent cancelable waker and neither blocks a thread nor requires a runtime. It checks whether the current context belongs to this ticket's synchronous bus at entry, including for a cached ticket, and on every poll of an active wait; it returns `LifecycleError::WouldDeadlock { operation: "shutdown" }` in that context. Creating the future there is allowed, and polling it from another bus is not rejected by this check. A same-bus rejection happens before that poll registers a waker. If an already pending wait is later polled from same-bus work, dropping the rejected wait releases its earlier waker registration. A retained ticket can be observed again from outside the callback. A coordinator start failure remains associated with tickets for that generation even if a later request starts a retry generation.
 
-`request_shutdown` is safe from bus-owned callbacks because it returns without waiting. Synchronous `shutdown` and `EventBusShutdown::wait` return `WouldDeadlock` when invoked from a callback that would need to finish first; `wait_async` applies the same guard on first poll for the ticket's own synchronous bus. This rejects only the observation and does not cancel cleanup, so the ticket remains usable after the callback returns. The report includes facade-known abandoned ephemeral deliveries and whether provider-owned work may also have been abandoned without an exact count. `EventBus` has no `Drop` shutdown; dropping either the bus handle or ticket does not cancel cleanup.
+`request_shutdown` is safe from bus-owned callbacks because it returns without waiting. Synchronous `shutdown` and `EventBusShutdown::wait` return `WouldDeadlock` when invoked from a callback that would need to finish first; `wait_async` checks the ticket's own synchronous bus at entry, including for cached results, and on every poll of an active wait. This rejects only the observation and does not cancel cleanup, so the ticket remains usable after the callback returns. The report includes facade-known abandoned ephemeral deliveries and whether provider-owned work may also have been abandoned without an exact count. `EventBus` has no `Drop` shutdown; dropping either the bus handle or ticket does not cancel cleanup.
 
 ---
 
@@ -1449,7 +1449,7 @@ recorded by an earlier termination or close. It does not reveal whether the
 handler produced a business side effect. Provider-owned queued work is not
 included; `provider_may_have_abandoned_deliveries` expresses that uncertainty.
 
-Provider shutdown succeeds here when the SPI call returns `Ok(outcome)`; `Ok(ShutdownOutcome::TimedOut)` does not mean all provider background work has completed. A failed or cancelled provider shutdown does not trigger final control disposal. After successful provider shutdown, disposal and reporting a receiver-close error can occur together. Repeated shutdown returns the cached report or retained canonical close errors; it does not erase close errors.
+Provider shutdown succeeds here when the SPI call returns `Ok(outcome)`. Both `Complete` and `TimedOut` mean the provider has completed its shutdown procedure; `TimedOut` records that its own graceful period expired before cleanup completed. A failed or cancelled provider shutdown does not trigger final control disposal. After successful provider shutdown, disposal and reporting a receiver-close error can occur together. Repeated shutdown returns the cached report or retained canonical close errors; it does not erase close errors.
 
 A `Graceful` timeout is the deadline of that `shutdown` call; concurrent calls have independent deadlines. A waiter can time out before leadership is released. When awakened, a waiter rechecks whether the bus is `Closed`; if not, it competes to lead cleanup. A failed, timed-out, or cancelled attempt does not guarantee the same result to another caller: a later leader can retry and succeed.
 
@@ -1916,8 +1916,10 @@ An observer panic is isolated and does not affect other observers or the main pa
 | `SettlementUnavailable` | Settlement was required but the capability does not allow it, or it was abandoned (for example an `Immediate` shutdown) |
 | `InternalFailure` | An internal facade failure that should not happen (for example the coordinator's `receive` returned `Err`) |
 
-`PublishMetricsSnapshot` (`publish_metrics()`) is the publish-side counters from
-step 10 of §7.3. It is for tests and light monitoring. It is not a full metrics system.
+`PublishMetricsSnapshot` (`publish_metrics()`) contains the publish-side counters from
+step 10 of §7.3. Each field is sampled independently, so concurrent updates can make
+the fields reflect different instants; it is for tests and light monitoring, not a
+transactionally consistent metrics system.
 On the async side, `attempts` increments when the future is first polled. A publish
 future that is constructed and dropped without being polled is not counted.
 
@@ -2477,6 +2479,8 @@ Measured with `cargo +1.94.0 test --locked --release --test async_facade_tests -
 The sparse-wakeup case does show quadratic polling, but its measured P95 is 4.584 ms at 256 receivers, below the 200 ms decision threshold. These isolated measurements do not demonstrate a deployment-level need for a more complex wake-driven scheduler, so the existing close iteration remains unchanged.
 
 ## Validate the current core against downstream consumers
+
+The legacy Redis/task command supports Python 3.10. Selecting the full IoC check with `--execution-services-root` requires Python 3.11 or newer for `tomllib` and fails before snapshot creation or Cargo work if unavailable. Cargo metadata refresh, locked metadata validation, exact test enumeration, and test execution all use the selected manifest’s parent as their working directory. Relative paths to sibling repositories work when their relative layout is preserved. Absolute `path` dependencies are rejected because copied manifests would still point into the original checkout; convert them to paths relative to the referencing manifest and keep the repositories in the supported sibling layout.
 
 For a release review or a change to the SPI, accepted-delivery semantics, or lifecycle contract, check the current core against the selected Redis and rs-task source revisions:
 
