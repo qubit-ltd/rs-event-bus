@@ -303,14 +303,16 @@ impl ShutdownCoordinator {
             if state.generation != generation || !state.active {
                 (None, Some(result))
             } else {
-                if state.waiters.contains_key(&generation) {
+                let result = if state.waiters.contains_key(&generation) {
                     state.results.insert(generation, result);
+                    None
                 } else {
                     // No ticket can observe this generation anymore.
-                }
+                    Some(result)
+                };
                 state.active = false;
                 self.changed.notify_all();
-                (Some(state.wakers.remove(&generation).unwrap_or_default()), None)
+                (Some(state.wakers.remove(&generation).unwrap_or_default()), result)
             }
         };
         if let Some(result) = result {
@@ -341,6 +343,8 @@ fn dispose_shutdown_result(result: ShutdownResult) {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Display;
+    use std::fmt::Formatter;
     use std::io::Error;
     use std::panic::AssertUnwindSafe;
     use std::panic::catch_unwind;
@@ -365,6 +369,7 @@ mod tests {
     }
 
     use super::ShutdownCoordinator;
+    use crate::error::SpiError;
     use crate::facade::shutdown_result::ShutdownResult;
     use crate::spi::ShutdownMode;
     use crate::spi::ShutdownOutcome;
@@ -410,6 +415,50 @@ mod tests {
         assert!(leader);
         assert_ne!(retry_generation, generation);
         coordinator.abort_start(retry_generation, Error::other("failed start"));
+    }
+
+    #[test]
+    fn test_unobserved_completion_disposes_provider_error_outside_state_lock() {
+        #[derive(Debug)]
+        struct PanicOnDrop(Arc<AtomicBool>);
+
+        impl Display for PanicOnDrop {
+            fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("panic on drop")
+            }
+        }
+
+        impl std::error::Error for PanicOnDrop {}
+
+        impl Drop for PanicOnDrop {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+                panic!("provider error destructor");
+            }
+        }
+
+        let coordinator = ShutdownCoordinator::new();
+        let (_, generation) = coordinator.begin(ShutdownMode::Immediate);
+        coordinator.release(generation);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let result = SpiError::Operation {
+            provider_id: "test".into(),
+            operation: "shutdown",
+            resource: None,
+            kind: "test",
+            retryable: None,
+            source: Box::new(PanicOnDrop(Arc::clone(&dropped))),
+        };
+
+        let completion = catch_unwind(AssertUnwindSafe(|| coordinator.finish(generation, Err(result))));
+        assert!(completion.is_ok(), "unobserved result destructor panic is contained");
+        assert!(dropped.load(Ordering::SeqCst), "provider error destructor runs");
+        assert!(coordinator.state.try_lock().is_ok(), "state mutex remains unpoisoned");
+
+        let (leader, next_generation) = coordinator.begin(ShutdownMode::Immediate);
+        assert!(leader, "a later shutdown generation can start");
+        coordinator.abort_start(next_generation, Error::other("test cleanup"));
+        coordinator.release(next_generation);
     }
 
     #[test]
