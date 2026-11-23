@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::convert::identity;
 use std::panic::AssertUnwindSafe;
 use std::panic::catch_unwind;
+use std::panic::resume_unwind;
 use std::sync::Arc;
 use std::sync::PoisonError;
 use std::sync::atomic::Ordering;
@@ -208,7 +209,7 @@ fn run_subscription_worker_body<T>(
                     receive_poll_interval_for(&control),
                 )
             };
-            remove_completed_deliveries(&mut owned, completed, &control);
+            remove_completed_deliveries(&inner, &mut owned, completed, &control);
             if control.is_cancelled() && !draining {
                 if !stop_published {
                     continue;
@@ -646,8 +647,18 @@ fn run_subscription_worker_body<T>(
         }
     }
     // Provider close is the recovery boundary for every unresolved token.
+    let mut first_panic = None;
     for (_, delivery) in owned.drain() {
-        drop(delivery);
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(delivery))) {
+            if first_panic.is_none() {
+                first_panic = Some(payload);
+            } else {
+                dispose_panic_payload(payload);
+            }
+        }
+    }
+    if let Some(payload) = first_panic {
+        resume_unwind(payload);
     }
 }
 
@@ -837,16 +848,20 @@ fn grant_ready_settlements<T: 'static>(
 /// - `control`: subscription metrics updated for successful lifecycle
 ///   completion.
 fn remove_completed_deliveries<T: 'static>(
+    inner: &EventBusInner,
     owned: &mut HashMap<u64, OwnedSyncDelivery<'_, T>>,
     completed: Vec<u64>,
     control: &SubscriptionControl,
 ) {
     for lease in completed {
-        if let Some(delivery) = owned.remove(&lease)
-            && !delivery.abandoned
-            && !delivery.lifecycle_failed
-        {
-            control.delivery_metrics.record_completed();
+        if let Some(delivery) = owned.remove(&lease) {
+            if !delivery.abandoned && !delivery.lifecycle_failed {
+                control.delivery_metrics.record_completed();
+            }
+            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(delivery))) {
+                dispose_panic_payload(payload);
+                inner.emit_internal("completed_delivery_drop", "confirmed delivery drop panicked".into());
+            }
         }
     }
 }
@@ -1106,8 +1121,23 @@ fn attempt_settlement<T>(
                     error,
                 );
             }
-            delivery.settlement = None;
-            dispose_replaced_settlement_error(previous_error);
+            let settlement = delivery.settlement.take();
+            let token = match settlement {
+                Some(CoordinatorMessage::Settlement { token, .. }) => token,
+                _ => None,
+            };
+            dispose_confirmed_settlement_resource(
+                inner,
+                "confirmed_settlement_token_drop",
+                "confirmed settlement token drop panicked",
+                token,
+            );
+            dispose_confirmed_settlement_resource(
+                inner,
+                "confirmed_settlement_error_drop",
+                "confirmed settlement error drop panicked",
+                previous_error,
+            );
             None
         }
         Err(error) => {
@@ -1185,6 +1215,29 @@ fn dispose_replaced_settlement_error(error: Option<Arc<SpiError>>) {
         && let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(error)))
     {
         dispose_panic_payload(payload);
+    }
+}
+
+/// Drops a resource after the provider has confirmed settlement, reporting
+/// destructor panics without changing the confirmed lifecycle result.
+///
+/// # Type Parameters
+/// - `T`: resource type released after settlement confirmation.
+///
+/// # Parameters
+/// - `inner`: bus that emits a diagnostic when destruction panics.
+/// - `origin`: stable diagnostic origin for the resource.
+/// - `message`: fixed diagnostic message for the cleanup failure.
+/// - `resource`: confirmed resource to release under an unwind boundary.
+fn dispose_confirmed_settlement_resource<T>(
+    inner: &EventBusInner,
+    origin: &'static str,
+    message: &'static str,
+    resource: T,
+) {
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(resource))) {
+        dispose_panic_payload(payload);
+        inner.emit_internal(origin, message.into());
     }
 }
 

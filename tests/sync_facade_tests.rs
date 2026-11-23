@@ -2609,6 +2609,10 @@ fn test_sync_replaced_settlement_error_drop_panic_does_not_interrupt_retry() {
     assert_eq!(attempts, 2);
     assert_eq!(error_kind, "settlement_failure");
     assert_eq!(backend.settlement_calls(), 2);
+    let drop_deadline = Instant::now() + Duration::from_secs(2);
+    while source_drops.load(Ordering::Acquire) == 0 && Instant::now() < drop_deadline {
+        thread::yield_now();
+    }
     assert_eq!(source_drops.load(Ordering::Acquire), 1);
     assert!(matches!(
         subscription.terminal_failure().as_deref(),
@@ -2618,6 +2622,100 @@ fn test_sync_replaced_settlement_error_drop_panic_does_not_interrupt_retry() {
         .cancel()
         .expect("receiver closes after terminal settlement");
     assert_eq!(backend.close_calls(), 1);
+    let _ = cleanup.finish().expect("bus cleanup");
+}
+
+#[test]
+fn test_sync_confirmed_settlement_continues_after_resource_drop_panic() {
+    struct PanickingToken(Arc<AtomicUsize>);
+    impl Drop for PanickingToken {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            panic!("confirmed token drop probe");
+        }
+    }
+
+    let (bus, backend) = create_bus_with_scheduler(1, 2);
+    let cleanup = SyncBusCleanup::new(bus.clone());
+    let diagnostics = Arc::new(Mutex::new(Vec::new()));
+    let observed_diagnostics = diagnostics.clone();
+    let _observer = bus.observe_diagnostics(move |diagnostic| {
+        if let Diagnostic::InternalFailure { origin, .. } = diagnostic {
+            observed_diagnostics.lock().unwrap().push(origin.to_string());
+        }
+    });
+    let handled = Arc::new(AtomicUsize::new(0));
+    let observed_handled = handled.clone();
+    let payload_drops = Arc::new(AtomicUsize::new(0));
+    let token_drops = Arc::new(AtomicUsize::new(0));
+    let payload_topic = Topic::<CleanupPayload>::new("sync.confirmed-drop").unwrap();
+    let options = SubscribeOptions::builder()
+        .ordering_policy(OrderingPolicy::PerKey)
+        .build();
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new("sync-confirmed-drop", payload_topic.clone())
+                .unwrap()
+                .with_options(options),
+            move |_: Delivery<CleanupPayload>| {
+                observed_handled.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .unwrap();
+    let (_, queue) = backend
+        .state
+        .lock()
+        .unwrap()
+        .queues
+        .iter()
+        .find(|(id, _)| *id == subscription.id())
+        .cloned()
+        .unwrap();
+    {
+        let (lock, ready) = &*queue;
+        let mut state = lock.lock().unwrap();
+        for (event_id, label) in [("confirmed-a", "A"), ("confirmed-b", "B")] {
+            state.messages.push_back(InboundMessage::new(
+                TopicAddress::new(payload_topic.name()).unwrap(),
+                EventId::new(event_id).unwrap(),
+                SystemTime::UNIX_EPOCH,
+                Headers::new(),
+                Some(OrderingKey::new("confirmed-key").unwrap()),
+                TransportPayload::Native(Arc::new(CleanupPayload {
+                    label,
+                    cleanup_drops: Some(payload_drops.clone()),
+                })),
+                Some(SettlementToken::new(
+                    subscription.id(),
+                    PanickingToken(token_drops.clone()),
+                )),
+                Default::default(),
+            ));
+        }
+        ready.notify_all();
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while (backend.settlement_calls() < 2
+        || handled.load(Ordering::SeqCst) < 2
+        || token_drops.load(Ordering::SeqCst) < 2
+        || payload_drops.load(Ordering::SeqCst) < 2)
+        && Instant::now() < deadline
+    {
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(backend.settlement_calls(), 2);
+    assert_eq!(handled.load(Ordering::SeqCst), 2);
+    assert_eq!(token_drops.load(Ordering::SeqCst), 2);
+    assert_eq!(payload_drops.load(Ordering::SeqCst), 2);
+    assert_eq!(subscription.delivery_metrics().metrics.completed, 2);
+    let origins = diagnostics.lock().unwrap().clone();
+    assert!(origins.contains(&"confirmed_settlement_token_drop".to_owned()));
+    assert!(origins.contains(&"completed_delivery_drop".to_owned()));
+    subscription
+        .cancel()
+        .expect("worker remains healthy after confirmed cleanup");
     let _ = cleanup.finish().expect("bus cleanup");
 }
 
@@ -2753,7 +2851,7 @@ struct CleanupPayload {
 impl Drop for CleanupPayload {
     fn drop(&mut self) {
         if let Some(drops) = &self.cleanup_drops
-            && drops.fetch_add(1, Ordering::AcqRel) == 0
+            && drops.fetch_add(1, Ordering::AcqRel) < 2
         {
             panic!("final payload drop probe");
         }
@@ -2761,7 +2859,16 @@ impl Drop for CleanupPayload {
 }
 
 #[test]
-fn test_sync_final_cleanup_counts_all_abandoned_deliveries_after_payload_drop_panic() {
+fn test_sync_final_cleanup_releases_two_panicking_deliveries() {
+    const CASE: &str = "two-final-cleanup-panics";
+    if std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok(CASE) {
+        crate::support::isolated_process::run_case_with_timeout(
+            "test_sync_final_cleanup_releases_two_panicking_deliveries",
+            CASE,
+            Duration::from_secs(10),
+        );
+        return;
+    }
     let (bus, backend) = create_bus_with_scheduler(3, 3);
     let cleanup = SyncBusCleanup::new(bus.clone());
     backend.fail_all_settles();

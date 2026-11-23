@@ -156,6 +156,8 @@ impl<T: 'static> Drop for AsyncSession<T> {
             }
         }
         drop(registration);
+        release!(self.receiver.take());
+        release!(self.handler.take());
         if let Some(payload) = first_panic {
             if already_panicking {
                 crate::internal::panic_payload::dispose_panic_payload(payload);

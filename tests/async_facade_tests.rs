@@ -4858,6 +4858,81 @@ fn test_dropping_a_paused_subscription_drops_receiver_and_recovers_unsettled_del
 }
 
 #[test]
+fn test_paused_subscription_releases_receiver_and_handler_after_delivery_drop_panic() {
+    const CASE: &str = "session-field-drop-panics";
+    if std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok(CASE) {
+        crate::support::isolated_process::run_case_with_timeout(
+            "test_paused_subscription_releases_receiver_and_handler_after_delivery_drop_panic",
+            CASE,
+            Duration::from_secs(10),
+        );
+        return;
+    }
+
+    struct DropProbe(Arc<AtomicUsize>);
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            panic!("delivery drop probe");
+        }
+    }
+    struct HandlerProbe(Arc<AtomicUsize>);
+    impl Drop for HandlerProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            panic!("handler drop probe");
+        }
+    }
+
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let receiver_drops = Arc::new(AtomicUsize::new(0));
+    let receiver_drop_count = receiver_drops.clone();
+    spi.on_receiver_drop(move || {
+        receiver_drop_count.fetch_add(1, Ordering::SeqCst);
+        panic!("receiver drop probe");
+    });
+    let bus = AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).unwrap();
+    let payload_topic = Topic::<DropProbe>::new("session-field-drop.topic").unwrap();
+    let subscription =
+        block_on(bus.subscribe(SubscribeRequest::new("session-field-drop", payload_topic.clone()).unwrap())).unwrap();
+    let payload_drops = Arc::new(AtomicUsize::new(0));
+    let handler_drops = Arc::new(AtomicUsize::new(0));
+    let handler_probe = HandlerProbe(handler_drops.clone());
+    spi.enqueue(InboundMessage::new(
+        TopicAddress::new(payload_topic.name()).unwrap(),
+        EventId::new("session-field-drop-event").unwrap(),
+        SystemTime::UNIX_EPOCH,
+        Headers::new(),
+        None,
+        TransportPayload::Native(Arc::new(DropProbe(payload_drops.clone()))),
+        None,
+        Default::default(),
+    ));
+    let handler = move |_| {
+        let _keep_capture = &handler_probe;
+        std::future::pending::<Result<(), DeliveryError>>()
+    };
+    let mut runner = Box::pin(subscription.run(handler));
+    for _ in 0..1024 {
+        let _ = crate::support::manual_async::poll_once(runner.as_mut());
+        if subscription.delivery_metrics().metrics.running_handlers == 1 {
+            break;
+        }
+    }
+    assert_eq!(subscription.delivery_metrics().metrics.running_handlers, 1);
+    drop(runner);
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(subscription)))
+        .expect_err("the first delivery drop panic is propagated");
+    assert_eq!(panic.downcast_ref::<&str>(), Some(&"delivery drop probe"));
+    assert_eq!(payload_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(receiver_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(handler_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(spi.settlement_count(), 0);
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate));
+}
+
+#[test]
 fn test_paused_subscription_releases_all_deliveries_after_multiple_drop_panics() {
     const CASE: &str = "multiple-payload-drop-panics";
     if std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok(CASE) {
