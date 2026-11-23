@@ -10,6 +10,7 @@
 use std::task::Waker;
 
 use super::AsyncSignal;
+use crate::facade::async_subscription::with_bus_scope;
 
 /// Waiter registration that unregisters itself when its owner is dropped.
 #[must_use = "keep the registration alive while the waiter is registered"]
@@ -18,6 +19,8 @@ pub(in crate::facade) struct SignalRegistration<'a> {
     signal: &'a AsyncSignal,
     /// Identifier used to remove this waiter on drop.
     id: u64,
+    /// Optional bus whose callback context must cover waker clone/drop.
+    bus_key: Option<usize>,
 }
 
 impl SignalRegistration<'_> {
@@ -33,6 +36,17 @@ impl SignalRegistration<'_> {
         SignalRegistration {
             signal,
             id: signal.next_waiter_id(),
+            bus_key: None,
+        }
+    }
+
+    /// Registers a waiter whose waker callbacks belong to one bus poll.
+    #[inline]
+    pub(in crate::facade) fn new_with_bus_scope(signal: &AsyncSignal, bus_key: usize) -> SignalRegistration<'_> {
+        SignalRegistration {
+            signal,
+            id: signal.next_waiter_id(),
+            bus_key: Some(bus_key),
         }
     }
 
@@ -42,13 +56,21 @@ impl SignalRegistration<'_> {
     /// - waker: task waker to use when the signal changes.
     #[inline]
     pub(in crate::facade) fn register(&self, waker: &Waker) {
-        self.signal.register_waiter(self.id, waker);
+        if let Some(bus_key) = self.bus_key {
+            with_bus_scope(bus_key, || self.signal.register_waiter(self.id, waker));
+        } else {
+            self.signal.register_waiter(self.id, waker);
+        }
     }
 }
 
 impl Drop for SignalRegistration<'_> {
     /// Removes this waiter from the signal.
     fn drop(&mut self) {
-        self.signal.unregister(self.id);
+        if let Some(bus_key) = self.bus_key {
+            with_bus_scope(bus_key, || self.signal.unregister(self.id));
+        } else {
+            self.signal.unregister(self.id);
+        }
     }
 }

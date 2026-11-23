@@ -352,7 +352,7 @@ impl AsyncEventBus {
                     .shutdown_as_leader(mode, requested_mode, timeout, &mut deadline, deadline_at)
                     .await;
             }
-            let stopped = wait_until_deadline(&self.inner.shutdown_signal, deadline.as_mut(), || {
+            let stopped = wait_until_deadline(&self.inner.shutdown_signal, deadline.as_mut(), bus_key, || {
                 !self.inner.shutdown_active.load(Ordering::Acquire)
             })
             .await?;
@@ -397,7 +397,8 @@ impl AsyncEventBus {
                 timeout: timeout.expect("a deadline exists for graceful shutdown"),
             });
         }
-        let stopped = wait_until_deadline(&self.inner.tracker.signal, deadline.as_mut(), || {
+        let bus_key = Arc::as_ptr(&self.inner) as usize;
+        let stopped = wait_until_deadline(&self.inner.tracker.signal, deadline.as_mut(), bus_key, || {
             self.inner.tracker.runners_stopped()
         })
         .await?;
@@ -509,6 +510,7 @@ impl AsyncEventBus {
                 deadline.as_mut(),
                 &self.inner.shutdown_mode_signal,
                 &self.inner.shutdown_immediate,
+                Arc::as_ptr(&self.inner) as usize,
             )
             .await?
             {
