@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from scripts.check_downstream_compatibility import cargo_config
+from scripts.downstream_source_snapshot import copy_tracked_source
 from scripts.check_downstream_compatibility import TESTS
 from scripts.check_downstream_compatibility import discover_local_repositories
 from scripts.check_downstream_compatibility import main
@@ -103,6 +104,178 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                                                (parent / "rs-local-b").resolve(),
                                                (parent / "rs-local-c").resolve()})
 
+    def _cargo_metadata_offline(self, manifest, *, locked=False):
+        command = ["cargo", "metadata", "--format-version", "1", "--offline",
+                   "--manifest-path", str(manifest)]
+        if locked:
+            command.append("--locked")
+        result = subprocess.run(command, cwd=manifest.parent, capture_output=True,
+                                text=True, check=False)
+        if result.returncode:
+            raise AssertionError(
+                f"Cargo metadata exited {result.returncode}: {result.stderr.strip()}")
+        return result
+
+    def _assert_cargo_snapshot_discovers_only_reachable_packages(self, parent, fixture_manifest,
+                                                                  dependency_name):
+        source_graph = json.loads(self._cargo_metadata_offline(fixture_manifest).stdout)
+        self._cargo_metadata_offline(fixture_manifest, locked=True)
+        snapshots_root = parent.parent / "snapshot"
+        execution = parent / "rs-execution-services"
+        discovered = discover_local_repositories(fixture_manifest, parent, execution)
+        for repository in discovered:
+            destination = snapshots_root / "siblings" / repository.relative_to(parent)
+            copy_tracked_source(repository, destination)
+        relative = fixture_manifest.parent.relative_to(execution)
+        snapshot_manifest = (snapshots_root / "siblings" / execution.name / relative /
+                            "Cargo.toml")
+        snapshot_result = self._cargo_metadata_offline(snapshot_manifest, locked=True)
+        snapshot_graph = json.loads(snapshot_result.stdout)
+        self.assertEqual(set(discovered), {
+            (parent / "rs-execution-services").resolve(),
+            (parent / ("rs-workspace-dependency" if dependency_name == "workspace-dependency"
+                       else "rs-config-dependency")).resolve(),
+        })
+        source_package = next(package for package in source_graph["packages"]
+                              if package["name"] == dependency_name)
+        snapshot_package = next(package for package in snapshot_graph["packages"]
+                                if package["name"] == dependency_name)
+        self.assertTrue(Path(source_package["manifest_path"]).is_relative_to(parent))
+        self.assertTrue(Path(snapshot_package["manifest_path"]).is_relative_to(snapshots_root))
+
+    def test_cargo_1_94_workspace_inherited_path_dependency_is_snapshotted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory) / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution-services", "execution")
+            dependency = self.make_input_repository(parent / "rs-workspace-dependency", "workspace-dependency")
+            unused = self.make_input_repository(parent / "rs-unused-workspace-dependency", "unused")
+            (dependency / "Cargo.toml").write_text(
+                '[package]\nname="workspace-dependency"\nversion="0.1.0"\n'
+                'edition="2021"\n')
+            (dependency / "Cargo.lock").write_text("")
+            (execution / "Cargo.toml").write_text(
+                '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                '[workspace]\nmembers=["tests/fixtures/ioc_application_consumer"]\n'
+                '[workspace.dependencies]\nworkspace-dependency={path="../rs-workspace-dependency"}\n'
+                'unused={path="../rs-unused-workspace-dependency"}\n')
+            (execution / "Cargo.lock").write_text("")
+            fixture = execution / "tests/fixtures/ioc_application_consumer"
+            fixture.mkdir(parents=True)
+            (fixture / "Cargo.toml").write_text(
+                '[package]\nname="ioc-consumer"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\nworkspace-dependency={workspace=true}\n')
+            (fixture / "src").mkdir()
+            (fixture / "src/lib.rs").write_text("pub fn fixture() {}\n")
+            decoy = execution / "tests/fixtures/rs-workspace-dependency"
+            decoy.mkdir()
+            (decoy / "Cargo.toml").write_text(
+                '[package]\nname="workspace-dependency"\nversion="0.1.0"\n'
+                'edition="2021"\n')
+            for root in (execution, dependency, unused):
+                subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+                subprocess.run(["git", "-C", str(root), "commit", "-qm", "cargo fixture"], check=True)
+            self._assert_cargo_snapshot_discovers_only_reachable_packages(
+                parent, fixture / "Cargo.toml", "workspace-dependency")
+
+    def test_discovery_respects_non_default_workspace_root_and_nested_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory) / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution-services", "execution")
+            for name in ("rs-non-default-dep", "rs-nested-dep", "rs-unreferenced"):
+                self.make_input_repository(parent / name, name.removeprefix("rs-"))
+            workspace = execution / "workspace"
+            member = workspace / "members/consumer"
+            member.mkdir(parents=True)
+            (workspace / "Cargo.toml").write_text(
+                '[workspace]\nmembers=["members/consumer"]\n'
+                '[workspace.dependencies]\nnon-default={path="../../rs-non-default-dep"}\n')
+            (member / "Cargo.toml").write_text(
+                '[package]\nname="consumer"\nversion="0.1.0"\nedition="2021"\n'
+                'workspace="../.."\n[dependencies]\nnon-default={workspace=true}\n')
+            nested = execution / "tests/fixtures/nested-consumer"
+            nested.mkdir(parents=True)
+            (nested / "Cargo.toml").write_text(
+                '[package]\nname="nested-consumer"\nversion="0.1.0"\nedition="2021"\n'
+                '[workspace]\n[workspace.dependencies]\nnested={path="../../../../rs-nested-dep"}\n'
+                '[dependencies]\nnested={workspace=true}\n')
+            (execution / "Cargo.toml").write_text(
+                '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                '[workspace]\nmembers=["workspace/members/consumer", "tests/fixtures/**"]\n'
+                '[workspace.dependencies]\nunreferenced={path="../rs-unreferenced"}\n')
+
+            found_member = set(discover_local_repositories(member / "Cargo.toml", parent))
+            found_nested = set(discover_local_repositories(nested / "Cargo.toml", parent))
+            self.assertEqual(found_member, {
+                execution.resolve(), (parent / "rs-non-default-dep").resolve()})
+            self.assertEqual(found_nested, {
+                execution.resolve(), (parent / "rs-nested-dep").resolve()})
+
+    def test_cargo_1_94_discovers_implicit_path_dependency_workspace_member(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory) / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution-services", "execution")
+            dependency = self.make_input_repository(parent / "rs-workspace-dependency",
+                                                   "workspace-dependency")
+            (dependency / "Cargo.toml").write_text(
+                '[package]\nname="workspace-dependency"\nversion="0.1.0"\n'
+                'edition="2021"\n')
+            (dependency / "Cargo.lock").write_text("")
+            package = execution / "packages/implicit-member"
+            package.mkdir(parents=True)
+            (package / "Cargo.toml").write_text(
+                '[package]\nname="implicit-member"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\nworkspace-dependency={workspace=true}\n')
+            (package / "src").mkdir()
+            (package / "src/lib.rs").write_text("pub fn fixture() {}\n")
+            (execution / "Cargo.toml").write_text(
+                '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                '[workspace]\nmembers=[]\n'
+                '[workspace.dependencies]\nworkspace-dependency={path="../rs-workspace-dependency"}\n'
+                '[dependencies]\nimplicit-member={path="packages/implicit-member"}\n')
+            (execution / "Cargo.lock").write_text("")
+            for root in (execution, dependency):
+                subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+                subprocess.run(["git", "-C", str(root), "commit", "-qm", "cargo fixture"], check=True)
+            self._assert_cargo_snapshot_discovers_only_reachable_packages(
+                parent, package / "Cargo.toml", "workspace-dependency")
+
+    def test_cargo_1_94_fixture_config_path_patch_is_snapshotted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory) / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution-services", "execution")
+            dependency = self.make_input_repository(parent / "rs-config-dependency", "config-dependency")
+            outer_dependency = self.make_input_repository(parent / "rs-outer-config-dependency",
+                                                         "config-dependency")
+            (dependency / "Cargo.toml").write_text(
+                '[package]\nname="config-dependency"\nversion="0.1.0"\n'
+                'edition="2021"\n')
+            (dependency / "Cargo.lock").write_text("")
+            fixture = execution / "tests/fixtures/ioc_application_consumer"
+            fixture.mkdir(parents=True)
+            (fixture / "Cargo.toml").write_text(
+                '[package]\nname="ioc-consumer"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\nconfig-dependency="0.1.0"\n')
+            (fixture / "Cargo.lock").write_text("")
+            config = fixture / ".cargo/config.toml"
+            config.parent.mkdir()
+            config.write_text('[patch.crates-io]\nconfig-dependency={path="../../../../rs-config-dependency"}\n')
+            (execution / "Cargo.lock").write_text("")
+            outer_config = execution / ".cargo/config.toml"
+            outer_config.parent.mkdir()
+            outer_config.write_text(
+                '[patch.crates-io]\nconfig-dependency={path="../rs-outer-config-dependency"}\n')
+            (fixture / "src").mkdir()
+            (fixture / "src/lib.rs").write_text("pub fn fixture() {}\n")
+            for root in (execution, dependency, outer_dependency):
+                subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+                subprocess.run(["git", "-C", str(root), "commit", "-qm", "cargo fixture"], check=True)
+            self._assert_cargo_snapshot_discovers_only_reachable_packages(
+                parent, fixture / "Cargo.toml", "config-dependency")
+
     def test_execution_services_rejects_missing_and_out_of_bounds_path_with_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory) / "siblings"
@@ -115,6 +288,15 @@ class DownstreamCompatibilityTests(unittest.TestCase):
 
             manifest.write_text('[dependencies]\noutside = { path = "../../../../../outside" }\n')
             with self.assertRaisesRegex(ValueError, r"Cargo.toml.*outside"):
+                discover_local_repositories(manifest, parent)
+
+            config = fixture / ".cargo/config.toml"
+            config.parent.mkdir()
+            config.write_text('[patch.crates-io]\nmissing={path="../../../../config-missing"}\n')
+            with self.assertRaisesRegex(ValueError, r"config.toml.*config-missing"):
+                discover_local_repositories(manifest, parent)
+            config.write_text('[patch.crates-io]\noutside={path="../../../../../outside"}\n')
+            with self.assertRaisesRegex(ValueError, r"config.toml.*outside"):
                 discover_local_repositories(manifest, parent)
 
     def test_execution_services_rejects_absolute_paths_inside_and_outside_sibling_root(self):
@@ -668,6 +850,10 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             subprocess.run(["git", "-C", str(execution), "add", str(manifest.relative_to(execution))],
                            check=True)
             subprocess.run(["git", "-C", str(execution), "commit", "-qm", "fixture"], check=True)
+            sibling_before = {
+                name: ((sibling / name).read_bytes(), (sibling / name).stat().st_mtime_ns)
+                for name in ("Cargo.lock", "src/lib.rs")
+            }
             argv = ["check_downstream_compatibility.py", "--redis-root", str(redis),
                     "--task-root", str(task), "--execution-services-root", str(execution)]
             seen = []
@@ -678,17 +864,29 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                     self.assertTrue((dependency / "Cargo.toml").is_file())
                     self.assertEqual((dependency / "src/lib.rs").read_text(),
                                      "pub fn locally_edited() {}\n")
+                    self.assertEqual((dependency / "Cargo.lock").read_bytes(),
+                                     sibling_before["Cargo.lock"][0])
                     self.assertTrue((root / "tests/fixtures/ioc_application_consumer/Cargo.toml").is_file())
                     seen.append(root)
                 return {}
 
+            output = io.StringIO()
             with patch("sys.argv", argv), \
                     patch("scripts.check_downstream_compatibility.metadata",
                           side_effect=metadata_snapshot), \
-                    patch("scripts.check_downstream_compatibility.verify_test") as verify:
+                    patch("scripts.check_downstream_compatibility.verify_test") as verify, \
+                    contextlib.redirect_stdout(output):
                 main()
             self.assertEqual(len(seen), 1)
             self.assertEqual(verify.call_count, 7)
+            source_record = next(line for line in output.getvalue().splitlines()
+                                 if f"root={sibling.resolve()}" in line)
+            self.assertIn("tracked_changes=[' M src/lib.rs']", source_record)
+            self.assertIn("snapshot=", source_record)
+            self.assertEqual(sibling_before, {
+                name: ((sibling / name).read_bytes(), (sibling / name).stat().st_mtime_ns)
+                for name in ("Cargo.lock", "src/lib.rs")
+            })
 
     def test_worktrees_alias_uses_tracked_snapshots_and_does_not_touch_input_locks(self):
         with tempfile.TemporaryDirectory() as directory:

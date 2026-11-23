@@ -192,8 +192,181 @@ def _manifest_paths(data):
     for target in data.get("target", {}).values():
         for section in ("dependencies", "dev-dependencies", "build-dependencies"):
             yield from _path_entries(target.get(section, {}))
-    yield from _path_entries(data.get("workspace", {}).get("dependencies", {}))
     yield from _path_entries(data.get("patch", {}))
+
+
+def _dependency_sections(data):
+    """Yield dependency tables from normal, target-specific, and workspace scope."""
+    for section in ("dependencies", "dev-dependencies", "build-dependencies"):
+        yield data.get(section, {})
+    for target in data.get("target", {}).values():
+        for section in ("dependencies", "dev-dependencies", "build-dependencies"):
+            yield target.get(section, {})
+
+
+def _workspace_root(manifest, data):
+    """Find the workspace Cargo uses for this package, respecting nested roots."""
+    package = data.get("package", {})
+    if isinstance(package.get("workspace"), str):
+        return (manifest.parent / package["workspace"]).resolve()
+    if "workspace" in data:
+        return manifest.parent
+    tomllib = __import__("tomllib")
+    for parent in manifest.parent.parents:
+        root_manifest = parent / "Cargo.toml"
+        if not root_manifest.is_file():
+            continue
+        try:
+            root_data = tomllib.loads(root_manifest.read_text())
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        if "workspace" in root_data:
+            return parent if _is_workspace_member(manifest.parent, parent, root_data) else None
+    return None
+
+
+def _glob_matches(path, pattern):
+    import re
+    pattern = pattern.strip("/")
+    parts = []
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if char == "*":
+            if index + 1 < len(pattern) and pattern[index + 1] == "*":
+                parts.append(".*")
+                index += 2
+            else:
+                parts.append("[^/]*")
+                index += 1
+        elif char == "?":
+            parts.append("[^/]")
+            index += 1
+        else:
+            parts.append(re.escape(char))
+            index += 1
+    return re.fullmatch("".join(parts), path) is not None
+
+
+def _is_workspace_member(package_dir, root, root_data):
+    workspace = root_data["workspace"]
+    relative = package_dir.relative_to(root).as_posix()
+    excludes = workspace.get("exclude", [])
+    if any(_glob_matches(relative, pattern) for pattern in excludes):
+        return False
+    explicit = False
+    for member in workspace.get("members", []):
+        if _glob_matches(relative, member):
+            explicit = True
+            break
+        try:
+            for candidate in root.glob(member):
+                candidate_manifest = candidate / "Cargo.toml" if candidate.is_dir() else candidate
+                if candidate_manifest.is_file() and candidate_manifest.parent.resolve() == package_dir:
+                    explicit = True
+                    break
+        except (OSError, ValueError):
+            continue
+        if explicit:
+            break
+    if explicit:
+        return True
+
+    # Cargo also makes in-tree path dependencies implicit workspace members.
+    # Follow paths only from explicit/root members, and stop at nested workspace
+    # roots so unrelated fixture packages are not pulled in accidentally.
+    tomllib = __import__("tomllib")
+    members = {root.resolve()} if "package" in root_data else set()
+    for member in workspace.get("members", []):
+        try:
+            candidates = root.glob(member)
+        except (OSError, ValueError):
+            continue
+        for candidate in candidates:
+            candidate_manifest = candidate / "Cargo.toml" if candidate.is_dir() else candidate
+            if candidate_manifest.is_file():
+                members.add(candidate_manifest.parent.resolve())
+    pending = list(members)
+    visited = set()
+    while pending:
+        current = pending.pop()
+        if current in visited:
+            continue
+        visited.add(current)
+        current_manifest = current / "Cargo.toml"
+        try:
+            current_data = tomllib.loads(current_manifest.read_text())
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        paths = list(_manifest_paths(current_data))
+        if "workspace" in current_data:
+            paths.extend(_inherited_workspace_paths(current_data, current_data))
+        else:
+            paths.extend(_inherited_workspace_paths(current_data, root_data))
+        for relative in paths:
+            if Path(relative).is_absolute():
+                continue
+            dependency = (current / relative).resolve()
+            try:
+                dependency.relative_to(root.resolve())
+            except ValueError:
+                continue
+            dependency_manifest = dependency / "Cargo.toml"
+            if not dependency_manifest.is_file():
+                continue
+            try:
+                dependency_data = tomllib.loads(dependency_manifest.read_text())
+            except (OSError, tomllib.TOMLDecodeError):
+                continue
+            if "workspace" in dependency_data:
+                continue
+            if any(_glob_matches(dependency.relative_to(root).as_posix(), pattern)
+                   for pattern in excludes):
+                continue
+            if dependency == package_dir:
+                return True
+            pending.append(dependency)
+    return False
+
+
+def _inherited_workspace_paths(data, workspace_data):
+    workspace_dependencies = workspace_data.get("workspace", {}).get("dependencies", {})
+    used = set()
+    for section in _dependency_sections(data):
+        for name, dependency in section.items():
+            if isinstance(dependency, dict) and dependency.get("workspace") is True:
+                used.add(name)
+    for name in sorted(used):
+        dependency = workspace_dependencies.get(name)
+        if dependency is None:
+            continue
+        yield from _path_entries(dependency)
+
+
+def _cargo_config_paths(manifest, source_root):
+    """Find Cargo configs discovered from the fixture cwd inside the checkout."""
+    source_root = source_root.resolve()
+    current = manifest.parent.resolve()
+    configs = []
+    while True:
+        if current == source_root or source_root in current.parents:
+            for name in ("config", "config.toml"):
+                candidate = current / ".cargo" / name
+                if candidate.is_file():
+                    configs.append(candidate)
+        if current == source_root or current.parent == current:
+            break
+        current = current.parent
+    return configs
+
+
+def _config_patch_declarations(config_path, data):
+    """Return configured patches keyed by registry and package name."""
+    for registry, packages in data.get("patch", {}).items():
+        if isinstance(packages, dict):
+            for name, package in packages.items():
+                if isinstance(package, dict) and isinstance(package.get("path"), str):
+                    yield (registry, name), package["path"]
 
 
 def _repository_root(path, boundary):
@@ -208,8 +381,6 @@ def _repository_root(path, boundary):
 
 def discover_local_repositories(manifest, sibling_root, source_root=None):
     """Find sibling repositories required by an IoC fixture's local paths and patches."""
-    import tomllib
-
     manifest = Path(manifest).resolve()
     boundary = Path(sibling_root).resolve()
     source_root = Path(source_root).resolve() if source_root else manifest.parents[3]
@@ -218,8 +389,34 @@ def discover_local_repositories(manifest, sibling_root, source_root=None):
     repositories = {source_root}
     pending = [manifest]
     scanned = set()
+    import tomllib
+
+    config_paths = _cargo_config_paths(manifest, source_root)
+    effective_config_patches = {}
+    for config_path in config_paths:
+        try:
+            config_data = tomllib.loads(config_path.read_text())
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            raise ValueError(f"cannot read Cargo config {config_path}: {error}") from error
+        # Cargo applies the nearest config first. More distant config files
+        # provide defaults only for patch entries that are not overridden.
+        for key, relative in _config_patch_declarations(config_path, config_data):
+            effective_config_patches.setdefault(
+                key, (config_path, relative, config_path.parent.parent))
+    for declaration, relative, base in effective_config_patches.values():
+        pending.append((declaration, relative, base))
     while pending:
-        current = pending.pop().resolve()
+        entry = pending.pop()
+        if isinstance(entry, tuple):
+            declaration, relative, base = entry
+            dependency = _resolve_local_path(relative, base, declaration, boundary)
+            dependency_manifest = dependency / "Cargo.toml"
+            if not dependency.is_dir() or not dependency_manifest.is_file():
+                raise ValueError(f"missing local path in {declaration}: {relative} -> {dependency}")
+            repositories.add(_repository_root(dependency, boundary))
+            pending.append(dependency_manifest)
+            continue
+        current = entry.resolve()
         if current in scanned:
             continue
         scanned.add(current)
@@ -227,24 +424,43 @@ def discover_local_repositories(manifest, sibling_root, source_root=None):
             data = tomllib.loads(current.read_text())
         except (OSError, tomllib.TOMLDecodeError) as error:
             raise ValueError(f"cannot read local dependency manifest {current}: {error}") from error
-        for relative in _manifest_paths(data):
-            if Path(relative).is_absolute():
-                raise ValueError(
-                    f"absolute local path in {current}: {relative}; use a path relative "
-                    "to the referencing manifest so it remains valid in the source snapshot"
-                )
-            dependency = (current.parent / relative).resolve()
-            try:
-                dependency.relative_to(boundary)
-            except ValueError as error:
-                raise ValueError(f"local path escapes sibling root in {current}: {relative} -> {dependency}") from error
-            dependency_manifest = dependency / "Cargo.toml"
-            if not dependency.is_dir() or not dependency_manifest.is_file():
-                raise ValueError(f"missing local path in {current}: {relative} -> {dependency}")
-            repository = _repository_root(dependency, boundary)
-            repositories.add(repository)
-            pending.append(dependency_manifest)
+        workspace_root = _workspace_root(current, data)
+        workspace_data = None
+        if workspace_root is not None:
+            root_manifest = workspace_root / "Cargo.toml"
+            if root_manifest == current:
+                workspace_data = data
+            else:
+                try:
+                    workspace_data = tomllib.loads(root_manifest.read_text())
+                except (OSError, tomllib.TOMLDecodeError) as error:
+                    raise ValueError(f"cannot read workspace manifest {root_manifest}: {error}") from error
+                # Root dependencies and patch declarations can themselves
+                # contribute paths. Only the member's inherited dependencies
+                # are selected from workspace.dependencies below.
+                for relative in _manifest_paths({"patch": workspace_data.get("patch", {})}):
+                    pending.append((root_manifest, relative, workspace_root))
+        paths = [(relative, current.parent, current) for relative in _manifest_paths(data)]
+        for relative, base, declaration in paths:
+            pending.append((declaration, relative, base))
+        if workspace_data is not None:
+            pending.extend((workspace_root / "Cargo.toml", relative, workspace_root)
+                           for relative in _inherited_workspace_paths(data, workspace_data))
     return sorted(repositories)
+
+
+def _resolve_local_path(relative, base, declaration, boundary):
+    if Path(relative).is_absolute():
+        raise ValueError(
+            f"absolute local path in {declaration}: {relative}; use a path relative "
+            "to the declaring manifest or Cargo config so it remains valid in the source snapshot"
+        )
+    dependency = (base / relative).resolve()
+    try:
+        dependency.relative_to(boundary)
+    except ValueError as error:
+        raise ValueError(f"local path escapes sibling root in {declaration}: {relative} -> {dependency}") from error
+    return dependency
 
 
 def verify_test(root, name, arguments, core, redis, env, *, manifest=None):
@@ -319,11 +535,6 @@ def main():
     for label, root in (("core", core), *inputs):
         if not (root / "Cargo.toml").is_file():
             raise ValueError(f"{label} root has no Cargo.toml: {root}")
-    for label, root in (("core", core), *inputs):
-        revision, changes = git_revision_and_tracked_changes(root)
-        print(f"{label}: revision={revision} root={root} "
-              f"tracked_changes={changes!r}", flush=True)
-
     local_repositories = None
     if args.execution_services_root is not None:
         execution_source = args.execution_services_root.resolve()
@@ -336,6 +547,7 @@ def main():
         temp_root = Path(temp)
         target_root = temp_root / "target"
         snapshots = {}
+        copied_sources = {core: []}
         for label, source in inputs:
             snapshot = temp_root / "sources" / label
             snapshot.parent.mkdir(parents=True, exist_ok=True)
@@ -343,6 +555,7 @@ def main():
             if not (snapshot / "Cargo.toml").is_file():
                 raise ValueError(f"tracked source snapshot is missing Cargo.toml: {label}")
             snapshots[label] = snapshot
+            copied_sources.setdefault(source.resolve(), []).append(snapshot)
         if args.execution_services_root is not None:
             execution_source = args.execution_services_root.resolve()
             sibling_root = execution_source.parent
@@ -353,9 +566,19 @@ def main():
                 if snapshot.exists():
                     continue
                 copy_tracked_source(repository, snapshot)
+                copied_sources.setdefault(repository.resolve(), []).append(snapshot)
             snapshots["execution-services"] = (
                 temp_root / "sources" / "siblings" /
                 execution_source.relative_to(sibling_root))
+        for source, destinations in sorted(copied_sources.items()):
+            revision, changes = git_revision_and_tracked_changes(source)
+            if destinations:
+                print(f"source: revision={revision} root={source} snapshot={destinations[0]} "
+                      f"additional_snapshots={destinations[1:]} "
+                      f"tracked_changes={changes!r}", flush=True)
+            else:
+                print(f"core: revision={revision} root={source} "
+                      f"tracked_changes={changes!r}", flush=True)
         run_downstream_checks(snapshots, core, target_root,
                               include_execution_services=args.execution_services_root is not None)
     if args.execution_services_root is None:

@@ -64,6 +64,46 @@ class ProjectHookGraphTests(unittest.TestCase):
             self.assertEqual(failing.returncode, 23, failing.stderr)
             self.assertIn("hook-marker", failing.stdout)
 
+    def test_hook_rejects_python_below_311_before_tests_and_accepts_supported_python(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            hook = base / "project-ci-check.sh"
+            shutil.copy(ROOT / "scripts/project-ci-check.sh", hook)
+            hook.chmod(0o755)
+            log = base / "python-invocations"
+            fake_python = fake_bin / "python3"
+            fake_python.write_text(
+                '#!/usr/bin/env bash\n'
+                'if [[ "$1" == "-c" ]]; then\n'
+                '  printf "%s\\n" "${FAKE_PYTHON_VERSION}"\n'
+                '  [[ "${FAKE_PYTHON_VERSION}" != 3.10.14 ]]\n'
+                'else\n'
+                '  printf "%s\\n" "$*" >> "$PYTHON_LOG"\n'
+                '  exit 23\n'
+                'fi\n',
+                encoding="utf-8",
+            )
+            fake_python.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update({"PATH": f"{fake_bin}{os.pathsep}{environment['PATH']}",
+                                "PYTHON_LOG": str(log),
+                                "FAKE_PYTHON_VERSION": "3.10.14"})
+            unsupported = subprocess.run(["bash", str(hook)], env=environment,
+                                         capture_output=True, text=True, check=False)
+            self.assertEqual(unsupported.returncode, 1)
+            self.assertIn("requires Python 3.11 or newer; found 3.10.14", unsupported.stderr)
+            self.assertFalse(log.exists(), "low Python version must not start any test")
+
+            environment["FAKE_PYTHON_VERSION"] = "3.12.3"
+            supported = subprocess.run(["bash", str(hook)], env=environment,
+                                       capture_output=True, text=True, check=False)
+            self.assertEqual(supported.returncode, 23)
+            self.assertEqual(log.read_text().splitlines(), [
+                "-B -m unittest discover -s "
+                f"{base.parent / 'scripts/tests'} -p performance_evidence_tests.py",
+            ])
 
 if __name__ == "__main__":
     unittest.main()
