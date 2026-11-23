@@ -331,7 +331,10 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
         {
             return Err(LifecycleError::Closed);
         }
-        self.control.signals.stop(ShutdownMode::Immediate);
+        let bus_key = self.control.bus.as_ptr() as usize;
+        with_subscription_scope(bus_key, self.control.id, || {
+            self.control.signals.stop(ShutdownMode::Immediate);
+        });
         let mut lease = self.control.lease().await.ok_or(LifecycleError::Closed)?;
         lease
             .session

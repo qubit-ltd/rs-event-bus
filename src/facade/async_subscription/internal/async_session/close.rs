@@ -304,6 +304,20 @@ mod tests {
     use crate::spi::ShutdownMode;
     use crate::spi::TransportPayload;
 
+    struct RunOnWake(Mutex<Option<Box<dyn FnOnce() + Send>>>);
+
+    impl std::task::Wake for RunOnWake {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            if let Some(callback) = self.0.lock().expect("wake callback lock").take() {
+                callback();
+            }
+        }
+    }
+
     struct Payload {
         panic_on_drop: AtomicBool,
         drops: Option<Arc<AtomicUsize>>,
@@ -424,6 +438,45 @@ mod tests {
         ))
         .expect("subscription");
         (bus, subscription)
+    }
+
+    #[test]
+    fn test_public_close_stop_waker_rejects_same_bus_shutdown_before_lease() {
+        let (bus, mut subscription) = setup();
+        let control = Arc::clone(&subscription.control);
+        let lease = block_on(control.lease()).expect("test holds the session lease");
+        let signal = lease.session.as_ref().expect("session").signals.signal();
+        let waiter_id = signal.next_waiter_id();
+        let observed = Arc::new(Mutex::new(None));
+        let observed_by_waker = observed.clone();
+        let nested_bus = bus.clone();
+        let waker = Waker::from(Arc::new(RunOnWake(Mutex::new(Some(Box::new(move || {
+            let mut nested = Box::pin(nested_bus.shutdown(ShutdownMode::Immediate));
+            let result = poll_once(nested.as_mut());
+            *observed_by_waker.lock().expect("observation lock") = Some(result);
+        }))))));
+        signal.register_waiter(waiter_id, &waker);
+
+        let mut close = Box::pin(subscription.close());
+        assert!(poll_once(close.as_mut()).is_pending(), "close waits for the held lease");
+        let observation = observed.lock().expect("observation lock");
+        assert!(
+            matches!(
+                observation.as_ref(),
+                Some(Poll::Ready(Err(crate::error::ShutdownError::Lifecycle(
+                    crate::error::LifecycleError::WouldDeadlock { operation: "shutdown" }
+                ))))
+            ),
+            "stop callback's same-bus shutdown must be rejected: {observation:?}"
+        );
+        drop(observation);
+
+        signal.unregister(waiter_id);
+        drop(lease);
+        assert!(
+            poll_once(close.as_mut()).is_ready(),
+            "close proceeds after lease return"
+        );
     }
 
     #[test]
