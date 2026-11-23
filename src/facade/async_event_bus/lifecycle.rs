@@ -77,6 +77,8 @@ impl AsyncEventBus {
     ///
     /// This does not query the provider's queue and does not establish global
     /// idleness on a remote broker.
+    /// Dropping a pending wait only cancels this observer; it does not change
+    /// delivery ownership or grant leadership over the tracked deliveries.
     /// A callback polled for this bus cannot wait for this operation: it
     /// receives [`LifecycleError::WouldDeadlock`] even when no matching
     /// delivery is active, because the guard is scoped to the whole bus poll.

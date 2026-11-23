@@ -90,6 +90,8 @@ pub(in crate::facade) async fn wait_until(
 /// - `deadline`: optional absolute caller deadline.
 /// - `signal`: notification for shutdown mode escalation.
 /// - `immediate`: flag set when immediate shutdown is requested.
+/// - `bus_key`: facade identity used to scope registered-waker callbacks
+///   during clone, replacement, and unregister cleanup.
 ///
 /// # Returns
 /// Whether shutdown completed, timed out, or should restart in immediate mode.
@@ -169,6 +171,8 @@ pub(in crate::facade) async fn await_until_deadline<F: Future>(
 /// # Parameters
 /// - `signal`: signal notifying changes that may satisfy `ready`.
 /// - `deadline`: optional absolute deadline owned by the caller.
+/// - `bus_key`: facade identity used to scope registered-waker callbacks
+///   during clone, replacement, and unregister cleanup.
 /// - `ready`: predicate checked before and after waiter registration.
 ///
 /// # Returns
