@@ -102,7 +102,15 @@ impl EventBusShutdown {
             return self.report();
         };
         let mut registration = ShutdownRegistration::new(&self.inner.shutdown_coordinator, generation);
-        let result = poll_fn(|cx| registration.poll(cx)).await;
+        let result = poll_fn(|cx| {
+            if is_current_bus_context(Arc::as_ptr(&self.inner) as usize) {
+                return std::task::Poll::Ready(Err(ShutdownError::Lifecycle(LifecycleError::WouldDeadlock {
+                    operation: "shutdown",
+                })));
+            }
+            registration.poll(cx).map(Ok)
+        })
+        .await?;
         self.resolve(result)
     }
 
