@@ -7,6 +7,8 @@
 // =============================================================================
 //! Shared ownership for synchronous and asynchronous diagnostic observers.
 
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
@@ -14,6 +16,7 @@ use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::pipeline::DiagnosticObserver;
 
 /// Shared liveness and callback storage for a diagnostic observer.
@@ -62,11 +65,16 @@ impl ObserverEntry {
     /// Callback handles selected for dispatch. Later deactivation does not
     /// cancel callbacks already returned by this method.
     fn active_callbacks(entries: Vec<Arc<Self>>) -> Vec<Arc<DiagnosticObserver>> {
-        entries
-            .into_iter()
-            .filter(|entry| entry.active.load(Ordering::Acquire))
-            .map(|entry| entry.callback.clone())
-            .collect()
+        let mut callbacks = Vec::new();
+        for entry in entries {
+            if entry.active.load(Ordering::Acquire) {
+                callbacks.push(entry.callback.clone());
+                drop(entry);
+            } else if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(entry))) {
+                dispose_panic_payload(payload);
+            }
+        }
+        callbacks
     }
 }
 
@@ -94,6 +102,19 @@ mod tests {
 
     struct ReentrantDrop {
         register: Box<dyn Fn() + Send + Sync>,
+    }
+
+    struct ReentrantPanicDrop {
+        register: Box<dyn Fn() + Send + Sync>,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl Drop for ReentrantPanicDrop {
+        fn drop(&mut self) {
+            (self.register)();
+            self.drops.fetch_add(1, Ordering::SeqCst);
+            panic!("capture destructor panic");
+        }
     }
 
     impl Drop for ReentrantDrop {
@@ -170,6 +191,47 @@ mod tests {
             },
         );
         let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("async shutdown");
+    }
+
+    #[test]
+    fn test_snapshot_filter_contains_inactive_observer_capture_drop_panic() {
+        let bus = EventBus::local(LocalEventBusConfig::default()).expect("sync local bus");
+        let drops = Arc::new(AtomicUsize::new(0));
+        let bus_for_drop = bus.clone();
+        let probe = ReentrantPanicDrop {
+            register: Box::new(move || {
+                let _handle = bus_for_drop.observe_diagnostics(|_| {});
+            }),
+            drops: drops.clone(),
+        };
+        let inactive = bus.observe_diagnostics(move |_| {
+            let _probe = &probe;
+        });
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let first_calls = calls.clone();
+        let first = bus.observe_diagnostics(move |_| {
+            first_calls.lock().unwrap().push("first");
+        });
+        let second_calls = calls.clone();
+        let second = bus.observe_diagnostics(move |_| {
+            second_calls.lock().unwrap().push("second");
+        });
+
+        let entries = ObserverEntry::snapshot_entries(&bus.inner.observers);
+        drop(inactive);
+        let callbacks = ObserverEntry::active_callbacks(entries);
+        let diagnostic = crate::pipeline::Diagnostic::InternalFailure {
+            origin: "test".into(),
+            message: "test".into(),
+        };
+        for callback in callbacks {
+            callback(&diagnostic);
+        }
+
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert_eq!(*calls.lock().unwrap(), ["first", "second"]);
+        drop((first, second));
+        let _ = bus.shutdown(ShutdownMode::Immediate).expect("sync shutdown");
     }
 
     fn block_on<F: Future>(future: F) -> F::Output {
