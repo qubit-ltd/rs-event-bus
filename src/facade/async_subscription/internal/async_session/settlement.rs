@@ -455,6 +455,12 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             self.topic.name().into(),
         );
         dispose_previous_settlement_error(previous_error);
+        if self.drop_delivery(pending) {
+            self.inner.emit(&Diagnostic::InternalFailure {
+                origin: "completed_delivery_drop".into(),
+                message: "completed delivery drop panicked".into(),
+            });
+        }
     }
 
     /// Releases facade ownership without acknowledging provider-owned durable
@@ -476,7 +482,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 delivery.event_id.clone(),
                 self.topic.name().into(),
             );
-            if self.drop_abandoned_delivery(delivery) {
+            if self.drop_delivery(delivery) {
                 self.inner.emit(&Diagnostic::InternalFailure {
                     origin: "abandoned_delivery_drop".into(),
                     message: "abandoned delivery drop panicked".into(),

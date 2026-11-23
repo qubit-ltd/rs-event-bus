@@ -186,7 +186,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 delivery.event_id.clone(),
                 self.topic.name().into(),
             );
-            drop_panicked |= self.drop_abandoned_delivery(delivery);
+            drop_panicked |= self.drop_delivery(delivery);
         }
         while let Some(mut delivery) = self.completed.pop_front() {
             if !delivery.settlement.confirmed {
@@ -197,7 +197,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 delivery.event_id.clone(),
                 self.topic.name().into(),
             );
-            drop_panicked |= self.drop_abandoned_delivery(delivery);
+            drop_panicked |= self.drop_delivery(delivery);
         }
         while let Some(mut delivery) = self.completed_during_settlement.pop_front() {
             if !delivery.settlement.confirmed {
@@ -208,7 +208,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 delivery.event_id.clone(),
                 self.topic.name().into(),
             );
-            drop_panicked |= self.drop_abandoned_delivery(delivery);
+            drop_panicked |= self.drop_delivery(delivery);
         }
         if drop_panicked {
             self.inner.emit(&Diagnostic::InternalFailure {
@@ -222,7 +222,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     ///
     /// # Parameters
     /// - `delivery`: Removed delivery whose payload is being released.
-    pub(super) fn drop_abandoned_delivery(
+    pub(super) fn drop_delivery(
         &self,
         delivery: crate::facade::async_subscription::internal::pending_delivery::PendingDelivery<T>,
     ) -> bool {

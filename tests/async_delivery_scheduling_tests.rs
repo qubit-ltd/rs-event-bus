@@ -1199,6 +1199,73 @@ fn test_async_settlement_success_after_retry_drop_panic_keeps_receiving() {
 }
 
 #[test]
+fn test_async_confirmed_settlement_continues_after_payload_drop_panic() {
+    struct DropProbe {
+        should_panic: bool,
+        drops: Arc<AtomicUsize>,
+    }
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+            if self.should_panic {
+                panic!("completed payload drop probe");
+            }
+        }
+    }
+
+    let (bus, fake, probe, _) = setup(config(1, 4, 4, 2, 4));
+    let topic = Topic::<DropProbe>::new("test.topic").expect("valid test topic");
+    let mut sub = block_on(
+        bus.subscribe(
+            SubscribeRequest::new("confirmed-drop-panic", topic)
+                .expect("valid subscription request")
+                .with_options(
+                    SubscribeOptions::builder()
+                        .ordering_policy(OrderingPolicy::PerKey)
+                        .build(),
+                ),
+        ),
+    )
+    .expect("subscription accepted");
+    let drops = Arc::new(AtomicUsize::new(0));
+    for (number, should_panic) in [(1, true), (2, false)] {
+        fake.enqueue(InboundMessage::new(
+            TopicAddress::new("test.topic").expect("valid topic address"),
+            EventId::new(format!("drop-event-{number}")).expect("valid event ID"),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            Some(OrderingKey::new(if number == 1 { "A" } else { "B" }).expect("valid key")),
+            TransportPayload::Native(Arc::new(DropProbe {
+                should_panic,
+                drops: drops.clone(),
+            })),
+            Some(SettlementToken::new(sub.id(), format!("drop-token-{number}"))),
+            Default::default(),
+        ));
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let mut run = Box::pin(sub.run(move |_| {
+        observed.fetch_add(1, Ordering::SeqCst);
+        async { Ok(()) }
+    }));
+    poll_pending(run.as_mut());
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "the same runner handles both deliveries"
+    );
+    assert_eq!(probe.attempts.lock().expect("attempt log").len(), 2);
+    assert_eq!(drops.load(Ordering::SeqCst), 2);
+    let metrics = sub.delivery_metrics().metrics;
+    assert_eq!((metrics.completed, metrics.abandoned_ephemeral), (2, 0));
+    drop(run);
+    block_on(sub.close()).expect("subscription close succeeds");
+}
+
+#[test]
 fn test_cancelled_settlement_replaces_panicking_old_error_after_recording_pause() {
     let (bus, fake, probe, clock) = setup(config(1, 4, 4, 2, 4));
     probe

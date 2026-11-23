@@ -8,6 +8,9 @@
 //! Owned receiver and delivery state for one asynchronous subscription.
 
 use std::collections::VecDeque;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
+use std::panic::resume_unwind;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -20,6 +23,7 @@ use super::PendingDelivery;
 use super::SessionSignals;
 use crate::codec::EventCodec;
 use crate::facade::async_subscription::SharedAsyncHandler;
+use crate::facade::async_subscription::with_subscription_scope;
 use crate::facade::internal::DeliveryMetrics;
 use crate::model::SubscribeOptions;
 use crate::model::SubscriberId;
@@ -89,6 +93,7 @@ impl<T: 'static> Drop for AsyncSession<T> {
     /// registration guard ensures they are dropped first, including during
     /// unwinding from a payload destructor.
     fn drop(&mut self) {
+        let already_panicking = std::thread::panicking();
         self.inner.scheduler.stop_subscription(self.id);
         let abandoned =
             self.buffered.len() + self.tasks.len() + self.completed.len() + self.completed_during_settlement.len();
@@ -100,33 +105,62 @@ impl<T: 'static> Drop for AsyncSession<T> {
                 self.metrics.record_abandoned_ephemeral();
             }
         }
-        let _registration = SessionRegistrationCleanup::new(&self.inner, self.id);
+        let registration = SessionRegistrationCleanup::new(&self.inner, self.id);
+        let bus_key = Arc::as_ptr(&self.inner) as usize;
+        let subscription_id = self.id;
+        let mut first_panic = None;
+        macro_rules! release {
+            ($value:expr) => {
+                if let Err(payload) = catch_unwind(AssertUnwindSafe(|| {
+                    with_subscription_scope(bus_key, subscription_id, || drop($value));
+                })) {
+                    if first_panic.is_none() {
+                        first_panic = Some(payload);
+                    } else {
+                        crate::internal::panic_payload::dispose_panic_payload(payload);
+                    }
+                }
+            };
+        }
         {
             let mut tasks = std::mem::take(&mut self.tasks);
             let mut buffered = std::mem::take(&mut self.buffered);
             let mut completed = std::mem::take(&mut self.completed);
             let mut completed_during_settlement = std::mem::take(&mut self.completed_during_settlement);
-            tasks.clear();
+            while let Some(task) = tasks.pop() {
+                release!(task);
+            }
             while let Some(mut delivery) = buffered.pop_front() {
                 self.emit_failure_diagnostic(
                     delivery.failure_diagnostic.take(),
-                    delivery.event_id,
+                    delivery.event_id.clone(),
                     self.topic.name().into(),
                 );
+                release!(delivery);
             }
             while let Some(mut delivery) = completed.pop_front() {
                 self.emit_failure_diagnostic(
                     delivery.failure_diagnostic.take(),
-                    delivery.event_id,
+                    delivery.event_id.clone(),
                     self.topic.name().into(),
                 );
+                release!(delivery);
             }
             while let Some(mut delivery) = completed_during_settlement.pop_front() {
                 self.emit_failure_diagnostic(
                     delivery.failure_diagnostic.take(),
-                    delivery.event_id,
+                    delivery.event_id.clone(),
                     self.topic.name().into(),
                 );
+                release!(delivery);
+            }
+        }
+        drop(registration);
+        if let Some(payload) = first_panic {
+            if already_panicking {
+                crate::internal::panic_payload::dispose_panic_payload(payload);
+            } else {
+                resume_unwind(payload);
             }
         }
     }

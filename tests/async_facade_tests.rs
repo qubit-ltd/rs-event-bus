@@ -4858,15 +4858,26 @@ fn test_dropping_a_paused_subscription_drops_receiver_and_recovers_unsettled_del
 }
 
 #[test]
-fn test_paused_subscription_payload_drop_panic_releases_registration() {
+fn test_paused_subscription_releases_all_deliveries_after_multiple_drop_panics() {
+    const CASE: &str = "multiple-payload-drop-panics";
+    if std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok(CASE) {
+        crate::support::isolated_process::run_case_with_timeout(
+            "test_paused_subscription_releases_all_deliveries_after_multiple_drop_panics",
+            CASE,
+            Duration::from_secs(10),
+        );
+        return;
+    }
     struct DropProbe {
         panic_on_drop: bool,
+        drops: Arc<AtomicUsize>,
     }
 
     impl Drop for DropProbe {
         fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
             if self.panic_on_drop {
-                panic!("queued payload drop probe");
+                panic!("first queued payload drop probe");
             }
         }
     }
@@ -4887,18 +4898,18 @@ fn test_paused_subscription_payload_drop_panic_releases_registration() {
     let subscription = block_on(bus.subscribe(SubscribeRequest::new("drop-panic", payload_topic.clone()).unwrap()))
         .expect("subscription");
 
-    for (event_id, panic_on_drop) in [
-        ("ordinary-first", false),
-        ("panic-second", true),
-        ("ordinary-third", false),
-    ] {
+    let drops = Arc::new(AtomicUsize::new(0));
+    for (event_id, panic_on_drop) in [("ordinary-first", false), ("panic-second", true), ("panic-third", true)] {
         spi.enqueue(InboundMessage::new(
             TopicAddress::new("drop-panic.topic").unwrap(),
             EventId::new(event_id).unwrap(),
             SystemTime::UNIX_EPOCH,
             Headers::new(),
             None,
-            TransportPayload::Native(Arc::new(DropProbe { panic_on_drop })),
+            TransportPayload::Native(Arc::new(DropProbe {
+                panic_on_drop,
+                drops: drops.clone(),
+            })),
             None,
             Default::default(),
         ));
@@ -4920,8 +4931,9 @@ fn test_paused_subscription_payload_drop_panic_releases_registration() {
     assert_eq!(subscription.delivery_metrics().metrics.queued, 2);
 
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(subscription)))
-        .expect_err("dropping the queued payload should unwind");
-    assert_eq!(panic.downcast_ref::<&str>(), Some(&"queued payload drop probe"));
+        .expect_err("dropping the session should propagate its first payload panic");
+    assert_eq!(panic.downcast_ref::<&str>(), Some(&"first queued payload drop probe"));
+    assert_eq!(drops.load(Ordering::SeqCst), 3, "all deliveries are released");
     assert_eq!(spi.settlement_count(), 0);
 
     let replacement =
