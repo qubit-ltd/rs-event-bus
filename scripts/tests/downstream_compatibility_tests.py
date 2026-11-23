@@ -381,9 +381,14 @@ class DownstreamCompatibilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             lockfile = root / "Cargo.lock"
+            with preserve_lockfiles((root,)):
+                lockfile.write_bytes(b"generated lock on success\n")
+                self.assertTrue(lockfile.exists())
+            self.assertFalse(lockfile.exists())
+
             with self.assertRaisesRegex(RuntimeError, "metadata failed"):
                 with preserve_lockfiles((root,)):
-                    lockfile.write_bytes(b"partial cargo output\n")
+                    lockfile.write_bytes(b"generated lock before failure\n")
                     raise RuntimeError("metadata failed")
             self.assertFalse(lockfile.exists())
 
