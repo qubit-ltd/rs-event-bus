@@ -216,6 +216,8 @@ cargo test --all-features
 ./.infra/bin/coverage.sh
 ```
 
+Both `./.infra/bin/ci-check.sh` and `./scripts/project-ci-check.sh` require Python 3.11 or newer. This project-hook requirement is separate from the legacy Redis/task compatibility command, which supports Python 3.10; adding `--execution-services-root` to that command requires Python 3.11 or newer.
+
 ## License
 
 Copyright (c) 2025 - 2026. Haixing Hu. All rights reserved.

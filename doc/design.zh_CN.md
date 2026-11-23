@@ -1767,6 +1767,7 @@ crate 内的 `loom` 测试对预算准入、操作许可和调度器容量进行
 | `tests/support/fake_spi.rs` | 可编程假 provider：注入错误、panic、能力矩阵、settlement 失败 |
 | `tests/support/flume_spi.rs` | 基于标准库有界通道的第二个真实传输实现，验证 SPI 不为 local 定制 |
 | `tests/support/manual_async.rs` | 手动 executor / 手动 timer，让异步测试确定性推进 |
+| `tests/local/internal/local_state_machine_tests.rs`、`tests/local/async_local_event_bus_spi_tests.rs`（`local_state_machine`） | 保留原有种子；新增有界 seeded SPI 场景用手动时间推进 0–7 ms 延迟，检查到期投递、同键重试顺序、独立 lane、关闭时释放延迟投递占用，以及 oracle 对提前投递的拒绝。这些场景只覆盖选定状态机路径，不代表穷尽运行时竞态。 |
 | `tests/support/provider_shapes.rs` | 各能力组合的 provider 形态 |
 | `src/facade/sync_delivery_scheduler.rs`（inline `scheduler_race_tests`）、`src/facade/event_bus.rs`（inline `spawn_failure_tests`）、`tests/support/panic_hook.rs` | 调度器竞态、线程创建失败、panic 钩子隔离 |
 | `tests/discovery_{sync,async,conflict}_tests.rs` + `tests/fixtures/discovery_{provider,consumer}` | `discovery` feature 跨 crate 链接与冲突检测 |
@@ -2205,7 +2206,7 @@ pub fn settle_without_borrowing_token<'a>(
 
 ## 验证本 crate
 
-在完整 Git checkout 根目录运行仓库脚本。`./scripts/project-ci-check.sh` 会运行本 crate 的 Python 回归、包清单、性能证据和锁定 Cargo metadata 检查。标准项目 CI 命令为 `./.infra/bin/ci-check.sh`。
+在完整 Git checkout 根目录运行仓库脚本。`./scripts/project-ci-check.sh` 会运行本 crate 的 Python 回归、包清单、性能证据和锁定 Cargo metadata 检查；它和完整项目 hook `./.infra/bin/ci-check.sh` 都要求 Python 3.11 或更新版本。这个 hook 要求与旧 Redis/task 命令支持 Python 3.10 是两回事；启用 `--execution-services-root` 时旧命令也需要 Python 3.11 或更新版本。
 
 ## Local 容量诊断
 
@@ -2230,7 +2231,7 @@ pub fn settle_without_borrowing_token<'a>(
 
 ## 使用下游消费者验证当前 core
 
-旧 Redis/task 命令支持 Python 3.10。通过 `--execution-services-root` 选择完整 IoC 检查时，需要 Python 3.11 或更新版本提供的 `tomllib`；缺少时会在创建快照或运行 Cargo 前失败。Cargo metadata 更新、locked metadata 校验、精确测试枚举和测试执行都以所选 manifest 的父目录作为工作目录。保留相对布局时可以使用指向同级仓库的相对路径。绝对 `path` 依赖会被拒绝，因为复制后的 manifest 仍指向原 checkout；应改为相对于引用 manifest 的路径，并保持仓库处于支持的同级布局。
+旧 Redis/task 命令支持 Python 3.10。通过 `--execution-services-root` 选择完整 IoC 检查时，需要 Python 3.11 或更新版本提供的 `tomllib`；缺少时会在创建快照或运行 Cargo 前失败。另请注意，`./scripts/project-ci-check.sh` 和完整项目 hook `./.infra/bin/ci-check.sh` 都要求 Python 3.11 或更新版本。Cargo metadata 更新、locked metadata 校验、精确测试枚举和测试执行都以所选 manifest 的父目录作为工作目录。保留相对布局时可以使用指向同级仓库的相对路径。绝对 `path` 依赖会被拒绝，因为复制后的 manifest 仍指向原 checkout；应改为相对于声明它的 manifest 或 Cargo config 的路径，并保持仓库处于支持的同级布局。
 
 发版评审，或修改 SPI、接纳语义、生命周期契约时，使用指定的 Redis 和 rs-task 源码版本验证当前 core：
 
@@ -2240,7 +2241,7 @@ python3 -B scripts/check_downstream_compatibility.py \
   --execution-services-root ../rs-execution-services
 ```
 
-core 输入由 `--core-root` 指定；未指定时，默认使用包含此脚本的当前检出目录。Redis、rs-task 和可选的 execution-services fixture 会从输入 checkout 复制为仅含已跟踪源码的临时快照。core 保持在所选 checkout 路径，不会创建快照，因此复现期间须保持 core 输入稳定。旧参数 `--use-worktrees` 作为兼容别名保留，不会切换到另一条执行路径。检查器先报告各输入 HEAD 和已跟踪改动，再复制输入。execution-services 检查会从 fixture manifest 递归发现本地 path 依赖和 patch，按相对布局复制所需同级仓库；缺失或越界路径会连同引用它的 manifest 一起报告。不传 `--execution-services-root` 时仍运行原有 Redis 与 rs-task 检查，输出会说明未选择 IoC 检查。快照包含未提交的已跟踪源码和锁文件，保留已跟踪删除，但不包含构建产物和未跟踪文件。需要参与检查的源码必须进入 Git 跟踪清单；如果自有验证依赖未跟踪文件，请先将其加入 Git 跟踪，或在专用工作副本自行运行 Cargo 检查。
+core 输入由 `--core-root` 指定；未指定时，默认使用包含此脚本的当前检出目录。Redis、rs-task 和可选的 execution-services fixture 会从输入 checkout 复制为仅含已跟踪源码的临时快照。core 保持在所选 checkout 路径，不会创建快照，因此复现期间须保持 core 输入稳定。旧参数 `--use-worktrees` 作为兼容别名保留，不会切换到另一条执行路径。execution-services 检查会从 fixture manifest 递归发现本地 path 依赖和 patch，也会纳入继承的 workspace 依赖以及已跟踪的 Cargo config patch，再按原相对布局复制所需同级仓库；缺失或越界路径会连同声明它的 manifest 或 Cargo config 一起报告。检查器会输出发现的源码 revision、快照目标和已跟踪改动，便于复现输入。未跟踪的 Cargo config 不会复制。不传 `--execution-services-root` 时仍运行原有 Redis 与 rs-task 检查，输出会说明未选择 IoC 检查。快照包含未提交的已跟踪源码和锁文件，保留已跟踪删除，但不包含构建产物和未跟踪文件。需要参与检查的源码和 Cargo 配置必须进入 Git 跟踪清单；如果自有验证依赖未跟踪文件，请先将其加入 Git 跟踪，或在专用工作副本自行运行 Cargo 检查。
 
 所有输入快照及其 Cargo lockfile 都与输入 checkout 隔离。Cargo 只会解析或更新快照中的 lockfile；无论成功、失败或命令执行期间，都不会备份、恢复、写入或删除输入 lockfile。遇到 submodule、缺失 manifest 或越出快照范围的已跟踪链接时，会报告具体路径并失败。Cargo 从所选 manifest 解析 metadata，再用 `--locked` 校验同一依赖图。metadata 与测试均通过显式 Cargo 参数 `--config patch.crates-io.qubit-event-bus.path=<core-root>` 将 `qubit-event-bus` patch 到所选 core checkout；task 检查还会把 `qubit-event-bus-redis` patch 到 Redis 快照。精确测试枚举和执行使用相同源码输入并添加 `--locked`；Cargo 构建产物位于临时根目录。
 

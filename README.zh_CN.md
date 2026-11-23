@@ -211,6 +211,8 @@ cargo test --all-features
 ./.infra/bin/coverage.sh
 ```
 
+`./.infra/bin/ci-check.sh` 和 `./scripts/project-ci-check.sh` 都要求 Python 3.11 或更新版本。这是项目 hook 的环境要求，与旧版 Redis/task 兼容性命令支持 Python 3.10 是两回事；给旧命令添加 `--execution-services-root` 后，也需要 Python 3.11 或更新版本。
+
 ## 许可证
 
 Copyright (c) 2025 - 2026. Haixing Hu. All rights reserved.
