@@ -97,23 +97,27 @@ impl<T: Send + Sync + 'static> AsyncSubscriptionControl<T> {
     /// # Returns
     /// `Some` with a lease while the control is live, or `None` after disposal.
     pub(in crate::facade::async_subscription) async fn lease(&self) -> Option<SessionLease<'_, T>> {
-        let registration = SignalRegistration::new(&self.available);
-        poll_fn(|cx| {
-            registration.register(cx.waker());
-            let mut slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
-            if slot.disposed {
-                return Poll::Ready(None);
-            }
-            if !slot.active
-                && let Some(session) = slot.session.take()
-            {
-                slot.active = true;
-                return Poll::Ready(Some(SessionLease {
-                    control: self,
-                    session: Some(session),
-                }));
-            }
-            Poll::Pending
+        let bus_key = self.bus.as_ptr() as usize;
+        BusContextFuture::new_for_subscription(bus_key, self.id, async {
+            let registration = SignalRegistration::new(&self.available);
+            poll_fn(|cx| {
+                registration.register(cx.waker());
+                let mut slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
+                if slot.disposed {
+                    return Poll::Ready(None);
+                }
+                if !slot.active
+                    && let Some(session) = slot.session.take()
+                {
+                    slot.active = true;
+                    return Poll::Ready(Some(SessionLease {
+                        control: self,
+                        session: Some(session),
+                    }));
+                }
+                Poll::Pending
+            })
+            .await
         })
         .await
     }
