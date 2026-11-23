@@ -2,6 +2,11 @@
 set -euo pipefail
 
 project_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+python_version=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"); raise SystemExit(sys.version_info < (3, 11))') && version_status=0 || version_status=$?
+if [[ $version_status -ne 0 ]]; then
+    printf 'project-ci-check.sh requires Python 3.11 or newer; found %s\n' "${python_version:-unknown}" >&2
+    exit 1
+fi
 python3 -B -m unittest discover -s "$project_root/scripts/tests" -p 'performance_evidence_tests.py'
 python3 -B -m unittest discover -s "$project_root/scripts/tests" -p 'conformance_watchdog_tests.py'
 python3 -B -m unittest discover -s "$project_root/scripts/tests" -p 'downstream_source_snapshot_tests.py'
