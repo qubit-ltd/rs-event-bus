@@ -448,6 +448,8 @@ mod tests {
         let control = Arc::clone(&subscription.control);
         let lease = block_on(control.lease()).expect("test holds the session lease");
         let signal = lease.session.as_ref().expect("session").signals.signal();
+        // Public close is the natural entry point; the test waiter is injected
+        // because close's exclusive borrow cannot coexist with an active run.
         let waiter_id = signal.next_waiter_id();
         let observed = Arc::new(Mutex::new(None));
         let observed_by_waker = observed.clone();
@@ -489,6 +491,9 @@ mod tests {
         let session = lease.session.as_mut().expect("session");
         let signals = Arc::clone(&session.signals);
         let signal = signals.signal();
+        // close_inner is reached from close/run after their run-loop phase;
+        // this direct call isolates its second stop notification with an
+        // explicitly injected waiter.
         let waiter_id = signal.next_waiter_id();
         let observed = Arc::new(Mutex::new(None));
         let observed_by_waker = observed.clone();

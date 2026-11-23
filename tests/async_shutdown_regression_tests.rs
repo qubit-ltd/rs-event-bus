@@ -22,6 +22,8 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::RawWaker;
+use std::task::RawWakerVTable;
 use std::task::Wake;
 use std::task::Waker;
 use std::time::Duration;
@@ -71,6 +73,81 @@ use crate::support::fake_spi::FakeAsyncEventBusSpi;
 
 type ShutdownReentryObservation = Arc<Mutex<Option<Poll<Result<(), ShutdownError>>>>>;
 type SubscriptionRunObservation = Arc<Mutex<Option<Poll<Result<(), ReceiveError>>>>>;
+
+#[derive(Clone, Copy)]
+enum CallbackEdge {
+    Clone,
+    Drop,
+}
+
+struct WakerReentryProbe {
+    bus: AsyncEventBus,
+    edge: CallbackEdge,
+    armed: AtomicBool,
+    callbacks: AtomicUsize,
+    observation: ShutdownReentryObservation,
+}
+
+impl WakerReentryProbe {
+    fn invoke(&self) {
+        self.callbacks.fetch_add(1, Ordering::SeqCst);
+        let mut nested = Box::pin(self.bus.shutdown(ShutdownMode::Immediate));
+        let result = nested
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .map(|result| result.map(|_| ()));
+        *self.observation.lock().expect("waker probe observation") = Some(result);
+    }
+}
+
+unsafe fn clone_reentry_probe(pointer: *const ()) -> RawWaker {
+    // SAFETY: Every pointer handed to this vtable owns one Arc<WakerReentryProbe>.
+    let probe = unsafe { &*pointer.cast::<WakerReentryProbe>() };
+    if matches!(probe.edge, CallbackEdge::Clone) {
+        probe.invoke();
+    }
+    // SAFETY: The returned RawWaker owns the incremented Arc reference.
+    unsafe { Arc::<WakerReentryProbe>::increment_strong_count(pointer.cast()) };
+    RawWaker::new(pointer, &WAKER_REENTRY_VTABLE)
+}
+
+unsafe fn drop_reentry_probe(pointer: *const ()) {
+    // SAFETY: This raw waker owns one Arc reference.
+    let probe = unsafe { &*pointer.cast::<WakerReentryProbe>() };
+    if matches!(probe.edge, CallbackEdge::Drop) && probe.armed.load(Ordering::SeqCst) {
+        probe.invoke();
+    }
+    // SAFETY: Consume the Arc reference owned by this raw waker.
+    drop(unsafe { Arc::<WakerReentryProbe>::from_raw(pointer.cast()) });
+}
+
+unsafe fn wake_reentry_probe(pointer: *const ()) {
+    // SAFETY: wake consumes the raw waker's owned reference.
+    unsafe { drop_reentry_probe(pointer) };
+}
+
+unsafe fn wake_reentry_probe_by_ref(_: *const ()) {}
+
+static WAKER_REENTRY_VTABLE: RawWakerVTable = RawWakerVTable::new(
+    clone_reentry_probe,
+    wake_reentry_probe,
+    wake_reentry_probe_by_ref,
+    drop_reentry_probe,
+);
+
+fn reentry_probe_waker(bus: AsyncEventBus, edge: CallbackEdge) -> (Waker, Arc<WakerReentryProbe>) {
+    let probe = Arc::new(WakerReentryProbe {
+        bus,
+        edge,
+        armed: AtomicBool::new(matches!(edge, CallbackEdge::Clone)),
+        callbacks: AtomicUsize::new(0),
+        observation: Arc::new(Mutex::new(None)),
+    });
+    let pointer = Arc::into_raw(probe.clone()).cast();
+    // SAFETY: The vtable owns and releases this Arc reference.
+    let waker = unsafe { Waker::from_raw(RawWaker::new(pointer, &WAKER_REENTRY_VTABLE)) };
+    (waker, probe)
+}
 
 struct ReenterOnPollTimer {
     clock: Arc<ManualMonotonicClock>,
@@ -530,6 +607,304 @@ impl ShutdownGateSpi {
             ),
         }
     }
+}
+
+fn provider_shutdown_bus() -> (AsyncEventBus, Arc<ShutdownGateSpi>) {
+    let provider = Arc::new(ShutdownGateSpi::new(false));
+    let bus = AsyncEventBus::with_timer(
+        ProviderId::new("provider-waker-probe").expect("provider ID"),
+        provider.clone(),
+        ManualMonotonicClock::new().new_timer(),
+    )
+    .expect("facade");
+    (bus, provider)
+}
+
+fn assert_waker_probe_rejected(probe: &WakerReentryProbe) {
+    assert!(probe.callbacks.load(Ordering::SeqCst) > 0, "probe callback ran");
+    assert!(matches!(
+        probe.observation.lock().expect("observation").as_ref(),
+        Some(Poll::Ready(Err(ShutdownError::Lifecycle(
+            LifecycleError::WouldDeadlock { operation: "shutdown" }
+        ))))
+    ));
+}
+
+fn run_provider_wait_waker_probe(edge: CallbackEdge, replace: bool, cancel: bool) {
+    let (bus, provider) = provider_shutdown_bus();
+    let (waker, probe) = reentry_probe_waker(bus.clone(), edge);
+    let mut graceful = Box::pin(bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(30),
+    }));
+    if replace {
+        assert!(graceful.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+        drop(waker);
+        probe.armed.store(true, Ordering::SeqCst);
+        let replacement_poll = graceful.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+        assert_waker_probe_rejected(&probe);
+        assert!(
+            replacement_poll.is_pending(),
+            "leader remains gated after replacing its old waker"
+        );
+    } else if cancel {
+        assert!(graceful.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+        drop(waker);
+        probe.armed.store(true, Ordering::SeqCst);
+        drop(graceful);
+        assert_waker_probe_rejected(&probe);
+        assert!(block_on_shutdown(bus.shutdown(ShutdownMode::Immediate)).is_ok());
+        return;
+    } else {
+        let first_poll = graceful.as_mut().poll(&mut Context::from_waker(&waker));
+        assert_waker_probe_rejected(&probe);
+        assert!(first_poll.is_pending(), "leader remains gated by provider shutdown");
+    }
+    assert_eq!(1, provider.calls.lock().expect("calls").len());
+    let mut immediate = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+    let _ = immediate.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+    assert!(
+        graceful
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_ready()
+    );
+    assert!(
+        immediate
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_ready()
+    );
+}
+
+#[test]
+fn test_provider_shutdown_waker_clone_reentrancy_is_scoped() {
+    run_provider_wait_waker_probe(CallbackEdge::Clone, false, false);
+}
+
+#[test]
+fn test_provider_shutdown_waker_replacement_drop_is_scoped() {
+    run_provider_wait_waker_probe(CallbackEdge::Drop, true, false);
+}
+
+#[test]
+fn test_provider_shutdown_waker_cancel_drop_is_scoped() {
+    run_provider_wait_waker_probe(CallbackEdge::Drop, false, true);
+}
+
+fn run_tracker_wait_waker_probe(edge: CallbackEdge, replace: bool, cancel: bool) {
+    let released = Arc::new(AtomicBool::new(false));
+    let publish_waker = Arc::new(Mutex::new(None));
+    let shutdown_calls = Arc::new(AtomicUsize::new(0));
+    let provider = Arc::new(PublishGateSpi {
+        inner: FakeAsyncEventBusSpi::new(),
+        released: released.clone(),
+        publish_waker: publish_waker.clone(),
+        shutdown_calls: shutdown_calls.clone(),
+    });
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("tracker-waker-gate").expect("provider ID"), provider).expect("facade");
+    let mut publish = Box::pin(
+        bus.publish(PublishRequest::new(Topic::<u32>::new("tracker-waker-gate").expect("topic"), 7).expect("request")),
+    );
+    assert!(
+        publish
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    assert!(publish_waker.lock().expect("publish waker").is_some());
+
+    let (waker, probe) = reentry_probe_waker(bus.clone(), edge);
+    let mut shutdown = Some(Box::pin(bus.shutdown(ShutdownMode::Immediate)));
+    if cancel {
+        assert!(
+            shutdown
+                .as_mut()
+                .expect("shutdown future")
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        drop(waker);
+        probe.armed.store(true, Ordering::SeqCst);
+        drop(shutdown.take());
+    } else if replace {
+        assert!(
+            shutdown
+                .as_mut()
+                .expect("shutdown future")
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        drop(waker);
+        probe.armed.store(true, Ordering::SeqCst);
+        assert!(
+            shutdown
+                .as_mut()
+                .expect("shutdown future")
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+    } else {
+        assert!(
+            shutdown
+                .as_mut()
+                .expect("shutdown future")
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+    }
+    assert_waker_probe_rejected(&probe);
+
+    if !cancel {
+        assert_eq!(
+            0,
+            shutdown_calls.load(Ordering::SeqCst),
+            "leader remains at tracker gate"
+        );
+        assert!(
+            shutdown
+                .as_mut()
+                .expect("shutdown future")
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+    }
+    released.store(true, Ordering::SeqCst);
+    if let Some(waker) = publish_waker.lock().expect("publish waker").take() {
+        waker.wake();
+    }
+    assert!(
+        publish
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_ready(),
+        "publish releases tracker gate"
+    );
+    if cancel {
+        assert!(block_on_shutdown(bus.shutdown(ShutdownMode::Immediate)).is_ok());
+    } else {
+        assert!(
+            shutdown
+                .as_mut()
+                .expect("shutdown future")
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_ready()
+        );
+    }
+}
+
+#[test]
+fn test_tracker_static_wait_clone_reentrancy_is_scoped() {
+    run_tracker_wait_waker_probe(CallbackEdge::Clone, false, false);
+}
+
+#[test]
+fn test_tracker_static_wait_replacement_drop_is_scoped() {
+    run_tracker_wait_waker_probe(CallbackEdge::Drop, true, false);
+}
+
+#[test]
+fn test_tracker_static_wait_cancel_drop_is_scoped() {
+    run_tracker_wait_waker_probe(CallbackEdge::Drop, false, true);
+}
+
+fn run_upgrade_wait_waker_probe(edge: CallbackEdge, replace: bool, cancel: bool) {
+    let (bus, provider) = provider_shutdown_bus();
+    let mut leader = Box::pin(bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(30),
+    }));
+    assert!(
+        leader
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+
+    let (waker, probe) = reentry_probe_waker(bus.clone(), edge);
+    let mut follower = Some(Box::pin(bus.shutdown(ShutdownMode::Immediate)));
+    if cancel {
+        assert!(
+            follower
+                .as_mut()
+                .expect("follower")
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        drop(waker);
+        probe.armed.store(true, Ordering::SeqCst);
+        drop(follower.take());
+    } else if replace {
+        assert!(
+            follower
+                .as_mut()
+                .expect("follower")
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        drop(waker);
+        probe.armed.store(true, Ordering::SeqCst);
+        assert!(
+            follower
+                .as_mut()
+                .expect("follower")
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+    } else {
+        assert!(
+            follower
+                .as_mut()
+                .expect("follower")
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+    }
+    assert_waker_probe_rejected(&probe);
+    assert_eq!(
+        1,
+        provider.calls.lock().expect("calls").len(),
+        "leader remains gated in graceful provider call"
+    );
+
+    assert!(leader.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_ready());
+    assert_eq!(
+        2,
+        provider.calls.lock().expect("calls").len(),
+        "leader progresses into immediate provider call"
+    );
+    if let Some(follower) = follower.as_mut() {
+        assert!(
+            follower
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_ready()
+        );
+    }
+}
+
+#[test]
+fn test_upgrade_waiter_leadership_clone_reentrancy_is_scoped() {
+    run_upgrade_wait_waker_probe(CallbackEdge::Clone, false, false);
+}
+
+#[test]
+fn test_upgrade_waiter_leadership_replacement_drop_is_scoped() {
+    run_upgrade_wait_waker_probe(CallbackEdge::Drop, true, false);
+}
+
+#[test]
+fn test_upgrade_waiter_leadership_cancel_drop_is_scoped() {
+    run_upgrade_wait_waker_probe(CallbackEdge::Drop, false, true);
 }
 
 impl AsyncEventBusSpi for ShutdownGateSpi {
