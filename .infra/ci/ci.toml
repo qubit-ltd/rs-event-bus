@@ -1,4 +1,4 @@
-tasks = ["style", "clippy", "coverage-cfg-clippy", "verify", "strict-doc", "readme", "release-build", "feature-matrix", "project-hook", "package", "coverage", "audit"]
+tasks = ["style", "clippy", "coverage-cfg-clippy", "verify", "strict-doc", "readme", "release-build", "feature-matrix", "fuzz", "project-hook", "package", "coverage", "audit"]
 
 [local]
 fuzz_mode = "smoke"
