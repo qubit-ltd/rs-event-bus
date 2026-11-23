@@ -87,11 +87,13 @@ mod tests {
     use std::sync::Weak;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
+    use std::sync::mpsc;
     use std::task::Context;
     use std::task::Poll;
     use std::task::Wake;
     use std::task::Waker;
     use std::thread;
+    use std::time::Duration;
 
     use crate::facade::AsyncEventBus;
     use crate::facade::DiagnosticObserverHandle;
@@ -198,9 +200,11 @@ mod tests {
         let bus = EventBus::local(LocalEventBusConfig::default()).expect("sync local bus");
         let drops = Arc::new(AtomicUsize::new(0));
         let bus_for_drop = bus.clone();
+        let (registered_tx, registered_rx) = mpsc::channel();
         let probe = ReentrantPanicDrop {
             register: Box::new(move || {
                 let _handle = bus_for_drop.observe_diagnostics(|_| {});
+                registered_tx.send(()).expect("registration receiver");
             }),
             drops: drops.clone(),
         };
@@ -219,7 +223,19 @@ mod tests {
 
         let entries = ObserverEntry::snapshot_entries(&bus.inner.observers);
         drop(inactive);
-        let callbacks = ObserverEntry::active_callbacks(entries);
+        let (callbacks_tx, callbacks_rx) = mpsc::channel();
+        let filter_thread = thread::spawn(move || {
+            callbacks_tx
+                .send(ObserverEntry::active_callbacks(entries))
+                .expect("callback receiver");
+        });
+        registered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("inactive capture must re-register without blocking");
+        let callbacks = callbacks_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("snapshot filtering must complete");
+        filter_thread.join().expect("snapshot filtering thread");
         let diagnostic = crate::pipeline::Diagnostic::InternalFailure {
             origin: "test".into(),
             message: "test".into(),
