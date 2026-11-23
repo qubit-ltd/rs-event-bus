@@ -15,12 +15,15 @@ use std::sync::Mutex;
 use std::sync::mpsc;
 use std::task::Context;
 use std::task::Poll;
+use std::task::RawWaker;
+use std::task::RawWakerVTable;
 use std::task::Wake;
 use std::task::Waker;
 use std::thread::spawn;
 use std::time::Duration;
 
 use qubit_event_bus::EventBus;
+use qubit_event_bus::EventBusShutdown;
 use qubit_event_bus::ShutdownError;
 use qubit_event_bus::ShutdownReport;
 use qubit_event_bus::Subscription;
@@ -34,6 +37,70 @@ use qubit_event_bus::spi::ShutdownOutcome;
 const LIMIT: Duration = Duration::from_secs(5);
 
 type ShutdownFuture = Pin<Box<dyn Future<Output = Result<ShutdownReport, ShutdownError>> + Send>>;
+type WakerCallback = Box<dyn FnOnce() + Send>;
+
+struct CoordinatorWakerProbe {
+    on_clone: Mutex<Option<WakerCallback>>,
+    on_drop: Mutex<Option<WakerCallback>>,
+}
+
+impl Drop for CoordinatorWakerProbe {
+    fn drop(&mut self) {
+        if let Some(callback) = self.on_drop.get_mut().expect("drop callback lock").take() {
+            callback();
+        }
+    }
+}
+
+unsafe fn clone_coordinator_probe(pointer: *const ()) -> RawWaker {
+    // SAFETY: Each raw waker owns one Arc reference represented by pointer.
+    let probe = unsafe { &*pointer.cast::<CoordinatorWakerProbe>() };
+    if let Some(callback) = probe.on_clone.lock().expect("clone callback lock").take() {
+        callback();
+    }
+    // SAFETY: The returned RawWaker owns one newly incremented Arc reference.
+    unsafe { Arc::<CoordinatorWakerProbe>::increment_strong_count(pointer.cast()) };
+    RawWaker::new(pointer, &COORDINATOR_PROBE_VTABLE)
+}
+
+unsafe fn drop_coordinator_probe(pointer: *const ()) {
+    // SAFETY: This consumes the Arc reference owned by the raw waker.
+    drop(unsafe { Arc::<CoordinatorWakerProbe>::from_raw(pointer.cast()) });
+}
+
+unsafe fn wake_coordinator_probe(pointer: *const ()) {
+    // SAFETY: wake consumes the Arc reference just like drop.
+    unsafe { drop_coordinator_probe(pointer) };
+}
+
+unsafe fn wake_coordinator_probe_by_ref(_: *const ()) {}
+
+static COORDINATOR_PROBE_VTABLE: RawWakerVTable = RawWakerVTable::new(
+    clone_coordinator_probe,
+    wake_coordinator_probe,
+    wake_coordinator_probe_by_ref,
+    drop_coordinator_probe,
+);
+
+fn coordinator_probe_waker(
+    on_clone: Option<WakerCallback>,
+    on_drop: Option<WakerCallback>,
+) -> (Waker, Arc<CoordinatorWakerProbe>) {
+    let probe = Arc::new(CoordinatorWakerProbe {
+        on_clone: Mutex::new(on_clone),
+        on_drop: Mutex::new(on_drop),
+    });
+    let pointer = Arc::into_raw(probe.clone()).cast();
+    // SAFETY: The vtable owns and releases the Arc reference represented by pointer.
+    let waker = unsafe { Waker::from_raw(RawWaker::new(pointer, &COORDINATOR_PROBE_VTABLE)) };
+    (waker, probe)
+}
+
+fn blocked_shutdown_ticket() -> (Arc<EventBusShutdown>, Gate, Subscription) {
+    let (bus, gate, subscription) = blocked_bus();
+    let ticket = Arc::new(bus.request_shutdown(ShutdownMode::Immediate).expect("ticket"));
+    (ticket, gate, subscription)
+}
 
 /// Releases the handler even when a test unwinds.
 struct Gate(Arc<(Mutex<bool>, Condvar)>);
@@ -302,6 +369,171 @@ fn test_pending_async_wait_repolled_from_handler_is_rejected_and_ticket_remains_
     let report = ticket.wait(Some(LIMIT)).expect("external wait observes completion");
     let mut fresh = Box::pin(ticket.wait_async());
     assert!(matches!(poll(fresh.as_mut(), Waker::noop()), Poll::Ready(Ok(actual)) if actual == report));
+}
+
+#[test]
+fn test_shutdown_coordinator_waker_clone_reenters_ticket_wait_without_blocking_poll() {
+    let (ticket, gate, _subscription) = blocked_shutdown_ticket();
+    let callback_ticket = ticket.clone();
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let (waker, _probe) = coordinator_probe_waker(
+        Some(Box::new(move || {
+            observed_tx
+                .send(callback_ticket.wait(Some(Duration::ZERO)))
+                .expect("receive clone callback result");
+        })),
+        None,
+    );
+    let future_ticket = ticket.clone();
+    let mut future: ShutdownFuture = Box::pin(async move { future_ticket.wait_async().await });
+
+    assert!(poll(future.as_mut(), &waker).is_pending());
+    assert!(matches!(
+        observed_rx.recv_timeout(LIMIT).expect("clone callback runs during poll"),
+        Err(ShutdownError::TimedOut { timeout }) if timeout == Duration::ZERO
+    ));
+    drop(future);
+    gate.release();
+    let report = ticket
+        .wait(Some(LIMIT))
+        .expect("external waiter observes shutdown progress");
+    assert_eq!(ShutdownOutcome::Complete, report.outcome);
+}
+
+#[test]
+fn test_shutdown_coordinator_waker_replacement_drop_reenters_ticket_wait() {
+    let (ticket, gate, _subscription) = blocked_shutdown_ticket();
+    let callback_ticket = ticket.clone();
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let (old_waker, old_probe) = coordinator_probe_waker(
+        None,
+        Some(Box::new(move || {
+            observed_tx
+                .send(callback_ticket.wait(Some(Duration::ZERO)))
+                .expect("receive retired waker drop result");
+        })),
+    );
+    let future_ticket = ticket.clone();
+    let mut future: ShutdownFuture = Box::pin(async move { future_ticket.wait_async().await });
+
+    assert!(poll(future.as_mut(), &old_waker).is_pending());
+    drop(old_waker);
+    drop(old_probe);
+    assert!(poll(future.as_mut(), Waker::noop()).is_pending());
+    assert!(matches!(
+        observed_rx.recv_timeout(LIMIT).expect("replacement drops old waker during poll"),
+        Err(ShutdownError::TimedOut { timeout }) if timeout == Duration::ZERO
+    ));
+    drop(future);
+    gate.release();
+    let report = ticket
+        .wait(Some(LIMIT))
+        .expect("external waiter observes shutdown progress");
+    assert_eq!(ShutdownOutcome::Complete, report.outcome);
+}
+
+#[test]
+fn test_shutdown_coordinator_cancel_cleanup_drop_reenters_ticket_wait() {
+    let (ticket, gate, _subscription) = blocked_shutdown_ticket();
+    let callback_ticket = ticket.clone();
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let (waker, probe) = coordinator_probe_waker(
+        None,
+        Some(Box::new(move || {
+            observed_tx
+                .send(callback_ticket.wait(Some(Duration::ZERO)))
+                .expect("receive cancellation cleanup result");
+        })),
+    );
+    let future_ticket = ticket.clone();
+    let mut future: ShutdownFuture = Box::pin(async move { future_ticket.wait_async().await });
+
+    assert!(poll(future.as_mut(), &waker).is_pending());
+    drop(waker);
+    drop(probe);
+    drop(future);
+    assert!(matches!(
+        observed_rx.recv_timeout(LIMIT).expect("cancel cleanup drops registered waker"),
+        Err(ShutdownError::TimedOut { timeout }) if timeout == Duration::ZERO
+    ));
+    gate.release();
+    let report = ticket
+        .wait(Some(LIMIT))
+        .expect("external waiter observes shutdown progress");
+    assert_eq!(ShutdownOutcome::Complete, report.outcome);
+}
+
+#[test]
+fn test_shutdown_coordinator_cancel_cleanup_from_handler_rejects_self_wait() {
+    let bus = EventBus::local(LocalEventBusConfig::default()).expect("bus");
+    let topic = Topic::<String>::new("shutdown.cancel-cleanup-reentry").expect("topic");
+    let callback_bus = bus.clone();
+    let (ticket_tx, ticket_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let resume_rx = Arc::new(Mutex::new(resume_rx));
+    let future_slot = Arc::new(Mutex::new(None::<ShutdownFuture>));
+    let callback_slot = future_slot.clone();
+    let callback_resume = resume_rx.clone();
+    let _subscription = bus
+        .subscribe(
+            SubscribeRequest::new("cancel-cleanup-reentry", topic.clone()).expect("request"),
+            move |_| {
+                let ticket = Arc::new(
+                    callback_bus
+                        .request_shutdown(ShutdownMode::Immediate)
+                        .expect("nonblocking request"),
+                );
+                ticket_tx.send(ticket).expect("send ticket to external observer");
+                callback_resume
+                    .lock()
+                    .expect("resume receiver lock")
+                    .recv()
+                    .expect("external observer permits cancellation cleanup");
+                drop(
+                    callback_slot
+                        .lock()
+                        .expect("future slot")
+                        .take()
+                        .expect("pending future"),
+                );
+            },
+        )
+        .expect("subscribe");
+    let _ = bus
+        .publish(PublishRequest::new(topic, "payload".to_owned()).expect("request"))
+        .expect("publish");
+
+    let ticket = ticket_rx.recv_timeout(LIMIT).expect("handler starts shutdown");
+    let callback_ticket = ticket.clone();
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let (waker, probe) = coordinator_probe_waker(
+        None,
+        Some(Box::new(move || {
+            observed_tx
+                .send(callback_ticket.wait(Some(Duration::from_millis(250))))
+                .expect("receive cleanup waker result");
+        })),
+    );
+    let future_ticket = ticket.clone();
+    let mut future: ShutdownFuture = Box::pin(async move { future_ticket.wait_async().await });
+    assert!(poll(future.as_mut(), &waker).is_pending());
+    *future_slot.lock().expect("future slot") = Some(future);
+    drop(waker);
+    drop(probe);
+    resume_tx.send(()).expect("resume handler");
+
+    assert!(matches!(
+        observed_rx
+            .recv_timeout(LIMIT)
+            .expect("cleanup drop callback completes"),
+        Err(ShutdownError::Lifecycle(
+            qubit_event_bus::LifecycleError::WouldDeadlock { operation: "shutdown" }
+        ))
+    ));
+    let report = ticket
+        .wait(Some(LIMIT))
+        .expect("external wait observes shutdown completion");
+    assert_eq!(ShutdownOutcome::Complete, report.outcome);
 }
 
 #[test]
