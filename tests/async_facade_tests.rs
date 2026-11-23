@@ -5683,6 +5683,155 @@ fn test_async_decode_display_panic_still_rejects_bad_message() {
     assert_eq!(drops.load(Ordering::SeqCst), 1);
 }
 
+fn assert_buffered_decode_reject_is_abandoned_on_stop(explicit_close: bool) {
+    struct Utf8Codec(ContentType);
+
+    impl EventCodec<String> for Utf8Codec {
+        fn content_type(&self) -> &ContentType {
+            &self.0
+        }
+
+        fn schema_id(&self) -> Option<&SchemaId> {
+            None
+        }
+
+        fn encode(&self, value: &String) -> Result<Arc<[u8]>, CodecError> {
+            Ok(Arc::from(value.as_bytes()))
+        }
+
+        fn decode(&self, payload: &EncodedPayload) -> Result<String, CodecError> {
+            String::from_utf8(payload.bytes().to_vec()).map_err(|source| CodecError::Decode {
+                source: Box::new(source),
+            })
+        }
+    }
+
+    let spi = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
+    let topic = Topic::<String>::new("async.buffered-decode-reject")
+        .unwrap()
+        .with_codec(Utf8Codec(ContentType::TEXT_PLAIN));
+    let options = SubscribeOptions::<String>::builder()
+        .ordering_policy(OrderingPolicy::PerKey)
+        .build();
+    let mut subscription = block_on(
+        bus.subscribe(
+            SubscribeRequest::new("buffered-decode-reject", topic.clone())
+                .expect("request")
+                .with_options(options),
+        ),
+    )
+    .expect("subscription");
+    let id = subscription.id();
+    for (event_id, bytes, token) in [
+        ("started-good", b"good".as_slice(), "started-good-token"),
+        ("buffered-bad", b"\xff".as_slice(), "buffered-bad-token"),
+    ] {
+        spi.enqueue(InboundMessage::new(
+            TopicAddress::new(topic.name()).unwrap(),
+            EventId::new(event_id).unwrap(),
+            SystemTime::UNIX_EPOCH,
+            Headers::new(),
+            None,
+            TransportPayload::Encoded(EncodedPayload::new(Arc::from(bytes), ContentType::TEXT_PLAIN, None)),
+            Some(SettlementToken::new(id, token)),
+            Default::default(),
+        ));
+    }
+
+    let diagnostics = Arc::new(Mutex::new(Vec::new()));
+    let captured = diagnostics.clone();
+    let _observer = bus.observe_diagnostics(move |diagnostic| {
+        captured.lock().unwrap().push(diagnostic.clone());
+    });
+    let handler_started = Arc::new(AtomicBool::new(false));
+    let finish_handler = Arc::new(AtomicBool::new(false));
+    let started_by_handler = handler_started.clone();
+    let finish_by_handler = finish_handler.clone();
+    let mut runner = Box::pin(subscription.run(move |_| {
+        let started = started_by_handler.clone();
+        let finish = finish_by_handler.clone();
+        async move {
+            started.store(true, Ordering::Release);
+            std::future::poll_fn(|context| {
+                if finish.load(Ordering::Acquire) {
+                    Poll::Ready(Ok::<(), DeliveryError>(()))
+                } else {
+                    context.waker().wake_by_ref();
+                    Poll::Pending
+                }
+            })
+            .await
+        }
+    }));
+
+    let mut snapshot = subscription.delivery_metrics().metrics;
+    for _ in 0..1024 {
+        let _ = crate::support::manual_async::poll_once(runner.as_mut());
+        snapshot = subscription.delivery_metrics().metrics;
+        if handler_started.load(Ordering::Acquire) && snapshot.lane_waiting == 1 {
+            break;
+        }
+    }
+    assert!(
+        handler_started.load(Ordering::Acquire),
+        "first delivery handler started"
+    );
+    assert_eq!(snapshot.lane_waiting, 1, "Decode Reject waits behind the started lane");
+    assert_eq!(spi.settlement_count(), 0, "neither delivery has settled before stop");
+
+    if explicit_close {
+        finish_handler.store(true, Ordering::Release);
+        drop(runner);
+        block_on(subscription.close()).expect("explicit close succeeds");
+    } else {
+        let mut shutdown = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+        assert!(matches!(
+            crate::support::manual_async::poll_once(shutdown.as_mut()),
+            Poll::Pending
+        ));
+        finish_handler.store(true, Ordering::Release);
+        drop(runner);
+        let _ = block_on(shutdown).expect("Immediate shutdown succeeds");
+    }
+
+    let failed_rejects = diagnostics
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|diagnostic| {
+            matches!(diagnostic,
+                Diagnostic::DeliveryFailed { event_id, topic, attempts, .. }
+                    if event_id.as_str() == "buffered-bad"
+                        && topic.as_ref() == "async.buffered-decode-reject"
+                        && *attempts == 0
+            )
+        })
+        .count();
+    assert_eq!(failed_rejects, 1, "buffered Decode Reject is diagnosed once");
+    assert_eq!(subscription.delivery_metrics().metrics.abandoned_ephemeral, 1);
+    assert_eq!(
+        spi.settlement_dispositions(),
+        [DeliveryDisposition::Accept],
+        "stop must not submit a settlement for the abandoned Reject"
+    );
+    assert_eq!(spi.settlement_count(), 1, "only the already-started delivery settles");
+    if explicit_close {
+        let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("bus shutdown");
+    }
+}
+
+#[test]
+fn test_immediate_shutdown_diagnoses_and_abandons_buffered_decode_reject() {
+    assert_buffered_decode_reject_is_abandoned_on_stop(false);
+}
+
+#[test]
+fn test_explicit_close_diagnoses_and_abandons_buffered_decode_reject() {
+    assert_buffered_decode_reject_is_abandoned_on_stop(true);
+}
+
 #[test]
 fn test_async_codec_decode_panic_is_contained_and_stops_without_settlement() {
     if std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok("async-codec-fail-stop") {
