@@ -337,6 +337,9 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
 
     /// Releases an application error source without allowing its destructor
     /// panic to interrupt settlement or subscription cleanup.
+    ///
+    /// # Parameters
+    /// - `error`: application error source to release.
     fn release_handler_error(&self, error: DeliveryError) {
         if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(error))) {
             dispose_panic_payload(payload);

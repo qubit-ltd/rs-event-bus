@@ -39,9 +39,19 @@ type AsyncHandler<T> = dyn Fn(Delivery<T>) -> SpiFuture<'static, Result<(), Deli
 pub(in crate::facade::async_subscription) type SharedAsyncHandler<T> = Arc<AsyncHandlerOwner<T>>;
 
 /// Shared callback used only by an internal delivery wrapper.
+///
+/// # Type Parameters
+/// - `T`: payload type accepted by the handler.
 pub(in crate::facade::async_subscription) type SharedAsyncCallback<T> = Arc<AsyncHandler<T>>;
 
 /// Shares an internal callback in a single allocation.
+///
+/// # Type Parameters
+/// - `T`: payload type accepted by the handler.
+/// - `F`: callback implementation retained by the shared pointer.
+///
+/// # Parameters
+/// - `callback`: callback to share.
 pub(in crate::facade::async_subscription) fn share_async_callback<T, F>(callback: F) -> SharedAsyncCallback<T>
 where
     F: Fn(Delivery<T>) -> SpiFuture<'static, Result<(), DeliveryError>> + Send + Sync + 'static,

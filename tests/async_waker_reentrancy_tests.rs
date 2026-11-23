@@ -310,7 +310,13 @@ fn session_lease_clone_reentry() {
     let nested_subscription = subscription.clone();
     let (waker, _probe) = raw_waker_settling_on_clone(move || {
         let mut nested = Box::pin(nested_subscription.run(|_| async { Ok(()) }));
-        assert!(poll_once(nested.as_mut()).is_pending(), "nested run waits for lease");
+        assert!(
+            matches!(
+                poll_once(nested.as_mut()),
+                Poll::Ready(Err(qubit_event_bus::ReceiveError::WouldDeadlock))
+            ),
+            "reentrant run returns WouldDeadlock before waiting for the active lease"
+        );
         drop(nested);
     });
     let mut waiting = Box::pin(subscription.run(|_| async { Ok(()) }));

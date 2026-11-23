@@ -328,13 +328,20 @@ impl ShutdownCoordinator {
 }
 
 /// Drops a user waker while containing a panicking destructor.
+///
+/// # Parameters
+/// - `waker`: user waker to release.
 fn dispose_waker(waker: std::task::Waker) {
     if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(waker))) {
         dispose_panic_payload(payload);
     }
 }
 
-/// Drops a retained shutdown result while containing provider error destructors.
+/// Drops a retained shutdown result while containing provider error
+/// destructors.
+///
+/// # Parameters
+/// - `result`: shutdown result to release.
 fn dispose_shutdown_result(result: ShutdownResult) {
     if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(result))) {
         dispose_panic_payload(payload);
@@ -665,7 +672,9 @@ mod tests {
     fn test_completed_and_stale_polls_do_not_clone_supplied_waker() {
         struct Count;
         impl Wake for Count {
-            fn wake(self: Arc<Self>) {}
+            fn wake(self: Arc<Self>) {
+                panic!("completed shutdown poll must not wake the supplied waker");
+            }
         }
 
         let coordinator = ShutdownCoordinator::new();
