@@ -178,16 +178,8 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
 
     /// Counts and releases unresolved buffered and completed deliveries.
     pub(super) fn abandon_queued_and_completed(&mut self) {
+        self.abandon_buffered();
         let mut drop_panicked = false;
-        while let Some(mut delivery) = self.buffered.pop_front() {
-            self.record_abandoned_delivery();
-            self.emit_failure_diagnostic(
-                delivery.failure_diagnostic.take(),
-                delivery.event_id.clone(),
-                self.topic.name().into(),
-            );
-            drop_panicked |= self.drop_delivery(delivery);
-        }
         while let Some(mut delivery) = self.completed.pop_front() {
             if !delivery.settlement.confirmed {
                 self.record_abandoned_delivery();
@@ -214,6 +206,27 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             self.inner.emit(&Diagnostic::InternalFailure {
                 origin: "abandoned_delivery_drop".into(),
                 message: "abandoned delivery drop panicked".into(),
+            });
+        }
+    }
+
+    /// Emits pending failure context, counts, and safely releases each
+    /// buffered delivery rejected before its settlement could advance.
+    pub(super) fn abandon_buffered(&mut self) {
+        let mut drop_panicked = false;
+        while let Some(mut delivery) = self.buffered.pop_front() {
+            self.record_abandoned_delivery();
+            self.emit_failure_diagnostic(
+                delivery.failure_diagnostic.take(),
+                delivery.event_id.clone(),
+                self.topic.name().into(),
+            );
+            drop_panicked |= self.drop_delivery(delivery);
+        }
+        if drop_panicked {
+            self.inner.emit(&Diagnostic::InternalFailure {
+                origin: "immediate_stop_buffer_drop".into(),
+                message: "buffered delivery drop panicked".into(),
             });
         }
     }
@@ -280,7 +293,7 @@ mod tests {
     use std::task::Waker;
 
     use crate::facade::AsyncEventBus;
-    use crate::facade::async_subscription::SharedAsyncHandler;
+    use crate::facade::async_subscription::AsyncHandlerOwner;
     use crate::facade::async_subscription::internal::owned_delivery_lease::OwnedDeliveryLease;
     use crate::local::LocalEventBusConfig;
     use crate::model::EventId;
@@ -432,7 +445,7 @@ mod tests {
         let id = session.inner.scheduler.take_ready(session.id).expect("dispatch grant");
         let panicking = session.buffered.pop_front().expect("panicking delivery");
         assert_eq!(panicking.lease.id, id);
-        let handler: SharedAsyncHandler<Payload> = Arc::new(|_| Box::pin(std::future::pending()));
+        let handler = AsyncHandlerOwner::new(|_| Box::pin(std::future::pending()), session.inner.clone(), session.id);
         session.start_pending_task(ordinary, handler.clone());
         session.start_pending_task(panicking, handler);
         assert!(poll_once(session.tasks[0].future.as_mut()).is_pending());
@@ -441,7 +454,7 @@ mod tests {
         let id = session.inner.scheduler.take_ready(session.id).expect("dispatch grant");
         let unstarted = session.buffered.pop_front().expect("unstarted delivery");
         assert_eq!(unstarted.lease.id, id);
-        let handler: SharedAsyncHandler<Payload> = Arc::new(|_| Box::pin(std::future::pending()));
+        let handler = AsyncHandlerOwner::new(|_| Box::pin(std::future::pending()), session.inner.clone(), session.id);
         session.start_pending_task(unstarted, handler);
         session.signals.stop(ShutdownMode::Immediate);
 
@@ -563,10 +576,14 @@ mod tests {
         assert_eq!(pending.lease.id, grant);
         let handler_started = Arc::new(AtomicBool::new(false));
         let started = handler_started.clone();
-        let handler: SharedAsyncHandler<Payload> = Arc::new(move |_| {
-            started.store(true, Ordering::Release);
-            Box::pin(std::future::pending())
-        });
+        let handler = AsyncHandlerOwner::new(
+            move |_| {
+                started.store(true, Ordering::Release);
+                Box::pin(std::future::pending())
+            },
+            session.inner.clone(),
+            session.id,
+        );
         session.start_pending_task(pending, handler);
         assert_eq!(session.tasks.len(), 1);
         assert!(!session.tasks[0].started.load(Ordering::Acquire));
@@ -619,7 +636,7 @@ mod tests {
             .expect("second dispatch grant");
         let pending = session.buffered.pop_front().expect("second pending delivery");
         assert_eq!(pending.lease.id, grant);
-        let handler: SharedAsyncHandler<Payload> = Arc::new(|_| Box::pin(std::future::pending()));
+        let handler = AsyncHandlerOwner::new(|_| Box::pin(std::future::pending()), session.inner.clone(), session.id);
         session.start_pending_task(pending, handler);
         session.inner.abandoned_deliveries.fetch_add(1, Ordering::AcqRel);
         session.metrics.record_abandoned_ephemeral();
@@ -688,5 +705,49 @@ mod tests {
         drop(subscription);
         let report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
         assert_eq!(report.known_abandoned_deliveries, 2);
+    }
+
+    #[test]
+    fn test_immediate_buffer_abandonment_emits_reject_diagnostic_and_counts_once() {
+        let (bus, subscription) = setup();
+        let diagnostics = Arc::new(Mutex::new(Vec::new()));
+        let captured = diagnostics.clone();
+        let _observer = bus.observe_diagnostics(move |diagnostic| {
+            captured.lock().expect("diagnostic lock").push(diagnostic.clone());
+        });
+        let mut lease = block_on(subscription.control.lease()).expect("session lease");
+        let session = lease.session.as_mut().expect("leased session");
+        session.inner.scheduler.set_dispatch_active(session.id, true);
+        lease_receive(session, "buffered-reject", false);
+        let pending = session.buffered.front_mut().expect("buffered reject");
+        pending.settlement_intent = Some(crate::spi::DeliveryDisposition::Reject);
+        pending.failure_diagnostic = Some((3, "codec rejected payload".into()));
+
+        session.abandon_buffered();
+        assert!(session.buffered.is_empty());
+        assert_eq!(session.inner.abandoned_deliveries.load(Ordering::Acquire), 1);
+        assert_eq!(subscription.delivery_metrics().metrics.abandoned_ephemeral, 1);
+        let failed = diagnostics
+            .lock()
+            .expect("diagnostic lock")
+            .iter()
+            .filter(|diagnostic| {
+                matches!(diagnostic,
+                    crate::Diagnostic::DeliveryFailed { event_id, topic, attempts, error, .. }
+                        if event_id.as_str() == "buffered-reject"
+                            && topic.as_ref() == "close.test"
+                            && *attempts == 3
+                            && error.as_ref() == "codec rejected payload"
+                )
+            })
+            .count();
+        assert_eq!(failed, 1);
+        session.abandon_buffered();
+        assert_eq!(session.inner.abandoned_deliveries.load(Ordering::Acquire), 1);
+
+        assert!(block_on(session.close_inner(&subscription.control)).is_ok());
+        drop(lease);
+        drop(subscription);
+        let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
     }
 }

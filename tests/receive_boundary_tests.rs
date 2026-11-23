@@ -14,7 +14,6 @@ use std::fmt;
 use std::future::poll_fn;
 use std::io::Error as IoError;
 use std::num::NonZeroUsize;
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
@@ -98,6 +97,23 @@ impl fmt::Display for PanicDisplay {
 }
 
 impl StdError for PanicDisplay {}
+
+#[derive(Debug)]
+struct PanicOnDropCodecSource;
+
+impl fmt::Display for PanicOnDropCodecSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("malformed message")
+    }
+}
+
+impl StdError for PanicOnDropCodecSource {}
+
+impl Drop for PanicOnDropCodecSource {
+    fn drop(&mut self) {
+        panic!("injected codec source drop panic");
+    }
+}
 impl Probe {
     /// Creates a codec with independent callback counters.
     fn new() -> Arc<Self> {
@@ -152,6 +168,11 @@ impl EventCodec<u32> for Probe {
         if self.mode == 5 {
             return Err(CodecError::Encode {
                 source: Box::new(PanicDisplay),
+            });
+        }
+        if self.mode == 6 && self.decode.load(Ordering::SeqCst) == 1 {
+            return Err(CodecError::Decode {
+                source: Box::new(PanicOnDropCodecSource),
             });
         }
         Ok(1)
@@ -220,6 +241,7 @@ fn test_sync_codec_stop_display_panic_preserves_cause_and_abandonment() {
 struct Source {
     size: usize,
     schema: Option<SchemaId>,
+    settlement: SettlementCapabilities,
     settled: Arc<AtomicUsize>,
     dispositions: Arc<Mutex<Vec<DeliveryDisposition>>>,
     close_failed: Arc<AtomicBool>,
@@ -227,6 +249,7 @@ struct Source {
     close_paused: Arc<AtomicBool>,
     wait_second: Arc<AtomicBool>,
     first_good: bool,
+    good_after_first: bool,
     native: bool,
     ephemeral: bool,
     content: ContentType,
@@ -259,6 +282,7 @@ impl Source {
         Self {
             size,
             schema,
+            settlement: SettlementCapabilities::AcceptRetryReject,
             settled: Arc::default(),
             dispositions: Arc::default(),
             close_failed: Arc::default(),
@@ -266,6 +290,7 @@ impl Source {
             close_paused: Arc::default(),
             wait_second: Arc::default(),
             first_good: false,
+            good_after_first: false,
             native: false,
             ephemeral: false,
             content: ContentType::new("application/test").expect("content"),
@@ -278,7 +303,7 @@ impl Source {
     fn capabilities_value(&self) -> EventBusCapabilities {
         EventBusCapabilities::new(
             PayloadModes::Encoded,
-            SettlementCapabilities::AcceptRetryReject,
+            self.settlement,
             OrderingCapability::None,
             DelayedDeliveryCapability::None,
             if self.ephemeral {
@@ -323,9 +348,11 @@ impl Receiver {
 
     /// Returns the source once, then ends the deterministic stream.
     fn next(&mut self) -> ReceiveOutcome {
-        let good = self.source.first_good && self.delivered == 0;
-        if self.delivered > usize::from(self.source.first_good)
-            || self.source.settled.load(Ordering::SeqCst) > 0 && !self.source.first_good
+        let good = self.source.first_good && self.delivered == 0 || self.source.good_after_first && self.delivered > 0;
+        if self.delivered > usize::from(self.source.first_good || self.source.good_after_first)
+            || self.source.settled.load(Ordering::SeqCst) > 0
+                && !self.source.first_good
+                && !self.source.good_after_first
         {
             return ReceiveOutcome::Closed;
         }
@@ -613,9 +640,8 @@ fn test_header_limit_stops_before_codec_and_settlement_for_sync_and_async() {
 
 #[test]
 fn test_rejected_receive_cleanup_isolates_token_and_transport_panics() {
-    let child_case = std::env::var("RECEIVE_BOUNDARY_CLEANUP_CHILD").ok();
+    let child_case = std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").ok();
     let Some(child_case) = child_case else {
-        let executable = std::env::current_exe().expect("test executable path");
         for asynchronous in [false, true] {
             for headers_rejected in [false, true] {
                 for (token_panics, payload_panics) in [(true, false), (false, true), (true, true)] {
@@ -626,17 +652,10 @@ fn test_rejected_receive_cleanup_isolates_token_and_transport_panics() {
                         u8::from(token_panics),
                         u8::from(payload_panics),
                     );
-                    let output = Command::new(&executable)
-                        .arg("--exact")
-                        .arg("test_rejected_receive_cleanup_isolates_token_and_transport_panics")
-                        .arg("--nocapture")
-                        .env("RECEIVE_BOUNDARY_CLEANUP_CHILD", mode)
-                        .output()
-                        .expect("isolated cleanup subprocess");
-                    assert!(
-                        output.status.success(),
-                        "cleanup subprocess failed: {}",
-                        String::from_utf8_lossy(&output.stderr)
+                    support::isolated_process::run_case_with_timeout(
+                        "test_rejected_receive_cleanup_isolates_token_and_transport_panics",
+                        &mode,
+                        Duration::from_secs(10),
                     );
                 }
             }
@@ -1053,6 +1072,110 @@ fn test_regular_decode_failure_rejects_without_terminal_stop() {
             "ordinary Decode must reject exactly once; neither Accept nor Retry is permitted"
         );
     }
+}
+
+#[test]
+fn test_codec_source_drop_panic_does_not_interrupt_decode_rejection() {
+    for asynchronous in [false, true] {
+        let mut source_value = Source::new(4, Some(SchemaId::new("v1").expect("schema")));
+        source_value.good_after_first = true;
+        let source = Arc::new(source_value);
+        let topic = Topic::new("boundary").expect("topic").with_shared_codec(panic_probe(6));
+        if asynchronous {
+            let bus = AsyncEventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config())
+                .expect("bus");
+            let subscription =
+                manual_async::block_on(bus.subscribe(SubscribeRequest::new("drop-panic", topic).expect("request")))
+                    .expect("subscription");
+            let handled = Arc::new(AtomicUsize::new(0));
+            let handled_by_handler = handled.clone();
+            manual_async::block_on(subscription.run(move |_| {
+                handled_by_handler.fetch_add(1, Ordering::SeqCst);
+                async { Ok::<(), qubit_event_bus::DeliveryError>(()) }
+            }))
+            .expect("source destructor panic is contained after rejection is recorded");
+            assert!(subscription.terminal_failure().is_none());
+            assert_eq!(handled.load(Ordering::SeqCst), 1);
+            let _ = manual_async::block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+        } else {
+            let bus = EventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config())
+                .expect("bus");
+            let handled = Arc::new(AtomicUsize::new(0));
+            let handled_by_handler = handled.clone();
+            let subscription = bus
+                .subscribe(
+                    SubscribeRequest::new("drop-panic", topic).expect("request"),
+                    move |_| {
+                        handled_by_handler.fetch_add(1, Ordering::SeqCst);
+                    },
+                )
+                .expect("subscription");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while source.closed.load(Ordering::SeqCst) == 0 {
+                assert!(Instant::now() < deadline);
+                thread::yield_now();
+            }
+            subscription.cancel().expect("cancel");
+            assert!(subscription.terminal_failure().is_none());
+            assert_eq!(handled.load(Ordering::SeqCst), 1);
+            let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
+        }
+        assert_eq!(source.settled.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            *source.dispositions.lock().expect("settlement log"),
+            [DeliveryDisposition::Reject, DeliveryDisposition::Accept]
+        );
+    }
+}
+
+#[test]
+fn test_sync_unsupported_reject_cleans_untransferred_panicking_token() {
+    let drops = Arc::new(AtomicUsize::new(0));
+    let mut source_value = Source::new(4, Some(SchemaId::new("v1").expect("schema")));
+    source_value.settlement = SettlementCapabilities::None;
+    source_value.observed_token = Some((drops.clone(), true));
+    let source = Arc::new(source_value);
+    let bus =
+        EventBus::with_config(ProviderId::new("probe").expect("provider"), source.clone(), config()).expect("bus");
+    let diagnostics = Arc::new(Mutex::new(Vec::new()));
+    let captured = diagnostics.clone();
+    let _observer = bus.observe_diagnostics(move |diagnostic| {
+        captured.lock().expect("diagnostic lock").push(diagnostic.clone());
+    });
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new(
+                "unsupported-reject-token-drop",
+                Topic::new("boundary").expect("topic").with_shared_codec(panic_probe(3)),
+            )
+            .expect("request"),
+            |_| -> () { panic!("decode reject must not deliver") },
+        )
+        .expect("subscription");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while source.closed.load(Ordering::SeqCst) == 0 {
+        assert!(Instant::now() < deadline);
+        thread::yield_now();
+    }
+    subscription.cancel().expect("cancel");
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    assert_eq!(source.settled.load(Ordering::SeqCst), 0);
+    assert!(source.dispositions.lock().expect("settlement log").is_empty());
+    let diagnostic_list = diagnostics.lock().expect("diagnostic lock");
+    assert!(diagnostic_list.iter().any(|diagnostic| matches!(
+        diagnostic,
+        Diagnostic::SettlementUnavailable {
+            requested: DeliveryDisposition::Reject,
+            ..
+        }
+    )));
+    assert!(diagnostic_list.iter().any(|diagnostic| matches!(diagnostic,
+        Diagnostic::InternalFailure { origin, message }
+            if origin.as_ref() == "rejected_settlement_token_drop"
+                && message.as_ref() == "rejected settlement token drop panicked"
+    )));
+    drop(diagnostic_list);
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
 
 #[test]
