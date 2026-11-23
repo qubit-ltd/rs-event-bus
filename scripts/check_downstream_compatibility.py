@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Validate downstream projects from snapshots or registered worktrees."""
+"""Validate downstream projects from tracked-source snapshots."""
 
 import argparse
-from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -96,7 +95,7 @@ def cargo_config(core, redis=None):
     return [part for config in configs for part in ("--config", config)]
 
 
-def metadata(root, features, core, redis, target):
+def metadata(root, features, core, redis, target, *, expected_redis=None):
     manifest = root / "Cargo.toml"
     command = ["cargo", "metadata", "--format-version", "1", "--manifest-path", str(manifest)]
     command.extend(cargo_config(core, redis))
@@ -115,37 +114,14 @@ def metadata(root, features, core, redis, target):
                         label=f"metadata-locked:{root.name}:{features or 'all'}",
                         print_stdout=False)
     graph = json.loads(locked_output)
-    validate_graph_for_downstream(graph, expected_core=core,
-                                  expected_redis=redis if root.name == "rs-task" else None)
+    validate_graph_for_downstream(graph, expected_core=core, expected_redis=expected_redis)
     return graph
-
-
-@contextmanager
-def preserve_lockfiles(roots):
-    """Restore direct-worktree lockfiles after patched tests finish or fail."""
-    originals = {}
-    for root in roots:
-        lockfile = root / "Cargo.lock"
-        if lockfile.exists():
-            stat = lockfile.stat()
-            originals[lockfile] = (lockfile.read_bytes(), stat.st_atime_ns, stat.st_mtime_ns)
-        else:
-            originals[lockfile] = None
-    try:
-        yield
-    finally:
-        for lockfile, original in originals.items():
-            if original is None:
-                lockfile.unlink(missing_ok=True)
-            else:
-                contents, atime_ns, mtime_ns = original
-                lockfile.write_bytes(contents)
-                os.utime(lockfile, ns=(atime_ns, mtime_ns))
 
 
 def run_downstream_checks(redis, task, core, target_root):
     metadata(redis, None, core, None, target_root / "redis")
-    metadata(task, "sqlite,event-bus", core, redis, target_root / "rs-task")
+    metadata(task, "sqlite,event-bus", core, redis, target_root / "rs-task",
+             expected_redis=redis)
     for label, _manifest, test_name, command in TESTS:
         root = task if label == "rs-task-outbox" else redis
         package = redis if root == task else None
@@ -207,7 +183,7 @@ def main():
     parser.add_argument("--task-root", type=Path, required=True)
     parser.add_argument("--core-root", type=Path)
     parser.add_argument("--use-worktrees", action="store_true",
-                        help="use the supplied downstream worktrees directly")
+                        help="compatibility alias; validate tracked-source snapshots")
     args = parser.parse_args()
     core = (args.core_root or Path(__file__).resolve().parents[1]).resolve()
     inputs = (("redis", args.redis_root.resolve()), ("rs-task", args.task_root.resolve()))
@@ -222,22 +198,17 @@ def main():
     with tempfile.TemporaryDirectory(prefix="event-bus-downstream-") as temp:
         temp_root = Path(temp)
         target_root = temp_root / "target"
-        if args.use_worktrees:
-            redis, task = (root for _label, root in inputs)
-            with preserve_lockfiles((redis, task)):
-                run_downstream_checks(redis, task, core, target_root)
-        else:
-            snapshots = {}
-            for label, source in inputs:
-                snapshot = temp_root / "sources" / label
-                snapshot.parent.mkdir(parents=True, exist_ok=True)
-                copy_tracked_source(source, snapshot)
-                if not (snapshot / "Cargo.toml").is_file():
-                    raise ValueError(f"tracked source snapshot is missing Cargo.toml: {label}")
-                snapshots[label] = snapshot
-            redis = snapshots["redis"]
-            task = snapshots["rs-task"]
-            run_downstream_checks(redis, task, core, target_root)
+        snapshots = {}
+        for label, source in inputs:
+            snapshot = temp_root / "sources" / label
+            snapshot.parent.mkdir(parents=True, exist_ok=True)
+            copy_tracked_source(source, snapshot)
+            if not (snapshot / "Cargo.toml").is_file():
+                raise ValueError(f"tracked source snapshot is missing Cargo.toml: {label}")
+            snapshots[label] = snapshot
+        redis = snapshots["redis"]
+        task = snapshots["rs-task"]
+        run_downstream_checks(redis, task, core, target_root)
     print("downstream compatibility checks passed", flush=True)
 
 
