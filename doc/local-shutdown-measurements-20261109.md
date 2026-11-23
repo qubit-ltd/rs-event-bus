@@ -244,7 +244,15 @@ async_local_route,cold_topics=1023,median_ns_per_publish=1680
 
 ## Instrumented cancellation causal probe
 
-Command: `cargo +1.94.0 test --locked --lib test_sync_cancel_causal_probe_and_poll_intervals -- --nocapture` (exit 0; one test passed, 219 filtered). The isolated child used a 120-second watchdog; the original four wait probes retain their 10-second watchdog. It covered idle subscriptions at 16, 64, and 256, using per-instance test-only receive intervals of 10 ms and 50 ms. Each configuration ran three times. The 12 mode/interval/count combinations were interleaved in a fixed order rotated by five entries per trial. Workers had a 100 ms warmup before timing; measurements remained on one host, with no affinity or host-load isolation.
+Original command: `cargo +1.94.0 test --locked --lib test_sync_cancel_causal_probe_and_poll_intervals -- --nocapture` (exit 0; one test passed, 219 filtered). The isolated child used a 120-second watchdog; the original four wait probes retain their 10-second watchdog. It covered idle subscriptions at 16, 64, and 256, using per-instance test-only receive intervals of 10 ms and 50 ms. Each configuration ran three times. The 12 mode/interval/count combinations were interleaved in a fixed order rotated by five entries per trial. Workers had a 100 ms warmup before timing; measurements remained on one host, with no affinity or host-load isolation.
+
+### Default correctness check and explicit measurement entry
+
+The default unit-test path runs `test_sync_cancel_causal_regression`, a small single-subscription check using the normal receive interval. A bounded wait-site signal confirms the worker is inside its normal receive wait before cancellation; the probe asserts a receive return and worker completion occur after the recorded cancellation request. The same test runs both blocked-handler controls, which signal when cancellation or shutdown has reached its lifecycle wait and verify that completion waits for the handler release gate. These checks use synchronization and bounded waits, not timing thresholds.
+
+The 36-configuration instrumented performance probe retains its test name but is ignored by default. Reproduce it explicitly with `cargo +1.94.0 test --locked --lib test_sync_cancel_causal_probe_and_poll_intervals -- --ignored --nocapture`. This runs the same 12 mode/interval/count combinations three times, followed by both blocked-handler synchronization controls. Treat its elapsed and CPU readings as observational measurements; the test asserts causal completion, not fixed performance values.
+
+The explicit command was rerun in the T6 worktree on 2026-11-23: one ignored test ran and passed, all 36 `CANCEL_PROBE mode=` summaries were present, and both blocked-handler controls passed. The isolated test body reported 40.66 seconds, compared with 39.85 seconds in the original run above; this small difference is observational and not a performance conclusion. The default regression was also run separately and passed.
 
 | Mode | Interval | Subscriptions | Elapsed median (range), ns | Receive returns, n | Return latency median (range), ms | CPU ticks median (range) | Wake median |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
