@@ -74,6 +74,9 @@ impl AsyncSignal {
 
     /// Allocates a unique identifier for a new wait registration.
     ///
+    /// # Parameters
+    /// - `self`: signal that allocates the waiter ID.
+    ///
     /// # Returns
     /// The next ID in the `u64` sequence; IDs repeat only after the sequence
     /// wraps.
@@ -85,6 +88,9 @@ impl AsyncSignal {
 }
 
 /// Drops an owned waker without allowing its destructor to interrupt cleanup.
+///
+/// # Parameters
+/// - `waker`: owned task notification handle to release.
 fn dispose_waker(waker: Waker) {
     if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(waker))) {
         dispose_panic_payload(payload);

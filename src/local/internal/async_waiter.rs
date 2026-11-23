@@ -68,6 +68,9 @@ impl AsyncWaiter {
 
 impl Drop for AsyncWaiter {
     /// Removes this registration from the shared waiter registry.
+    ///
+    /// # Parameters
+    /// - `self`: waiter registration being removed.
     fn drop(&mut self) {
         let removed = {
             let mut waiters = self.waiters.lock().unwrap_or_else(PoisonError::into_inner);
@@ -80,6 +83,9 @@ impl Drop for AsyncWaiter {
 }
 
 /// Drops an owned waker without allowing its destructor to interrupt cleanup.
+///
+/// # Parameters
+/// - `waker`: owned task notification handle to release.
 fn dispose_waker(waker: Waker) {
     if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(waker))) {
         dispose_panic_payload(payload);

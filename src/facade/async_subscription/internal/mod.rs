@@ -7,6 +7,7 @@
 // =============================================================================
 //! Internal ownership types for the asynchronous subscription runner.
 
+pub(super) mod async_handler_owner;
 mod async_session;
 mod async_subscription_control;
 mod bus_context_future;
