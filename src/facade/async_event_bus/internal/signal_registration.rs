@@ -31,6 +31,9 @@ impl SignalRegistration<'_> {
     ///
     /// # Returns
     /// A registration that unregisters itself on drop.
+    ///
+    /// The identifier is allocated when this value is constructed; no waker
+    /// is stored until [`register`](Self::register) is called.
     #[inline]
     pub(in crate::facade) fn new(signal: &AsyncSignal) -> SignalRegistration<'_> {
         SignalRegistration {
@@ -46,6 +49,14 @@ impl SignalRegistration<'_> {
     /// - `signal`: signal to observe until this registration is dropped.
     /// - `bus_key`: identity of the bus whose callback context scopes waker
     ///   operations.
+    ///
+    /// # Returns
+    /// A registration that allocates its identifier immediately and unregisters
+    /// itself on drop. It does not store a waker until [`register`](Self::register)
+    /// is called; registration clones the supplied waker and replaces any
+    /// previous waker for this identifier. The bus scope covers cloning,
+    /// replaced-waker destruction, and unregister cleanup, including
+    /// destruction of the stored waker.
     #[inline]
     pub(in crate::facade) fn new_with_bus_scope(signal: &AsyncSignal, bus_key: usize) -> SignalRegistration<'_> {
         SignalRegistration {

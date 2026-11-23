@@ -20,11 +20,16 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Wake;
 use std::task::Waker;
 use std::time::Duration;
 
 use qubit_clock::ManualMonotonicClock;
 use qubit_clock::MonotonicClock;
+use qubit_clock::MonotonicInstant;
+use qubit_clock::TimeError;
+use qubit_clock::Timer;
+use qubit_clock::TimerFuture;
 use qubit_event_bus::AsyncEventBus;
 use qubit_event_bus::DeliveryError;
 use qubit_event_bus::EventBusFacadeConfig;
@@ -51,6 +56,72 @@ use support::manual_async::block_on;
 use support::manual_async::poll_once;
 
 type ReceivedWaitFuture = Pin<Box<dyn Future<Output = Result<WaitOutcome, LifecycleError>> + Send>>;
+
+struct WaitDropProbe {
+    bus: AsyncEventBus,
+    topic: Topic<u32>,
+    observed: Arc<Mutex<Option<Poll<Result<WaitOutcome, LifecycleError>>>>>,
+}
+
+impl Wake for WaitDropProbe {
+    fn wake(self: Arc<Self>) {}
+}
+
+impl Drop for WaitDropProbe {
+    fn drop(&mut self) {
+        let mut nested = Box::pin(self.bus.wait_for_received_deliveries(&self.topic, None));
+        let result = nested.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+        *self.observed.lock().expect("drop probe observation") = Some(result);
+    }
+}
+
+struct WaitDropTimer {
+    clock: ManualMonotonicClock,
+    bus: Arc<Mutex<Option<AsyncEventBus>>>,
+    topic: Topic<u32>,
+    observed: Arc<Mutex<Option<Poll<Result<WaitOutcome, LifecycleError>>>>>,
+}
+
+struct WaitDropTimerFuture {
+    inner: TimerFuture,
+    bus: Arc<Mutex<Option<AsyncEventBus>>>,
+    topic: Topic<u32>,
+    observed: Arc<Mutex<Option<Poll<Result<WaitOutcome, LifecycleError>>>>>,
+}
+
+impl Timer for WaitDropTimer {
+    fn clock(&self) -> &dyn MonotonicClock {
+        &self.clock
+    }
+
+    fn at(&self, deadline: MonotonicInstant) -> Result<TimerFuture, TimeError> {
+        Ok(Box::pin(WaitDropTimerFuture {
+            inner: self.clock.new_timer().at(deadline)?,
+            bus: self.bus.clone(),
+            topic: self.topic.clone(),
+            observed: self.observed.clone(),
+        }))
+    }
+}
+
+impl Future for WaitDropTimerFuture {
+    type Output = Result<(), TimeError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.get_mut().inner.as_mut().poll(cx)
+    }
+}
+
+impl Drop for WaitDropTimerFuture {
+    fn drop(&mut self) {
+        let Some(bus) = self.bus.lock().expect("timer bus slot").clone() else {
+            return;
+        };
+        let mut nested = Box::pin(bus.wait_for_received_deliveries(&self.topic, None));
+        let result = nested.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+        *self.observed.lock().expect("timer drop observation") = Some(result);
+    }
+}
 
 /// Drives a finite number of turns without a background executor or wall clock.
 fn poll_pending<F: Future>(mut future: Pin<&mut F>) {
@@ -604,6 +675,99 @@ fn test_pending_runner_poll_does_not_leave_bus_context_active() {
     assert!(block_on(bus.wait_for_received_deliveries(&topic, Some(Duration::ZERO))).is_ok());
     drop(run);
     let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+}
+
+#[test]
+fn test_dropping_pending_received_wait_releases_last_waker_during_active_delivery() {
+    const CASE: &str = "received-wait-cancel-callbacks";
+    if std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok(CASE) {
+        support::isolated_process::run_case_with_timeout(
+            "test_dropping_pending_received_wait_releases_last_waker_during_active_delivery",
+            CASE,
+            Duration::from_secs(10),
+        );
+        return;
+    }
+
+    let fake = Arc::new(FakeAsyncEventBusSpi::new());
+    let topic = Topic::<u32>::new("received.drop").expect("topic");
+    let bus_slot = Arc::new(Mutex::new(None));
+    let timer_observed = Arc::new(Mutex::new(None));
+    let bus = AsyncEventBus::with_config_and_timer(
+        ProviderId::new("received-drop").expect("provider"),
+        fake.clone(),
+        EventBusFacadeConfig::default(),
+        Arc::new(WaitDropTimer {
+            clock: ManualMonotonicClock::new(),
+            bus: bus_slot.clone(),
+            topic: topic.clone(),
+            observed: timer_observed.clone(),
+        }),
+    )
+    .expect("bus");
+    *bus_slot.lock().expect("timer bus slot") = Some(bus.clone());
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+    let resume_rx = Arc::new(Mutex::new(resume_rx));
+    let sub = block_on(bus.subscribe(SubscribeRequest::new("received-drop", topic.clone()).expect("request")))
+        .expect("subscribe");
+    fake.enqueue(inbound_message(None));
+    let handler_resume = resume_rx.clone();
+    let runner = std::thread::spawn(move || {
+        block_on(sub.run(move |_| {
+            let entered_tx = entered_tx.clone();
+            let handler_resume = handler_resume.clone();
+            async move {
+                entered_tx.send(()).expect("signal active handler");
+                handler_resume
+                    .lock()
+                    .expect("handler resume receiver")
+                    .recv_timeout(Duration::from_secs(3))
+                    .expect("test releases active handler");
+                Ok(())
+            }
+        }))
+    });
+    entered_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("handler has an accepted delivery");
+
+    let observed = Arc::new(Mutex::new(None));
+    let waker = Waker::from(Arc::new(WaitDropProbe {
+        bus: bus.clone(),
+        topic: topic.clone(),
+        observed: observed.clone(),
+    }));
+    let mut observer = Box::pin(bus.wait_for_received_deliveries(&topic, None));
+    assert!(observer.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+    drop(waker);
+    drop(observer);
+
+    assert!(
+        matches!(*observed.lock().expect("drop probe observation"), Some(Poll::Pending)),
+        "last registered waker reentry observes the active delivery without taking ownership"
+    );
+
+    let mut timed_observer = Box::pin(bus.wait_for_received_deliveries(&topic, Some(Duration::from_secs(1))));
+    assert!(
+        timed_observer
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    drop(timed_observer);
+    assert!(
+        matches!(
+            *timer_observed.lock().expect("timer drop observation"),
+            Some(Poll::Pending)
+        ),
+        "timer future drop reentry observes the active delivery without taking ownership"
+    );
+
+    resume_tx.send(()).expect("resume handler");
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+    runner.join().expect("runner thread").expect("runner");
+    *bus_slot.lock().expect("timer bus slot") = None;
 }
 
 #[test]
