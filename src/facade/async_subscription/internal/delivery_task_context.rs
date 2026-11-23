@@ -375,6 +375,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
 }
 
 impl<T: 'static> Drop for DeliveryTaskContext<T> {
+    /// Releases any pending delivery still owned by this task.
     fn drop(&mut self) {
         let Some(pending) = self.pending.take() else {
             return;

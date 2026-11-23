@@ -679,6 +679,13 @@ fn release_resource<T>(resource: T, first_panic: &mut Option<Box<dyn Any + Send>
 
 /// Releases one receiver-owned delivery's payload and settlement token through
 /// independent panic boundaries, then releases its tracking and lease guards.
+///
+/// # Type Parameters
+/// - `T`: payload type retained by the owned delivery.
+///
+/// # Parameters
+/// - `delivery`: receiver-owned delivery and its remaining settlement state.
+/// - `first_panic`: slot retaining the first cleanup panic for the batch.
 fn release_owned_sync_delivery<T: Send + Sync + 'static>(
     delivery: OwnedSyncDelivery<'_, T>,
     first_panic: &mut Option<Box<dyn Any + Send>>,
