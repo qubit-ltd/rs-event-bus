@@ -27,6 +27,8 @@ pub(crate) struct PublishMetrics {
     dropped: AtomicU64,
     /// Provider accepts without destination detail.
     opaque_accepted: AtomicU64,
+    /// Provider sends returned without confirmation.
+    sent_unconfirmed: AtomicU64,
     /// Receipts with an empty destination report.
     zero_destinations: AtomicU64,
     /// Total provider-reported accepted destinations.
@@ -66,7 +68,7 @@ impl PublishMetrics {
         match receipt.acknowledgement() {
             PublishAcknowledgement::DroppedByInterceptor => Self::increment(&self.dropped, 1),
             PublishAcknowledgement::Accepted { .. } => Self::increment(&self.opaque_accepted, 1),
-            PublishAcknowledgement::SentUnconfirmed => {}
+            PublishAcknowledgement::SentUnconfirmed => Self::increment(&self.sent_unconfirmed, 1),
             PublishAcknowledgement::DestinationAdmissions(_) => {
                 if let Some(summary) = receipt.admission_summary() {
                     if summary.accepted == 0 && summary.filtered == 0 && summary.rejected == 0 {
@@ -99,6 +101,11 @@ impl PublishMetrics {
         }
     }
 
+    /// Loads the unconfirmed-send count independently using relaxed ordering.
+    pub(crate) fn sent_unconfirmed_count(&self) -> u64 {
+        self.sent_unconfirmed.load(Ordering::Relaxed)
+    }
+
     /// Adds `amount` without wrapping the counter on overflow.
     ///
     /// # Parameters
@@ -108,5 +115,33 @@ impl PublishMetrics {
         let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             Some(value.saturating_add(amount))
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PublishMetrics;
+    use crate::model::EventId;
+    use crate::model::ProviderId;
+    use crate::model::PublishAcknowledgement;
+    use crate::model::PublishReceipt;
+
+    #[test]
+    fn test_sent_unconfirmed_count_is_once_per_receipt_and_saturates() {
+        let metrics = PublishMetrics::default();
+        let receipt = PublishReceipt::new(
+            EventId::new("unconfirmed").unwrap(),
+            None,
+            ProviderId::new("metrics-test").unwrap(),
+            PublishAcknowledgement::SentUnconfirmed,
+        );
+        metrics.record_receipt(&receipt);
+        assert_eq!(1, metrics.sent_unconfirmed_count());
+        metrics
+            .sent_unconfirmed
+            .store(u64::MAX, std::sync::atomic::Ordering::Relaxed);
+        metrics.record_receipt(&receipt);
+        assert_eq!(u64::MAX, metrics.sent_unconfirmed_count());
+        assert_eq!(0, metrics.snapshot().opaque_accepted);
     }
 }

@@ -1031,6 +1031,7 @@ struct AckFailureSpi {
     clock: AckRegressionTimer,
     rejects_first: bool,
     no_destinations: bool,
+    sent_unconfirmed: bool,
     calls: AtomicUsize,
 }
 impl AsyncEventBusSpi for AckFailureSpi {
@@ -1051,7 +1052,9 @@ impl AsyncEventBusSpi for AckFailureSpi {
                 });
             }
             self.clock.acknowledged.store(true, Ordering::Release);
-            if self.no_destinations {
+            if self.sent_unconfirmed {
+                Ok(PublishAcknowledgement::SentUnconfirmed)
+            } else if self.no_destinations {
                 Ok(PublishAcknowledgement::DestinationAdmissions(Vec::new()))
             } else {
                 Ok(PublishAcknowledgement::Accepted {
@@ -1079,6 +1082,7 @@ fn assert_ack_followed_by_clock_failure_effect(rejects_first: bool, no_destinati
         clock: clock.clone(),
         rejects_first,
         no_destinations,
+        sent_unconfirmed: false,
         calls: AtomicUsize::new(0),
     });
     let bus = AsyncEventBus::with_timer(
@@ -1140,6 +1144,32 @@ fn test_rejection_then_ack_followed_by_clock_failure_keeps_admission_evidence() 
 #[test]
 fn test_no_destination_ack_then_clock_failure_retains_known_non_admission() {
     assert_ack_followed_by_clock_failure_effect(false, true);
+}
+
+#[test]
+fn test_sent_unconfirmed_ack_then_clock_failure_keeps_possible_admission_evidence() {
+    let clock = AckRegressionTimer::new();
+    let spi = Arc::new(AckFailureSpi {
+        clock: clock.clone(),
+        rejects_first: false,
+        no_destinations: false,
+        sent_unconfirmed: true,
+        calls: AtomicUsize::new(0),
+    });
+    let bus = AsyncEventBus::with_timer(ProviderId::new("ack-clock").unwrap(), spi.clone(), Arc::new(clock)).unwrap();
+    let observed = Arc::new(Mutex::new(None));
+    let callback = observed.clone();
+    let request = PublishRequest::builder()
+        .topic(Topic::new("unconfirmed.clock.failure").unwrap())
+        .payload("sent without confirmation".to_owned())
+        .retry_policy(RetryPolicy::builder().max_attempts(2).build().unwrap())
+        .error_handler(move |_, failure| *callback.lock().unwrap() = Some(failure.effect()))
+        .build()
+        .unwrap();
+    let failure = support::manual_async::block_on(bus.publish(request)).unwrap_err();
+    assert_eq!(PublishEffect::MayHaveBeenAccepted, failure.effect());
+    assert_eq!(Some(PublishEffect::MayHaveBeenAccepted), *observed.lock().unwrap());
+    assert_eq!(1, spi.calls.load(Ordering::SeqCst));
 }
 
 /// Counts real codec encoding calls across the complete publication.

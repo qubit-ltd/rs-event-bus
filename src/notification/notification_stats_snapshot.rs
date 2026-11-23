@@ -16,7 +16,8 @@
 /// `queue_full` during concurrent updates. `published` counts successful
 /// receipts, including dropped receipts, not completed handlers. Admission
 /// counters classify those receipts; opaque acceptance does not reveal a
-/// destination count. Each counter saturates at `u64::MAX`, so sums lose
+/// destination count. The `admission_sent_unconfirmed` counter is separate
+/// from opaque acceptance. Each counter saturates at `u64::MAX`, so sums lose
 /// exactness after saturation.
 ///
 /// # Examples
@@ -64,6 +65,8 @@ pub struct NotificationStatsSnapshot {
     pub(super) admission_no_destinations: u64,
     /// Number of opaque provider acceptance receipts.
     pub(super) admission_opaque_accepted: u64,
+    /// Number of receipts reporting a send without admission confirmation.
+    pub(super) admission_sent_unconfirmed: u64,
     /// Number of receipts reporting an interceptor drop.
     pub(super) admission_dropped: u64,
 }
@@ -205,6 +208,16 @@ impl NotificationStatsSnapshot {
     #[inline]
     pub const fn admission_opaque_accepted(self) -> u64 {
         self.admission_opaque_accepted
+    }
+
+    /// Returns receipts for sends without admission confirmation.
+    ///
+    /// # Returns
+    /// The independently sampled count of `SentUnconfirmed` receipts.
+    #[must_use]
+    #[inline]
+    pub const fn admission_sent_unconfirmed(self) -> u64 {
+        self.admission_sent_unconfirmed
     }
 
     /// Returns receipts reporting an interceptor drop.

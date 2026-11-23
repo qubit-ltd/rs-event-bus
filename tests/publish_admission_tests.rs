@@ -264,6 +264,8 @@ fn test_fire_and_forget_legacy_accepted_ack_is_normalized_and_checked_receipt_is
     assert_eq!(1, provider.publish_calls.load(Ordering::Acquire));
     let metrics = bus.publish_metrics();
     assert_eq!(0, metrics.opaque_accepted);
+    assert_eq!(1, bus.sent_unconfirmed_count());
+    assert_eq!(1, bus.publish_metrics().attempts);
     assert_eq!(0, metrics.accepted_destinations);
     assert_eq!(0, metrics.rejected_destinations);
     assert_eq!(0, metrics.dropped);
@@ -292,6 +294,7 @@ fn test_fire_and_forget_legacy_accepted_ack_is_normalized_and_checked_receipt_is
         other => panic!("expected admission error, got {other:?}"),
     }
     assert_eq!(1, provider.publish_calls.load(Ordering::Acquire));
+    assert_eq!(1, bus.sent_unconfirmed_count());
 }
 
 #[test]
@@ -309,10 +312,31 @@ fn test_fire_and_forget_legacy_accepted_ack_is_normalized_for_async_publish() {
     assert_eq!(1, provider.publish_calls.load(Ordering::Acquire));
     let metrics = bus.publish_metrics();
     assert_eq!(0, metrics.opaque_accepted);
+    assert_eq!(1, bus.sent_unconfirmed_count());
     assert_eq!(0, metrics.accepted_destinations);
     assert_eq!(0, metrics.rejected_destinations);
     assert_eq!(0, metrics.dropped);
     assert_eq!(0, metrics.errors);
+
+    let provider = fire_and_forget_provider(PublishAcknowledgement::Accepted {
+        provider_message_id: Some("async-checked-id".into()),
+        metadata: Default::default(),
+    });
+    let bus = AsyncEventBus::from_spi(ProviderId::new("admission-test").unwrap(), provider.clone()).unwrap();
+    let error = support::manual_async::block_on(bus.publish_checked(
+        PublishRequest::new(Topic::new("orders.checked").unwrap(), "order".to_owned()).unwrap(),
+        AdmissionRequirement::ProviderOrDestinationAccepted,
+    ))
+    .expect_err("unconfirmed send does not satisfy checked admission");
+    assert!(matches!(
+        error,
+        CheckedPublishError::Admission {
+            reason: AdmissionCheckError::VisibilityUnavailable,
+            ..
+        }
+    ));
+    assert_eq!(1, provider.publish_calls.load(Ordering::Acquire));
+    assert_eq!(1, bus.sent_unconfirmed_count());
 }
 
 /// Builds a receipt whose admission result can be checked without a provider.

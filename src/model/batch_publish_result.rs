@@ -59,13 +59,14 @@ impl BatchPublishResult {
     pub fn total_count(&self) -> usize {
         self.items.len()
     }
-    /// Counts broker-accepted publications and local publications with at least
-    /// one accepted destination. Empty, filtered-only, and rejected-only
-    /// destination lists contribute zero; this does not count handler
-    /// completion.
+    /// Counts provider-confirmed accepted publications and receipts with at
+    /// least one accepted destination. `SentUnconfirmed`, empty, filtered-only,
+    /// and rejected-only destination lists contribute zero. This does not count
+    /// handler completion.
     ///
     /// # Returns
-    /// The number of results with at least one accepted destination.
+    /// The number of successful results with confirmed provider acceptance or
+    /// at least one accepted destination.
     #[must_use]
     pub fn accepted_count(&self) -> usize {
         self.items
@@ -80,6 +81,26 @@ impl BatchPublishResult {
                     PublishAcknowledgement::DroppedByInterceptor => false,
                 },
                 Err(_) => false,
+            })
+            .count()
+    }
+
+    /// Counts successful receipts that report a send without admission
+    /// confirmation. These entries are not included in
+    /// [`accepted_count`](Self::accepted_count).
+    ///
+    /// # Returns
+    /// The number of `SentUnconfirmed` receipts; failed result items are not
+    /// counted.
+    #[must_use]
+    pub fn sent_unconfirmed_count(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|item| {
+                matches!(item, Ok(receipt) if matches!(
+                    receipt.acknowledgement(),
+                    PublishAcknowledgement::SentUnconfirmed
+                ))
             })
             .count()
     }

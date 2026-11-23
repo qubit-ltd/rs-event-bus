@@ -60,7 +60,7 @@ use crate::spi::panic_boundary::provider_panic;
 /// - `rule`: Optional user retry decision rule.
 /// - `cancellation`: Optional signal that cancels retry delays.
 /// - `duplicate_policy`: Admission uncertainty safety policy.
-/// - `seen_unknown`: Monotonic evidence across completed provider attempts.
+/// - `possible_admission_seen`: Monotonic evidence that a completed provider attempt may have been accepted.
 /// - `seen_admission`: Confirmed admission retained for post-ACK retry failure.
 ///
 /// # Returns
@@ -78,7 +78,7 @@ pub(crate) fn publish_sync<F>(
     rule: Option<&Arc<dyn RetryRule<PublishAttemptError>>>,
     cancellation: Option<&RetryCancellationToken>,
     duplicate_policy: DuplicateRiskPolicy,
-    seen_unknown: &Cell<bool>,
+    possible_admission_seen: &Cell<bool>,
     seen_admission: &Cell<bool>,
 ) -> Result<PublishAcknowledgement, PublishError>
 where
@@ -90,7 +90,8 @@ where
                 seen_admission.set(seen_admission.get() || acknowledges_admission(acknowledgement));
             })
             .map_err(|error| {
-                seen_unknown.set(seen_unknown.get() || error.publish_effect() == PublishEffect::MayHaveBeenAccepted);
+                possible_admission_seen
+                    .set(possible_admission_seen.get() || error.publish_effect() == PublishEffect::MayHaveBeenAccepted);
                 PublishError::from(error)
             });
     };
@@ -106,8 +107,9 @@ where
                     seen_admission.set(seen_admission.get() || acknowledges_admission(acknowledgement));
                 })
                 .map_err(|error| {
-                    seen_unknown
-                        .set(seen_unknown.get() || error.publish_effect() == PublishEffect::MayHaveBeenAccepted);
+                    possible_admission_seen.set(
+                        possible_admission_seen.get() || error.publish_effect() == PublishEffect::MayHaveBeenAccepted,
+                    );
                     PublishAttemptError::new(error.kind(), error.retryable(), error.publish_effect(), error)
                 })
         })
@@ -131,7 +133,7 @@ where
 /// - `cancellation`: Optional signal that cancels retry delays.
 /// - `timer`: Clock used for retry delays.
 /// - `duplicate_policy`: Admission uncertainty safety policy.
-/// - `seen_unknown`: Monotonic evidence across completed provider attempts.
+/// - `possible_admission_seen`: Monotonic evidence that a completed provider attempt may have been accepted.
 /// - `seen_admission`: Confirmed admission retained for post-ACK retry failure.
 ///
 /// # Returns
@@ -150,7 +152,7 @@ pub(crate) async fn publish_async<'a, F>(
     cancellation: Option<&RetryCancellationToken>,
     timer: Arc<dyn Timer>,
     duplicate_policy: DuplicateRiskPolicy,
-    seen_unknown: Arc<AtomicBool>,
+    possible_admission_seen: Arc<AtomicBool>,
     seen_admission: Arc<AtomicBool>,
 ) -> Result<PublishAcknowledgement, PublishError>
 where
@@ -166,7 +168,7 @@ where
             })
             .map_err(|error| {
                 if error.publish_effect() == PublishEffect::MayHaveBeenAccepted {
-                    seen_unknown.store(true, Ordering::Release);
+                    possible_admission_seen.store(true, Ordering::Release);
                 }
                 PublishError::from(error)
             });
@@ -180,8 +182,12 @@ where
     let operation = || -> SpiFuture<'a, Result<PublishAcknowledgement, PublishAttemptError>> {
         let message = make_message();
         let attempt = spi_publish(spi, provider_id, message);
-        let seen_unknown = seen_unknown.clone();
-        Box::pin(publish_attempt(attempt, seen_unknown, seen_admission.clone()))
+        let possible_admission_seen = possible_admission_seen.clone();
+        Box::pin(publish_attempt(
+            attempt,
+            possible_admission_seen,
+            seen_admission.clone(),
+        ))
     };
     retry
         .run(operation)
@@ -260,7 +266,7 @@ fn retry_config(
             let effect = failure
                 .as_error()
                 .map_or(PublishEffect::MayHaveBeenAccepted, PublishAttemptError::effect);
-            if !uncertainty_allows_retry(effect, duplicate_policy) {
+            if !possible_admission_allows_retry(effect, duplicate_policy) {
                 RetryDecision::Abort
             } else {
                 RetryDecision::UseDefault
@@ -297,7 +303,7 @@ fn retry_config(
 /// Whether the attempt may proceed to ordinary retry decisions.
 #[must_use]
 #[inline]
-pub(crate) fn uncertainty_allows_retry(effect: PublishEffect, policy: DuplicateRiskPolicy) -> bool {
+pub(crate) fn possible_admission_allows_retry(effect: PublishEffect, policy: DuplicateRiskPolicy) -> bool {
     matches!(
         (effect, policy),
         (PublishEffect::NotAccepted, _) | (PublishEffect::MayHaveBeenAccepted, DuplicateRiskPolicy::AllowDuplicates)
@@ -311,7 +317,7 @@ pub(crate) fn uncertainty_allows_retry(effect: PublishEffect, policy: DuplicateR
 ///
 /// # Parameters
 /// - `attempt`: Lazy provider call polled inside the evidence boundary.
-/// - `seen_unknown`: Monotonic evidence for the complete publication.
+/// - `possible_admission_seen`: Monotonic evidence that this publication may have been accepted.
 /// - `seen_admission`: Confirmed admission retained independently of
 ///   duplicates.
 ///
@@ -322,7 +328,7 @@ pub(crate) fn uncertainty_allows_retry(effect: PublishEffect, policy: DuplicateR
 /// Returns the original SPI error with its explicit admission evidence.
 async fn publish_attempt<F>(
     attempt: F,
-    seen_unknown: Arc<AtomicBool>,
+    possible_admission_seen: Arc<AtomicBool>,
     seen_admission: Arc<AtomicBool>,
 ) -> Result<PublishAcknowledgement, PublishAttemptError>
 where
@@ -331,7 +337,7 @@ where
     // Arming occurs on first poll, immediately before entering SPI.
     // A retry timeout/cancellation drops this future before a reply.
     let mut in_flight = InFlightPublish {
-        seen_unknown: seen_unknown.clone(),
+        seen_unknown: possible_admission_seen.clone(),
         completed: false,
     };
     let result = attempt.await;
@@ -342,7 +348,7 @@ where
     }
     result.map_err(|error| {
         if error.publish_effect() == PublishEffect::MayHaveBeenAccepted {
-            seen_unknown.store(true, Ordering::Release);
+            possible_admission_seen.store(true, Ordering::Release);
         }
         PublishAttemptError::new(error.kind(), error.retryable(), error.publish_effect(), error)
     })
