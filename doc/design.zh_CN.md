@@ -1337,6 +1337,15 @@ shutdown 返回缓存的 report 或保留的规范化 close errors，不会抹�
 
 调用方有界等待不等于进程强制退出。`Immediate` 仍可能等待不合作 handler/SPI，不作为超时救援。丢弃 leader future 会释放 leadership 并唤醒等待者，但不会启动异步后台协调器。只有另一个仍被持续 poll 的 `shutdown` future 才会接续清理；若没有等待者，应用必须再次调用 `shutdown` 并持续 poll 该 future。总线进入 `Closed` 后，后续调用复用缓存的 report，或返回保留的规范化 close errors。同步 `request_shutdown` API 则不同：它会启动后台协调器并返回观察 ticket。可执行同步/异步示例见[用户手册](user_guide.zh_CN.md#同步总线的停机流程)。
 
+对 `AsyncEventBus`，SPI 的 `shutdown(mode).await` 结果与调用方等待期限是两件事。
+`Ok(ShutdownOutcome::TimedOut)` 是 provider 返回的终态：facade 会处置剩余 control，
+记录已知放弃量和 provider 不确定性，缓存 `ShutdownReport`，并将生命周期设为
+`Closed`。如果调用方在清理完成前达到自己的 deadline，则返回
+`Err(ShutdownError::TimedOut)`；这不会生成报告，也不会取消清理，后续调用可以继续
+观察或接手。两种结果都不能说明 handler 是否已产生业务副作用。检查
+`known_abandoned_deliveries` 和 `provider_may_have_abandoned_deliveries`：它们描述投递
+证据，不代表业务回滚或持久化结果。
+
 ### 9.8 `BusContextFuture`：poll 级死锁检测
 
 异步侧没有线程可绑定，因此使用 **poll 作用域**。受保护 future 的每次 poll 都会进入
@@ -1629,6 +1638,9 @@ completion guard 在处理循环及用户资源清理完成后，发布唯一的
 | `PublishFailure` | `publish`/`publish_all` | 原事件 ID 和聚合效果包装 `PublishError`： `Configuration`、`Capability`、`Codec`、`Spi`、`Retry(Box<RetryError<PublishAttemptError>>)`、`InterceptorPanicked { .. }`、`ErrorHandlerPanicked { .. }`、`Closed` |
 | `EventBusError` | 聚合操作错误 | 透明 `PublishFailure(PublishFailure)` 转换保留发布身份和效果；`Publish(PublishError)` 仍为仅原因的转换 |
 | `AdmissionCheckError` | `PublishReceipt::check_admission` | `VisibilityUnavailable`、`Dropped`、`NoAcceptedDestination`、`RejectedDestinations { .. }` |
+| `CheckedPublishError` | `publish_checked` | `UnsupportedVisibility`、`Publish`、`Admission { receipt, reason }` |
+| `SubscriptionStopReason` | `Subscription::terminal_failure` / 异步 `run` | `Gap`、`Codec`、`Headers`、`Provider`、`Settlement` |
+| `PublishEffect` | `PublishFailure::effect` / `SpiError::publish_effect` | `NotAccepted`、`MayHaveBeenAccepted` |
 | `SubscribeError` | `subscribe` | `Configuration`、`Capability`、`Spi`、`Closed`（codec 缺失归入 `Capability`） |
 | `DeliveryError` | handler 返回 / 管线 | `Handler { source }`、`Codec`、`Spi`、`Retry(Box<RetryError<DeliveryAttemptError>>)` |
 | `LifecycleError` | `wait_for_*`、`cancel`、停机内部 | `Timer(TimeError)`、`WouldDeadlock { operation }`、`Closed`、`IdleWaitUnsupported`、`Spi`、`SubscriptionClose(Arc<SubscriptionCloseErrors>)` |
@@ -1638,6 +1650,12 @@ completion guard 在处理循环及用户资源清理完成后，发布唯一的
 | `EventBusProviderError` | provider 作者 | provider `create` 返回的错误包装，供 `qubit-spi` 聚合 |
 | `SpiError` | provider | `Publish { provider_id, resource, kind, retryable, effect, source }`、`Operation { provider_id, operation, resource, kind, retryable, source }`、`InvalidSettlementToken { .. }` |
 | `CapabilityError` / `CodecError` / `ConfigurationError` / `EventIdGenerationError` | 构造期或校验 | 见各自定义 |
+
+`CheckedPublishError`、`AdmissionCheckError`、`SubscriptionStopReason` 和
+`PublishEffect` 是没有 `#[non_exhaustive]` 标记的公开枚举。下游若穷尽匹配，
+就与当前变体集合绑定；这些枚举增加变体时，下游必须更新匹配。希望跨 core
+版本保持源码兼容的应用应提供 fallback 分支，并明确处理未知情况。这与已标记
+`#[non_exhaustive]` 的错误和能力枚举不同。
 
 `EventBusError` 通过透明的 `PublishFailure` 变体实现 `From<PublishFailure>`。
 应用函数返回 `Result<_, EventBusError>` 时，可以直接使用 `bus.publish(request)?`，
@@ -1656,7 +1674,8 @@ wrapper 中的身份和效果；透明错误传播保留底层 source 链。
   `topic_type_conflict`、`provider_closed` 等 local kind 仅描述 local provider。
   facade 各层的 `Closed` 变体来自 facade 自身的生命周期门禁；
   provider 在停机后返回的关闭类 `SpiError` 按 `Spi` 变体原样传出，不做二次映射。
-- 所有枚举标注 `#[non_exhaustive]`，为未来新增变体保留空间。
+- 大多数错误和能力枚举标注了 `#[non_exhaustive]`；上面列出的四个枚举仍允许
+  下游穷尽匹配，因此变体集合变化时需要更新对应分支。
 - 所有错误 `Send + Sync + 'static`，可跨线程/任务传递。
 - 内部 `PipelineFailure { origin, error, publish_effect }` 不对外暴露，只用于把失败阶段传给诊断与测试。
 
@@ -1837,7 +1856,11 @@ watchdog 使用 monotonic deadline，继承子进程 stdout/stderr，超时返�
 - provider spec 与 registry；
 - 各操作的错误类型及其访问器。
 
-公开错误 enum、capability enum 和 `Diagnostic` 使用 `#[non_exhaustive]`。
+大多数公开错误 enum、capability enum 和 `Diagnostic` 都标注了
+`#[non_exhaustive]`。`CheckedPublishError`、`AdmissionCheckError`、
+`SubscriptionStopReason` 和 `PublishEffect` 是例外：它们允许穷尽匹配，变体变化时
+下游必须更新分支。若应用希望未来增加变体时仍可编译，应添加 wildcard 分支并处理
+未知情况。
 SPI 输入结构使用私有字段、构造函数和访问器，避免新增字段成为破坏性修改。
 后端特有扩展走命名空间化的 `ProviderOptions` 或独立扩展 trait，不向最小 SPI 持续加方法。
 

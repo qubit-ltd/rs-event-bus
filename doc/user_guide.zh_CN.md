@@ -14,7 +14,10 @@
   - [提交事务后发布](#提交事务后发布)
   - [涉及的核心类型](#涉及的核心类型)
 - [检查发布结果](#检查发布结果)
+  - [判断发布失败后能否重发](#判断发布失败后能否重发)
   - [成功时能看到什么](#成功时能看到什么)
+  - [预检拒绝与未确认发送](#预检拒绝与未确认发送)
+  - [排查结算终止并恢复消费](#排查结算终止并恢复消费)
 - [按需补充消息信息](#按需补充消息信息)
 - [保证同一对象的处理顺序](#保证同一对象的处理顺序)
 - [处理失败和重试](#处理失败和重试)
@@ -28,9 +31,13 @@
   - [改变或停止每次发布](#改变或停止每次发布)
 - [配置内置 local 事件总线](#配置内置-local-事件总线)
   - [直接创建](#直接创建)
+  - [Portable header 限额](#portable-header-限额)
   - [查看 local 容量与拒绝类别](#查看-local-容量与拒绝类别)
 - [选择和接入第三方实现](#选择和接入第三方实现)
   - [使用别人已经写好的实现](#使用别人已经写好的实现)
+  - [对照 local 与 Redis 的实际能力](#对照-local-与-redis-的实际能力)
+  - [运行 Redis 订单示例](#运行-redis-订单示例)
+  - [用外部 watchdog 限制 conformance 执行时间](#用外部-watchdog-限制-conformance-执行时间)
   - [自己开发一种传递实现](#自己开发一种传递实现)
   - [跨进程实现需要编码时](#跨进程实现需要编码时)
 - [异步总线与订阅](#异步总线与订阅)
@@ -40,6 +47,7 @@
   - [停机时排空队列](#停机时排空队列)
 - [生命周期、等待与停机](#生命周期等待与停机)
   - [同步总线的停机流程](#同步总线的停机流程)
+  - [非阻塞地请求停机](#非阻塞地请求停机)
   - [等待某个主题空闲](#等待某个主题空闲)
   - [异步总线的停机流程](#异步总线的停机流程)
 - [错误、诊断与排障](#错误诊断与排障)
@@ -301,7 +309,7 @@ API 中的 `provider` 指负责实际传递消息的后端实现，`local` 是�
 | `NoneAccepted(summary)` | 找到了处理方，但无人接收；查看跳过或拒绝原因。 |
 | `NoDestinations` | 没找到处理方；检查是否先完成订阅，主题名是否一致。 |
 | `OpaqueAccepted` | 消息传递实现说已接收，但不告诉你具体是哪些处理方。 |
-| `SentUnconfirmed` | 发送尝试已经完成，但 provider 没有确认接纳。按事件 ID 对账；不要当成已拒绝，也不要自动重试。 |
+| [`SentUnconfirmed`](migration.zh_CN.md#未确认的发布回执v0214-之后的源码变更) | 该结果来自 core `v0.21.4` 之后的源码变更。发送尝试已经完成，但 provider 没有确认接纳。按事件 ID 对账；不要当成已拒绝，也不要自动重试。 |
 | `Dropped` | 发布前的拦截规则主动丢弃了消息。 |
 
 ### 判断发布失败后能否重发
@@ -311,6 +319,8 @@ API 中的 `provider` 指负责实际传递消息的后端实现，`local` 是�
 `PublishOptions::builder().duplicate_risk_policy(...)` 默认选择 `DuplicateRiskPolicy::Forbid`。发生未知效果的尝试后，安全门先于自定义 `RetryRule` 停止重试。`AllowDuplicates` 只是允许原有 `qubit-retry` 策略继续判断；它本身既不启用重试，也不保证一定重试。各次尝试共用事件 ID、时间戳和编码字节。typed interceptor 可以转换 envelope，但不能改变事件 ID。
 
 一条逻辑发布曾经出现未知效果，后续即使确定拒绝，最终错误也仍是 `MayHaveBeenAccepted`。允许重复后最终成功时，若前序尝试效果未知，`receipt.duplicate_possible()` 为 true。provider 接纳成功仍不代表 handler 完成或记录已经持久化。
+
+同步和异步 facade 都提供 `sent_unconfirmed_count() -> u64`，每张 `SentUnconfirmed` 回执计一次。它是独立采样的诊断值，并发读取时不保证与其他计数来自同一时刻；计数达到 `u64::MAX` 后会饱和。`BatchPublishResult::sent_unconfirmed_count() -> usize` 只统计成功项中属于该结果的回执，不统计失败项。通知快照通过 `NotificationStatsSnapshot::admission_sent_unconfirmed() -> u64` 单独统计，和 opaque 接纳分开，且同样饱和。这些 API 统计的是回执分类，不代表 provider 已完成投递或业务处理。
 
 取消也影响结果判断。`RetryCancellationToken` 取消已经开始轮询的 SPI 尝试并使调用返回错误时，接纳效果未知；在 SPI 调用前取消则没有接纳效果。丢弃公开 publish future 不会产生返回的错误；未轮询 future 被丢弃时没有尝试，已启动操作被丢弃后，应用须保留事件 ID 并按可能已发布处理。RetryPolicy 预算是软预算，不承诺所有执行中的 provider 操作都能被硬超时中断，尤其是同步 I/O。
 

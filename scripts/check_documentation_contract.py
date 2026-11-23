@@ -17,6 +17,28 @@ MIGRATION_GUIDES = {
     "doc/migration.md": ("doc/user_guide.md", "migrate-from-020-to-021"),
     "doc/migration.zh_CN.md": ("doc/user_guide.zh_CN.md", "从-020-迁移到-021"),
 }
+GUIDE_TOC_ENTRIES = {
+    "doc/user_guide.md": (
+        "decide-whether-a-failed-publication-can-be-repeated",
+        "preflight-rejection-and-an-unconfirmed-send",
+        "diagnose-settlement-termination-and-restore-consumption",
+        "portable-header-limits",
+        "compare-local-and-redis-capabilities",
+        "run-the-redis-order-examples",
+        "bound-a-conformance-run-with-an-external-watchdog",
+        "request-shutdown-without-waiting",
+    ),
+    "doc/user_guide.zh_CN.md": (
+        "判断发布失败后能否重发",
+        "预检拒绝与未确认发送",
+        "排查结算终止并恢复消费",
+        "portable-header-限额",
+        "对照-local-与-redis-的实际能力",
+        "运行-redis-订单示例",
+        "用外部-watchdog-限制-conformance-执行时间",
+        "非阻塞地请求停机",
+    ),
+}
 LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
 HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$")
@@ -79,7 +101,39 @@ def check(root, package_list):
                 errors.append((document, f"local link target {local} is not included in the Cargo package list"))
     for document, message in errors:
         print(f"{document}: {message}", file=sys.stderr)
-    return not errors and check_explicit_source_links(root) and check_migration_contract(root, package_list)
+    return (not errors and check_explicit_source_links(root) and
+            check_migration_contract(root, package_list) and
+            check_guide_toc_contract(root))
+
+
+def check_guide_toc_contract(root):
+    """Require selected operational sections to be listed and link to real headings."""
+    errors = []
+    for document, required_anchors in GUIDE_TOC_ENTRIES.items():
+        try:
+            text = (root / document).read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            errors.append((document, f"cannot read guide TOC: {error}"))
+            continue
+        lines = text.splitlines()
+        toc_start = next((i for i, line in enumerate(lines)
+                          if line.strip() in ("## Contents", "## 目录")), None)
+        if toc_start is None:
+            errors.append((document, "missing Contents/目录 section"))
+            continue
+        toc_end = next((i for i in range(toc_start + 1, len(lines))
+                        if HEADING.match(lines[i])), len(lines))
+        toc = "\n".join(lines[toc_start + 1:toc_end])
+        toc_links = set(markdown_links(toc))
+        anchors = _heading_anchors(text)
+        for anchor in required_anchors:
+            if f"#{anchor}" not in toc_links:
+                errors.append((document, f"missing TOC entry for #{anchor}"))
+            if anchor not in anchors:
+                errors.append((document, f"TOC target heading #{anchor} does not exist"))
+    for document, message in errors:
+        print(f"{document}: {message}", file=sys.stderr)
+    return not errors
 
 
 def check_explicit_source_links(root):

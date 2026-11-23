@@ -14,7 +14,10 @@ This guide covers the `qubit-event-bus` 0.21.x series on Rust 1.94 or later. It 
   - [Publish after the transaction commits](#publish-after-the-transaction-commits)
   - [Types used on this path](#types-used-on-this-path)
 - [Check the publication result](#check-the-publication-result)
+  - [Decide whether a failed publication can be repeated](#decide-whether-a-failed-publication-can-be-repeated)
   - [What success looks like](#what-success-looks-like)
+  - [Preflight rejection and an unconfirmed send](#preflight-rejection-and-an-unconfirmed-send)
+  - [Diagnose settlement termination and restore consumption](#diagnose-settlement-termination-and-restore-consumption)
 - [Add message details when needed](#add-message-details-when-needed)
 - [Keep events for one object in order](#keep-events-for-one-object-in-order)
 - [Handle failures and retries](#handle-failures-and-retries)
@@ -28,9 +31,13 @@ This guide covers the `qubit-event-bus` 0.21.x series on Rust 1.94 or later. It 
   - [Change or stop every publication](#change-or-stop-every-publication)
 - [Configure the built-in local event bus](#configure-the-built-in-local-event-bus)
   - [Create the bus directly](#create-the-bus-directly)
+  - [Portable header limits](#portable-header-limits)
   - [Inspect local capacity and rejection categories](#inspect-local-capacity-and-rejection-categories)
 - [Choose and connect a third-party implementation](#choose-and-connect-a-third-party-implementation)
   - [Use an implementation someone else wrote](#use-an-implementation-someone-else-wrote)
+  - [Compare local and Redis capabilities](#compare-local-and-redis-capabilities)
+  - [Run the Redis order examples](#run-the-redis-order-examples)
+  - [Bound a conformance run with an external watchdog](#bound-a-conformance-run-with-an-external-watchdog)
   - [Write a transport yourself](#write-a-transport-yourself)
   - [Encode events for a cross-process implementation](#encode-events-for-a-cross-process-implementation)
 - [Asynchronous bus and subscriptions](#asynchronous-bus-and-subscriptions)
@@ -40,6 +47,7 @@ This guide covers the `qubit-event-bus` 0.21.x series on Rust 1.94 or later. It 
   - [Drain the queue during shutdown](#drain-the-queue-during-shutdown)
 - [Lifecycle, waiting, and shutdown](#lifecycle-waiting-and-shutdown)
   - [Shut down a sync bus](#shut-down-a-sync-bus)
+  - [Request shutdown without waiting](#request-shutdown-without-waiting)
   - [Wait for a topic to become idle](#wait-for-a-topic-to-become-idle)
   - [Shut down an async bus](#shut-down-an-async-bus)
 - [Errors, diagnostics, and troubleshooting](#errors-diagnostics-and-troubleshooting)
@@ -301,7 +309,7 @@ In the API, a `provider` is the backend that actually delivers messages. `local`
 | `NoneAccepted(summary)` | Destinations were found, but none admitted the message. Inspect skip and rejection reasons. |
 | `NoDestinations` | No destination was found. Check that subscriptions exist and that the topic name matches. |
 | `OpaqueAccepted` | The transport says it accepted the message and does not identify the destinations. |
-| `SentUnconfirmed` | The send attempt finished, but the provider did not confirm admission. Reconcile by event ID; do not assume rejection or retry automatically. |
+| [`SentUnconfirmed`](migration.md#unconfirmed-publish-acknowledgements-source-changes-after-v0214) | Added in source changes after core `v0.21.4`. The send attempt finished, but the provider did not confirm admission. Reconcile by event ID; do not assume rejection or retry automatically. |
 | `Dropped` | A publish interceptor discarded the message before delivery. |
 
 ### Decide whether a failed publication can be repeated
@@ -311,6 +319,8 @@ In the API, a `provider` is the backend that actually delivers messages. `local`
 `PublishOptions::builder().duplicate_risk_policy(...)` defaults to `DuplicateRiskPolicy::Forbid`. This hard gate stops retries after an uncertain attempt, ahead of custom `RetryRule` decisions. `AllowDuplicates` permits the configured `qubit-retry` policy to consider another attempt; it neither enables retry by itself nor guarantees that retry will occur. Retries reuse the event ID, timestamp, and encoded bytes. Typed interceptors may transform the envelope but cannot change its event ID.
 
 Uncertainty is retained across the whole logical publication: a later definite rejection cannot turn an earlier uncertain attempt into `NotAccepted`. If permitted retries eventually succeed, `receipt.duplicate_possible()` is true when an earlier attempt was uncertain. Successful provider admission still does not prove handler completion or persistence.
+
+Both `EventBus` and `AsyncEventBus` expose `sent_unconfirmed_count() -> u64`. It counts one `SentUnconfirmed` receipt per publication. It is an independently sampled diagnostic value, so concurrent reads need not describe the same instant as other counters, and it saturates at `u64::MAX`. `BatchPublishResult::sent_unconfirmed_count() -> usize` counts only successful items with this receipt; failed items are excluded. `NotificationStatsSnapshot::admission_sent_unconfirmed() -> u64` is a separate counter from opaque acceptance and also saturates. These APIs count receipt classifications, not provider delivery or business completion.
 
 Cancellation is also a result boundary. If `RetryCancellationToken` cancels an already-polled SPI attempt and the call returns an error, its effect is uncertain. Cancelling before the SPI is called has no admission effect. Dropping the public publish future produces no returned failure; dropping an unpolled future makes no attempt, while dropping an already-started operation requires the application to retain its event ID and treat the outcome as possibly published. RetryPolicy budgets are soft budgets and do not promise a hard timeout of every in-flight provider operation, especially synchronous I/O.
 

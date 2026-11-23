@@ -1438,6 +1438,18 @@ A `Graceful` timeout is the deadline of that `shutdown` call; concurrent calls h
 
 A bounded caller wait is not forced process exit. `Immediate` can still wait for an uncooperative handler/SPI and is not a timeout rescue. Dropping the leader future releases leadership and wakes waiters, but does not start an asynchronous background coordinator. Cleanup continues only if another `shutdown` future remains polled; if there are no waiters, the application must call `shutdown` again and poll that future. Once the bus reaches `Closed`, later calls reuse the cached report or return the retained canonical close errors. The synchronous `request_shutdown` API is different: it starts a background coordinator and returns an observation ticket. See the [compiled sync/async policy](user_guide.md#shut-down-a-sync-bus).
 
+For `AsyncEventBus`, the SPI's `shutdown(mode).await` result and the caller's
+wait deadline are separate. `Ok(ShutdownOutcome::TimedOut)` is a provider
+terminal outcome: the facade disposes remaining controls, records known
+abandonment and provider uncertainty, caches the resulting `ShutdownReport`,
+and transitions to `Closed`. A caller deadline expiring while awaiting cleanup
+returns `Err(ShutdownError::TimedOut)` instead; it does not create a report or
+cancel cleanup, and a later call can observe or continue the attempt. Neither
+result determines whether an application handler performed its business side
+effect. Check `known_abandoned_deliveries` and
+`provider_may_have_abandoned_deliveries`; these describe delivery evidence,
+not business rollback or persistence.
+
 ### 9.8 `BusContextFuture`: deadlock detection at poll scope
 
 The async side has no thread to bind, so it uses a **poll scope**. Each poll of a
@@ -1815,6 +1827,9 @@ Errors carry enough context (provider, operation, resource, retryability) and do
 | `PublishFailure` | `publish` / `publish_all` | Original event ID and aggregate effect wrapping `PublishError`: `Configuration`, `Capability`, `Codec`, `Spi`, `Retry(Box<RetryError<PublishAttemptError>>)`, `InterceptorPanicked { .. }`, `ErrorHandlerPanicked { .. }`, `Closed` |
 | `EventBusError` | Aggregate operation error | Transparent `PublishFailure(PublishFailure)` conversion preserves publication identity/effect; `Publish(PublishError)` remains a cause-only conversion |
 | `AdmissionCheckError` | `PublishReceipt::check_admission` | `VisibilityUnavailable`, `Dropped`, `NoAcceptedDestination`, `RejectedDestinations { .. }` |
+| `CheckedPublishError` | `publish_checked` | `UnsupportedVisibility`, `Publish`, `Admission { receipt, reason }` |
+| `SubscriptionStopReason` | `Subscription::terminal_failure` / async `run` | `Gap`, `Codec`, `Headers`, `Provider`, `Settlement` |
+| `PublishEffect` | `PublishFailure::effect` / `SpiError::publish_effect` | `NotAccepted`, `MayHaveBeenAccepted` |
 | `SubscribeError` | `subscribe` | `Configuration`, `Capability`, `Spi`, `Closed` (a missing codec is `Capability`) |
 | `DeliveryError` | handler return / pipeline | `Handler { source }`, `Codec`, `Spi`, `Retry(Box<RetryError<DeliveryAttemptError>>)` |
 | `LifecycleError` | `wait_for_*`, `cancel`, shutdown internals | `Timer(TimeError)`, `WouldDeadlock { operation }`, `Closed`, `IdleWaitUnsupported`, `Spi`, `SubscriptionClose(Arc<SubscriptionCloseErrors>)` |
@@ -1824,6 +1839,14 @@ Errors carry enough context (provider, operation, resource, retryability) and do
 | `EventBusProviderError` | provider authors | The error wrapper a provider `create` returns, aggregated by `qubit-spi` |
 | `SpiError` | provider | `Publish { provider_id, resource, kind, retryable, effect, source }`, `Operation { provider_id, operation, resource, kind, retryable, source }`, `InvalidSettlementToken { .. }` |
 | `CapabilityError` / `CodecError` / `ConfigurationError` / `EventIdGenerationError` | construction or validation | see each type |
+
+`CheckedPublishError`, `AdmissionCheckError`, `SubscriptionStopReason`, and
+`PublishEffect` are public enums without `#[non_exhaustive]`. Downstream
+exhaustive matches are tied to the current variant set and must be updated when
+these enums gain a variant. Applications that need source compatibility across
+core updates should include a fallback arm and handle unknown future cases
+explicitly. This differs from error and capability enums marked
+`#[non_exhaustive]`.
 
 `EventBusError` implements `From<PublishFailure>` through its transparent
 `PublishFailure` variant, so `bus.publish(request)?` in an application function
@@ -1848,7 +1871,9 @@ preserves the underlying source chain.
   Each facade layer's `Closed`
   variant comes from that layer's own lifecycle gate. A closed-style `SpiError`
   returned by a provider after shutdown is passed through as the `Spi` variant and is not remapped.
-- Enums are `#[non_exhaustive]` so a new variant can be added later.
+- Most error and capability enums are `#[non_exhaustive]`; the four enums
+  identified above remain exhaustive and require downstream match updates when
+  their variant sets change.
 - Every error is `Send + Sync + 'static` and can cross threads and tasks.
 - Internal `PipelineFailure { origin, error, publish_effect }` is not public. It carries the failing stage to diagnostics and tests.
 
@@ -2073,7 +2098,12 @@ These types are the stable boundary and should change deliberately:
 - the provider spec and the registry;
 - the per-operation error types and their accessors.
 
-Public error enums, capability enums, and `Diagnostic` are `#[non_exhaustive]`.
+Most public error enums, capability enums, and `Diagnostic` are
+`#[non_exhaustive]`. `CheckedPublishError`, `AdmissionCheckError`,
+`SubscriptionStopReason`, and `PublishEffect` are exceptions: they are
+exhaustive, so downstream exhaustive matches must be updated when their
+variants change. A wildcard arm is appropriate when an application needs to
+accept future variants without a source edit.
 SPI input structs use private fields, constructors, and accessors, so adding a field
 is not a breaking change. Backend-specific extensions go through namespaced
 `ProviderOptions` or a separate extension trait. They do not keep adding methods to the minimal SPI.

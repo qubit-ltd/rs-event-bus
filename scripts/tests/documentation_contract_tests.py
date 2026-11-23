@@ -27,6 +27,33 @@ class DocumentationContractTests(unittest.TestCase):
         self.listing.write_text("scripts/tool.py\n", encoding="utf-8")
         (self.root / "doc/user_guide.md").write_text("### Migrate from 0.20 to 0.21\n", encoding="utf-8")
         (self.root / "doc/user_guide.zh_CN.md").write_text("### 从 0.20 迁移到 0.21\n", encoding="utf-8")
+        for guide, anchors in checker.GUIDE_TOC_ENTRIES.items():
+            titles = {
+                "判断发布失败后能否重发": "判断发布失败后能否重发",
+                "预检拒绝与未确认发送": "预检拒绝与未确认发送",
+                "排查结算终止并恢复消费": "排查结算终止并恢复消费",
+                "portable-header-限额": "Portable header 限额",
+                "对照-local-与-redis-的实际能力": "对照 local 与 Redis 的实际能力",
+                "运行-redis-订单示例": "运行 Redis 订单示例",
+                "用外部-watchdog-限制-conformance-执行时间": "用外部 watchdog 限制 conformance 执行时间",
+                "非阻塞地请求停机": "非阻塞地请求停机",
+            }
+            english_titles = {
+                "decide-whether-a-failed-publication-can-be-repeated": "Decide whether a failed publication can be repeated",
+                "preflight-rejection-and-an-unconfirmed-send": "Preflight rejection and an unconfirmed send",
+                "diagnose-settlement-termination-and-restore-consumption": "Diagnose settlement termination and restore consumption",
+                "portable-header-limits": "Portable header limits",
+                "compare-local-and-redis-capabilities": "Compare local and Redis capabilities",
+                "run-the-redis-order-examples": "Run the Redis order examples",
+                "bound-a-conformance-run-with-an-external-watchdog": "Bound a conformance run with an external watchdog",
+                "request-shutdown-without-waiting": "Request shutdown without waiting",
+            }
+            title_map = english_titles if guide.endswith(".md") and not guide.endswith("zh_CN.md") else titles
+            (self.root / guide).write_text(
+                "## Contents\n" + "".join(f"- [{title_map[a]}](#{a})\n" for a in anchors) +
+                "## Body\n" + ("### Migrate from 0.20 to 0.21\n" if guide.endswith(".md") and not guide.endswith("zh_CN.md")
+                                  else "### 从 0.20 迁移到 0.21\n") +
+                "".join(f"### {title_map[a]}\n" for a in anchors), encoding="utf-8")
         self._migration_pages()
 
     def tearDown(self):
@@ -95,6 +122,18 @@ class DocumentationContractTests(unittest.TestCase):
     def test_missing_guide_anchor_is_rejected(self):
         (self.root / "doc/migration.md").write_text("[简体中文](migration.zh_CN.md) [guide](user_guide.md#wrong)\n", encoding="utf-8")
         self.assertFalse(checker.check_migration_contract(self.root, self.listing))
+
+    def test_missing_operational_toc_entry_is_rejected(self):
+        guide = self.root / "doc/user_guide.md"
+        guide.write_text(guide.read_text(encoding="utf-8").replace(
+            "- [Run the Redis order examples](#run-the-redis-order-examples)\n", ""), encoding="utf-8")
+        self.assertFalse(checker.check_guide_toc_contract(self.root))
+
+    def test_missing_operational_toc_target_is_rejected(self):
+        guide = self.root / "doc/user_guide.zh_CN.md"
+        guide.write_text(guide.read_text(encoding="utf-8").replace(
+            "### 排查结算终止并恢复消费\n", ""), encoding="utf-8")
+        self.assertFalse(checker.check_guide_toc_contract(self.root))
 
 
 if __name__ == "__main__":
