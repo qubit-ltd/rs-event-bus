@@ -10,6 +10,8 @@
 #![allow(clippy::too_many_arguments)]
 
 use std::any::Any;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -25,6 +27,7 @@ use crate::error::DeliveryError;
 use crate::facade::event_bus::EventBusInner;
 use crate::facade::event_bus::publishing::publish_internal;
 use crate::facade::event_bus::worker::count_abandoned;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::AdmissionOutcome;
 use crate::model::DEAD_LETTER_HEADER;
 use crate::model::DEAD_LETTER_HEADER_VALUE;
@@ -316,7 +319,7 @@ pub(in crate::facade) fn settle_rejected(
     topic: &str,
     error: DeliveryError,
 ) {
-    match token {
+    let untransferred_token = match token {
         Some(token) if !token.belongs_to(subscription_id) => {
             // Invalid ownership is validated by the receiver before SPI entry,
             // even when this provider cannot otherwise perform Reject.
@@ -328,6 +331,7 @@ pub(in crate::facade) fn settle_rejected(
                 subscription_id,
                 subscriber_id,
             );
+            None
         }
         Some(token) if inner.capabilities.settlement() == SettlementCapabilities::AcceptRetryReject => {
             settler.settle(
@@ -338,6 +342,7 @@ pub(in crate::facade) fn settle_rejected(
                 subscription_id,
                 subscriber_id,
             );
+            None
         }
         token => {
             count_abandoned(inner, subscription_id);
@@ -351,8 +356,9 @@ pub(in crate::facade) fn settle_rejected(
                     requested: DeliveryDisposition::Reject,
                 });
             }
+            token
         }
-    }
+    };
     inner.emit(Diagnostic::DeliveryFailed {
         event_id,
         topic: topic.into(),
@@ -361,6 +367,22 @@ pub(in crate::facade) fn settle_rejected(
         attempts: 0,
         error: format_diagnostic_error(&error, "decode error formatting panicked").into(),
     });
+    if let Some(token) = untransferred_token
+        && let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(token)))
+    {
+        dispose_panic_payload(payload);
+        inner.emit(Diagnostic::InternalFailure {
+            origin: "rejected_settlement_token_drop".into(),
+            message: "rejected settlement token drop panicked".into(),
+        });
+    }
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(error))) {
+        dispose_panic_payload(payload);
+        inner.emit(Diagnostic::InternalFailure {
+            origin: "rejected_codec_error_drop".into(),
+            message: "rejected codec error drop panicked".into(),
+        });
+    }
 }
 
 /// Publishes one stable dead-letter envelope within the subscription retry

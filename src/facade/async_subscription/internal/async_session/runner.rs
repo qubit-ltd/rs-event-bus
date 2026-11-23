@@ -12,8 +12,6 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::future::poll_fn;
 use std::io::Error;
-use std::panic::AssertUnwindSafe;
-use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
@@ -35,8 +33,6 @@ use crate::facade::async_subscription::internal::BusContextFuture;
 use crate::facade::async_subscription::internal::OwnedDeliveryTask;
 use crate::facade::async_subscription::internal::PendingDelivery;
 use crate::facade::async_subscription::internal::owned_delivery_lease::OwnedDeliveryLease;
-use crate::facade::async_subscription::internal::with_subscription_scope;
-use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::Delivery;
 use crate::model::SubscriptionStopReason;
 use crate::spi::ReceiveOutcome;
@@ -152,7 +148,10 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
     /// # Errors
     /// Returns the first terminal cause, or a close failure if no earlier cause
     /// exists. Dropping this future pauses owned work and cancels only local
-    /// SPI waits.
+    /// SPI waits. A later run may replace the handler for new work; started
+    /// tasks retain the original handler until they finish. If its final
+    /// capture destructor panics after replacement, the panic is contained and
+    /// reported as an internal failure.
     pub(in crate::facade) async fn run<H, F>(
         &mut self,
         handler: H,
@@ -163,18 +162,15 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         F: Future<Output = Result<(), DeliveryError>> + Send + 'static,
     {
         let _runner = AsyncRunnerGuard::enter(self.inner.tracker.clone());
-        let handler: SharedAsyncHandler<T> = Arc::new(move |delivery| Box::pin(handler(delivery)));
-        let previous_handler = self.handler.replace(handler.clone());
-        let bus_key = Arc::as_ptr(&self.inner) as usize;
-        with_subscription_scope(bus_key, self.id, || {
-            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(previous_handler))) {
-                dispose_panic_payload(payload);
-                self.inner.emit(&Diagnostic::InternalFailure {
-                    origin: "replaced_async_handler_drop".into(),
-                    message: "replaced async handler drop panicked".into(),
-                });
-            }
-        });
+        let handler = super::super::super::AsyncHandlerOwner::new(
+            move |delivery| Box::pin(handler(delivery)),
+            self.inner.clone(),
+            self.id,
+        );
+        if let Some(previous_handler) = self.handler.replace(handler.clone()) {
+            previous_handler.mark_replaced();
+            drop(previous_handler);
+        }
         let result = self.run_loop(handler).await;
         let closed = self.close_inner(control).await;
         result?;
@@ -247,20 +243,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 .await;
             }
             if self.signals.is_stopped() && !self.signals.stopping_gracefully() {
-                let mut drop_panicked = false;
-                while let Some(delivery) = self.buffered.pop_front() {
-                    self.record_abandoned_delivery();
-                    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| delivery.drop_independently())) {
-                        dispose_panic_payload(payload);
-                        drop_panicked = true;
-                    }
-                }
-                if drop_panicked {
-                    self.inner.emit(&Diagnostic::InternalFailure {
-                        origin: "immediate_stop_buffer_drop".into(),
-                        message: "buffered delivery drop panicked".into(),
-                    });
-                }
+                self.abandon_buffered();
                 self.discard_unstarted_tasks();
                 self.inner.scheduler.stop_subscription(self.id);
                 if self.signals.terminal_failure().is_some() {
