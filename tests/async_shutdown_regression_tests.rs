@@ -95,7 +95,15 @@ struct ReenterOnSampleClock {
     bus: Arc<Mutex<Option<AsyncEventBus>>>,
     observed: ShutdownReentryObservation,
     samples: AtomicUsize,
+    reenter_on_sample: usize,
     elapsed_before_provider_sample: Duration,
+}
+
+struct ReenterOnAtTimer {
+    clock: Arc<ManualMonotonicClock>,
+    bus: Arc<Mutex<Option<AsyncEventBus>>>,
+    observed: ShutdownReentryObservation,
+    reentered: AtomicBool,
 }
 
 impl MonotonicClock for ReenterOnSampleClock {
@@ -104,10 +112,10 @@ impl MonotonicClock for ReenterOnSampleClock {
     }
 
     fn now(&self) -> MonotonicInstant {
-        if self.samples.fetch_add(1, Ordering::SeqCst) == 1 {
+        if self.samples.fetch_add(1, Ordering::SeqCst) == self.reenter_on_sample {
             self.clock
                 .advance(self.elapsed_before_provider_sample)
-                .expect("advance clock during leader sampling");
+                .expect("advance clock during reentrant sample");
             let bus = self.bus.lock().expect("bus lock").clone().expect("bus installed");
             let mut reentrant = Box::pin(bus.shutdown(ShutdownMode::Immediate));
             let result = reentrant
@@ -133,6 +141,25 @@ impl Timer for ReenterOnSampleTimer {
 
     fn at(&self, deadline: MonotonicInstant) -> Result<TimerFuture, TimeError> {
         self.0.clock.new_timer().at(deadline)
+    }
+}
+
+impl Timer for ReenterOnAtTimer {
+    fn clock(&self) -> &dyn MonotonicClock {
+        self.clock.as_ref()
+    }
+
+    fn at(&self, deadline: MonotonicInstant) -> Result<TimerFuture, TimeError> {
+        if !self.reentered.swap(true, Ordering::SeqCst) {
+            let bus = self.bus.lock().expect("bus lock").clone().expect("bus installed");
+            let mut reentrant = Box::pin(bus.shutdown(ShutdownMode::Immediate));
+            let result = reentrant
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .map(|result| result.map(|_| ()));
+            *self.observed.lock().expect("observation lock") = Some(result);
+        }
+        self.clock.new_timer().at(deadline)
     }
 }
 
@@ -254,6 +281,7 @@ fn test_graceful_provider_clock_sample_rejects_same_bus_shutdown() {
         bus: bus_slot.clone(),
         observed: observed.clone(),
         samples: AtomicUsize::new(0),
+        reenter_on_sample: 1,
         elapsed_before_provider_sample: Duration::from_nanos(7),
     });
     let provider = Arc::new(ShutdownGateSpi::new(false));
@@ -289,6 +317,87 @@ fn test_graceful_provider_clock_sample_rejects_same_bus_shutdown() {
     drop(graceful);
     *bus_slot.lock().expect("bus lock") = None;
     let _ = block_on_shutdown(bus.shutdown(ShutdownMode::Immediate));
+}
+
+#[test]
+fn test_graceful_first_deadline_sample_reenters_without_self_wait() {
+    let bus_slot = Arc::new(Mutex::new(None));
+    let observed = Arc::new(Mutex::new(None));
+    let clock = Arc::new(ReenterOnSampleClock {
+        clock: ManualMonotonicClock::new(),
+        bus: bus_slot.clone(),
+        observed: observed.clone(),
+        samples: AtomicUsize::new(0),
+        reenter_on_sample: 0,
+        elapsed_before_provider_sample: Duration::ZERO,
+    });
+    let clock_probe = clock.clone();
+    let bus = AsyncEventBus::with_timer(
+        ProviderId::new("deadline-sample-reenter").expect("provider ID"),
+        Arc::new(FakeAsyncEventBusSpi::new()),
+        Arc::new(ReenterOnSampleTimer(clock)),
+    )
+    .expect("facade");
+    *bus_slot.lock().expect("bus lock") = Some(bus.clone());
+
+    let mut graceful = Box::pin(bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(1),
+    }));
+    let outer = graceful.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+    let Poll::Ready(Ok(report)) = outer else {
+        panic!("outer graceful shutdown should observe nested shutdown completion: {outer:?}");
+    };
+    assert_eq!(SpiShutdownOutcome::Complete, report.outcome);
+    assert!(
+        matches!(
+            observed.lock().expect("observation lock").as_ref(),
+            Some(Poll::Ready(Ok(())))
+        ),
+        "first deadline clock sample nested shutdown result: {:?}",
+        observed.lock().expect("observation lock")
+    );
+    assert_eq!(
+        1,
+        clock_probe.samples.load(Ordering::SeqCst),
+        "callback ran at the first deadline sample"
+    );
+    *bus_slot.lock().expect("bus lock") = None;
+}
+
+#[test]
+fn test_graceful_timer_at_reentry_completes_without_self_wait() {
+    let bus_slot = Arc::new(Mutex::new(None));
+    let observed = Arc::new(Mutex::new(None));
+    let bus = AsyncEventBus::with_timer(
+        ProviderId::new("timer-at-reenter").expect("provider ID"),
+        Arc::new(FakeAsyncEventBusSpi::new()),
+        Arc::new(ReenterOnAtTimer {
+            clock: Arc::new(ManualMonotonicClock::new()),
+            bus: bus_slot.clone(),
+            observed: observed.clone(),
+            reentered: AtomicBool::new(false),
+        }),
+    )
+    .expect("facade");
+    *bus_slot.lock().expect("bus lock") = Some(bus.clone());
+
+    let mut graceful = Box::pin(bus.shutdown(ShutdownMode::Graceful {
+        timeout: Duration::from_secs(1),
+    }));
+    let outer = graceful.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+    let Poll::Ready(Ok(report)) = outer else {
+        panic!("outer graceful shutdown should observe Timer::at nested completion: {outer:?}");
+    };
+    assert_eq!(SpiShutdownOutcome::Complete, report.outcome);
+    assert!(
+        matches!(
+            observed.lock().expect("observation lock").as_ref(),
+            Some(Poll::Ready(Ok(())))
+        ),
+        "Timer::at nested shutdown result: {:?}",
+        observed.lock().expect("observation lock")
+    );
+    *bus_slot.lock().expect("bus lock") = None;
 }
 
 #[test]
