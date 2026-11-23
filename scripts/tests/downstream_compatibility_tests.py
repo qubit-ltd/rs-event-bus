@@ -12,7 +12,7 @@ from unittest.mock import patch
 from scripts.check_downstream_compatibility import cargo_config
 from scripts.check_downstream_compatibility import main
 from scripts.check_downstream_compatibility import metadata
-from scripts.check_downstream_compatibility import metadata_preserving_lock
+from scripts.check_downstream_compatibility import preserve_lockfiles
 from scripts.check_downstream_compatibility import run
 from scripts.check_downstream_compatibility import validate_graph_for_downstream
 from scripts.check_downstream_compatibility import verify_test
@@ -296,7 +296,7 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             self.assertIn(f"core: revision=", stdout.getvalue())
             self.assertIn("downstream compatibility checks passed", stdout.getvalue())
 
-    def test_metadata_preserving_lock_restores_bytes_on_success_and_error(self):
+    def test_worktree_lock_lifecycle_spans_metadata_and_tests(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             lockfile = root / "Cargo.lock"
@@ -306,40 +306,36 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                                    1_600_000_001_987_654_321))
             original_mtime = lockfile.stat().st_mtime_ns
 
-            def mutate(*_args):
-                lockfile.write_bytes(b"cargo changed this\n")
-                return {}
+            def sequence(test_fails=False):
+                with preserve_lockfiles((root,)):
+                    lockfile.write_bytes(b"cargo changed this\n")
+                    self.assertEqual(lockfile.read_bytes(), b"cargo changed this\n")
+                    if test_fails:
+                        raise RuntimeError("test failed")
 
-            with patch("scripts.check_downstream_compatibility.metadata", side_effect=mutate):
-                metadata_preserving_lock(root, None, root, None, root)
+            sequence()
             self.assertEqual(lockfile.read_bytes(), original)
             self.assertEqual(lockfile.stat().st_mtime_ns, original_mtime)
 
-            def mutate_then_fail(*_args):
-                lockfile.write_bytes(b"partial cargo output\n")
-                raise RuntimeError("metadata failed")
-
-            with patch("scripts.check_downstream_compatibility.metadata", side_effect=mutate_then_fail):
-                with self.assertRaisesRegex(RuntimeError, "metadata failed"):
-                    metadata_preserving_lock(root, None, root, None, root)
+            with self.assertRaisesRegex(RuntimeError, "test failed"):
+                sequence(test_fails=True)
             self.assertEqual(lockfile.read_bytes(), original)
             self.assertEqual(lockfile.stat().st_mtime_ns, original_mtime)
 
             lockfile.unlink()
             for failure in (False, True):
-                def create_then_finish(*_args):
-                    lockfile.write_bytes(b"cargo generated this\n")
-                    if failure:
-                        raise RuntimeError("metadata failed")
-                    return {}
+                def sequence_absent(test_fails=False):
+                    with preserve_lockfiles((root,)):
+                        lockfile.write_bytes(b"cargo generated this\n")
+                        self.assertEqual(lockfile.read_bytes(), b"cargo generated this\n")
+                        if test_fails:
+                            raise RuntimeError("test failed")
 
-                with patch("scripts.check_downstream_compatibility.metadata",
-                           side_effect=create_then_finish):
-                    if failure:
-                        with self.assertRaisesRegex(RuntimeError, "metadata failed"):
-                            metadata_preserving_lock(root, None, root, None, root)
-                    else:
-                        metadata_preserving_lock(root, None, root, None, root)
+                if failure:
+                    with self.assertRaisesRegex(RuntimeError, "test failed"):
+                        sequence_absent(test_fails=True)
+                else:
+                    sequence_absent()
                 self.assertFalse(lockfile.exists())
 
 

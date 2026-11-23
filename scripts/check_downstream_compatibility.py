@@ -2,6 +2,7 @@
 """Validate downstream projects from snapshots or registered worktrees."""
 
 import argparse
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -119,19 +120,23 @@ def metadata(root, features, core, redis, target):
     return graph
 
 
-def metadata_preserving_lock(root, features, core, redis, target):
-    """Run metadata while preserving a direct worktree's lockfile exactly."""
-    lockfile = root / "Cargo.lock"
-    original_stat = lockfile.stat() if lockfile.exists() else None
-    original = lockfile.read_bytes() if original_stat is not None else None
+@contextmanager
+def preserve_lockfiles(roots):
+    originals = {}
+    for root in roots:
+        lockfile = root / "Cargo.lock"
+        original_stat = lockfile.stat() if lockfile.exists() else None
+        originals[lockfile] = (lockfile.read_bytes() if original_stat else None, original_stat)
     try:
-        return metadata(root, features, core, redis, target)
+        yield
     finally:
-        if original is None:
-            lockfile.unlink(missing_ok=True)
-        else:
-            lockfile.write_bytes(original)
-            os.utime(lockfile, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+        for lockfile, (original, original_stat) in originals.items():
+            if original is None:
+                lockfile.unlink(missing_ok=True)
+            else:
+                lockfile.write_bytes(original)
+                os.utime(lockfile, ns=(original_stat.st_atime_ns,
+                                       original_stat.st_mtime_ns))
 
 
 def verify_test(root, name, arguments, core, redis, env):
@@ -204,7 +209,7 @@ def main():
         target_root = temp_root / "target"
         if args.use_worktrees:
             redis, task = (root for _label, root in inputs)
-            metadata_check = metadata_preserving_lock
+            lock_context = preserve_lockfiles((redis, task))
         else:
             snapshots = {}
             for label, source in inputs:
@@ -216,15 +221,26 @@ def main():
                 snapshots[label] = snapshot
             redis = snapshots["redis"]
             task = snapshots["rs-task"]
-            metadata_check = metadata
-        metadata_check(redis, None, core, None, target_root / "redis")
-        metadata_check(task, "sqlite,event-bus", core, redis, target_root / "rs-task")
-        for label, manifest, test_name, command in TESTS:
-            root = task if label == "rs-task-outbox" else redis
-            package = redis if root == task else None
-            env = os.environ.copy()
-            env["CARGO_TARGET_DIR"] = str(target_root / ("rs-task" if root == task else "redis"))
-            verify_test(root, test_name, command, core, package, env)
+            lock_context = None
+        if lock_context is None:
+            metadata(redis, None, core, None, target_root / "redis")
+            metadata(task, "sqlite,event-bus", core, redis, target_root / "rs-task")
+            for label, manifest, test_name, command in TESTS:
+                root = task if label == "rs-task-outbox" else redis
+                package = redis if root == task else None
+                env = os.environ.copy()
+                env["CARGO_TARGET_DIR"] = str(target_root / ("rs-task" if root == task else "redis"))
+                verify_test(root, test_name, command, core, package, env)
+        else:
+            with lock_context:
+                metadata(redis, None, core, None, target_root / "redis")
+                metadata(task, "sqlite,event-bus", core, redis, target_root / "rs-task")
+                for label, manifest, test_name, command in TESTS:
+                    root = task if label == "rs-task-outbox" else redis
+                    package = redis if root == task else None
+                    env = os.environ.copy()
+                    env["CARGO_TARGET_DIR"] = str(target_root / ("rs-task" if root == task else "redis"))
+                    verify_test(root, test_name, command, core, package, env)
     print("downstream compatibility checks passed", flush=True)
 
 
