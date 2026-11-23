@@ -189,27 +189,49 @@ impl ShutdownCoordinator {
         token: &mut Option<u64>,
         cx: &Context<'_>,
     ) -> Poll<Option<ShutdownResult>> {
-        let next_waker = cx.waker().clone();
-        let retired = {
-            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        // Avoid cloning an executor waker for completed and stale tickets.
+        // The second check below closes the race with completion while keeping
+        // both clone and retirement callbacks outside coordinator state.
+        {
+            let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(result) = state.results.get(&generation) {
                 return Poll::Ready(Some(result.clone()));
             }
             if !state.active || state.generation != generation {
                 return Poll::Ready(None);
             }
-            let registration = *token.get_or_insert_with(|| {
-                state.next_registration = state.next_registration.wrapping_add(1);
-                state.next_registration
-            });
-            state
-                .wakers
-                .entry(generation)
-                .or_default()
-                .insert(registration, next_waker)
+        }
+        let mut next_waker = Some(cx.waker().clone());
+        let (retired, outcome) = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(result) = state.results.get(&generation) {
+                (None, Some(Poll::Ready(Some(result.clone()))))
+            } else if !state.active || state.generation != generation {
+                (None, Some(Poll::Ready(None)))
+            } else {
+                let registration = *token.get_or_insert_with(|| {
+                    state.next_registration = state.next_registration.wrapping_add(1);
+                    state.next_registration
+                });
+                let retired = state
+                    .wakers
+                    .entry(generation)
+                    .or_default()
+                    .insert(registration, next_waker.take().expect("waker clone is available"));
+                (retired, None)
+            }
         };
-        drop(retired);
-        Poll::Pending
+        if let Some(retired) = retired {
+            dispose_waker(retired);
+        }
+        if let Some(unused) = next_waker {
+            dispose_waker(unused);
+        }
+        if let Some(outcome) = outcome {
+            outcome
+        } else {
+            Poll::Pending
+        }
     }
 
     /// Cancels only the asynchronous registration identified by this token.
@@ -231,7 +253,9 @@ impl ShutdownCoordinator {
                 None
             }
         };
-        drop(retired);
+        if let Some(retired) = retired {
+            dispose_waker(retired);
+        }
     }
 
     /// Releases one ticket, reclaiming its generation after the final ticket.
@@ -254,7 +278,16 @@ impl ShutdownCoordinator {
                 None
             }
         };
-        drop(retired);
+        if let Some((result, wakers)) = retired {
+            if let Some(result) = result {
+                dispose_shutdown_result(result);
+            }
+            if let Some(wakers) = wakers {
+                for waker in wakers.into_values() {
+                    dispose_waker(waker);
+                }
+            }
+        }
     }
 
     /// Saves completion under the state lock, then invokes wakers outside it.
@@ -265,19 +298,27 @@ impl ShutdownCoordinator {
     /// - `generation`: active attempt that may accept the result.
     /// - `result`: immutable completion shared with that generation's tickets.
     fn complete(&self, generation: u64, result: ShutdownResult) {
-        let wakers = {
+        let (wakers, result) = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             if state.generation != generation || !state.active {
-                return;
+                (None, Some(result))
+            } else {
+                let result = if state.waiters.contains_key(&generation) {
+                    state.results.insert(generation, result);
+                    None
+                } else {
+                    // No ticket can observe this generation anymore.
+                    Some(result)
+                };
+                state.active = false;
+                self.changed.notify_all();
+                (Some(state.wakers.remove(&generation).unwrap_or_default()), result)
             }
-            if state.waiters.contains_key(&generation) {
-                state.results.insert(generation, result);
-            }
-            state.active = false;
-            self.changed.notify_all();
-            state.wakers.remove(&generation).unwrap_or_default()
         };
-        for waker in wakers.into_values() {
+        if let Some(result) = result {
+            dispose_shutdown_result(result);
+        }
+        for waker in wakers.unwrap_or_default().into_values() {
             // One executor's broken observer must not strand the remaining tickets.
             if let Err(payload) = catch_unwind(AssertUnwindSafe(|| waker.wake())) {
                 dispose_panic_payload(payload);
@@ -286,8 +327,24 @@ impl ShutdownCoordinator {
     }
 }
 
+/// Drops a user waker while containing a panicking destructor.
+fn dispose_waker(waker: std::task::Waker) {
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(waker))) {
+        dispose_panic_payload(payload);
+    }
+}
+
+/// Drops a retained shutdown result while containing provider error destructors.
+fn dispose_shutdown_result(result: ShutdownResult) {
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(result))) {
+        dispose_panic_payload(payload);
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fmt::Display;
+    use std::fmt::Formatter;
     use std::io::Error;
     use std::panic::AssertUnwindSafe;
     use std::panic::catch_unwind;
@@ -312,6 +369,7 @@ mod tests {
     }
 
     use super::ShutdownCoordinator;
+    use crate::error::SpiError;
     use crate::facade::shutdown_result::ShutdownResult;
     use crate::spi::ShutdownMode;
     use crate::spi::ShutdownOutcome;
@@ -357,6 +415,50 @@ mod tests {
         assert!(leader);
         assert_ne!(retry_generation, generation);
         coordinator.abort_start(retry_generation, Error::other("failed start"));
+    }
+
+    #[test]
+    fn test_unobserved_completion_disposes_provider_error_outside_state_lock() {
+        #[derive(Debug)]
+        struct PanicOnDrop(Arc<AtomicBool>);
+
+        impl Display for PanicOnDrop {
+            fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("panic on drop")
+            }
+        }
+
+        impl std::error::Error for PanicOnDrop {}
+
+        impl Drop for PanicOnDrop {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+                panic!("provider error destructor");
+            }
+        }
+
+        let coordinator = ShutdownCoordinator::new();
+        let (_, generation) = coordinator.begin(ShutdownMode::Immediate);
+        coordinator.release(generation);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let result = SpiError::Operation {
+            provider_id: "test".into(),
+            operation: "shutdown",
+            resource: None,
+            kind: "test",
+            retryable: None,
+            source: Box::new(PanicOnDrop(Arc::clone(&dropped))),
+        };
+
+        let completion = catch_unwind(AssertUnwindSafe(|| coordinator.finish(generation, Err(result))));
+        assert!(completion.is_ok(), "unobserved result destructor panic is contained");
+        assert!(dropped.load(Ordering::SeqCst), "provider error destructor runs");
+        assert!(coordinator.state.try_lock().is_ok(), "state mutex remains unpoisoned");
+
+        let (leader, next_generation) = coordinator.begin(ShutdownMode::Immediate);
+        assert!(leader, "a later shutdown generation can start");
+        coordinator.abort_start(next_generation, Error::other("test cleanup"));
+        coordinator.release(next_generation);
     }
 
     #[test]
@@ -557,6 +659,50 @@ mod tests {
         assert!(state.waiters.is_empty());
         assert!(state.wakers.is_empty());
         assert!(state.results.is_empty());
+    }
+
+    #[test]
+    fn test_completed_and_stale_polls_do_not_clone_supplied_waker() {
+        struct Count;
+        impl Wake for Count {
+            fn wake(self: Arc<Self>) {}
+        }
+
+        let coordinator = ShutdownCoordinator::new();
+        let (_, generation) = coordinator.begin(ShutdownMode::Immediate);
+        coordinator.finish(generation, Ok(ShutdownOutcome::Complete));
+        let retained = Arc::new(Count);
+        let waker = Waker::from(retained.clone());
+        let mut token = None;
+        assert!(
+            coordinator
+                .poll_result(generation, &mut token, &Context::from_waker(&waker))
+                .is_ready()
+        );
+        assert_eq!(
+            Arc::strong_count(&retained),
+            2,
+            "ready poll must not clone the supplied waker"
+        );
+        coordinator.release(generation);
+
+        let (_, stale_generation) = coordinator.begin(ShutdownMode::Immediate);
+        coordinator.finish(stale_generation, Ok(ShutdownOutcome::Complete));
+        coordinator.release(stale_generation);
+        let (_, current_generation) = coordinator.begin(ShutdownMode::Immediate);
+        let mut stale_token = None;
+        assert!(
+            coordinator
+                .poll_result(stale_generation, &mut stale_token, &Context::from_waker(&waker))
+                .is_ready()
+        );
+        assert_eq!(
+            Arc::strong_count(&retained),
+            2,
+            "stale poll must not clone the supplied waker"
+        );
+        coordinator.abort_start(current_generation, Error::other("cleanup"));
+        coordinator.release(current_generation);
     }
 
     /// Tests user Wake::Drop without leaving a deliberately deadlocked thread.
