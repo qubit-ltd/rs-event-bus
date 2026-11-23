@@ -69,6 +69,29 @@ impl Drop for SettlementErrorDropPanic {
     }
 }
 
+struct HandlerErrorDropPanic(Arc<AtomicUsize>);
+
+impl std::fmt::Display for HandlerErrorDropPanic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("handler error source whose destructor panics")
+    }
+}
+
+impl std::fmt::Debug for HandlerErrorDropPanic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("HandlerErrorDropPanic")
+    }
+}
+
+impl Error for HandlerErrorDropPanic {}
+
+impl Drop for HandlerErrorDropPanic {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::AcqRel);
+        panic!("handler error source drop panic");
+    }
+}
+
 struct PanicOnDisplay {
     displays: Arc<AtomicUsize>,
     drops: Arc<AtomicUsize>,
@@ -1344,6 +1367,8 @@ fn test_sync_error_handler_drop_panic_still_settles_delivery() {
     let observed = worker_failed.clone();
     let callback_count = Arc::new(AtomicUsize::new(0));
     let callback_observed = callback_count.clone();
+    let source_drops = Arc::new(AtomicUsize::new(0));
+    let source_drop_count = source_drops.clone();
     let _observer = bus.observe_diagnostics(move |diagnostic| {
         if matches!(diagnostic, Diagnostic::InternalFailure { origin, .. } if origin.as_ref() == "owner_panicked") {
             observed.store(true, Ordering::Release);
@@ -1367,7 +1392,7 @@ fn test_sync_error_handler_drop_panic_still_settles_delivery() {
                     .expect("test receiver remains open");
                 if delivery.payload() != "continue" {
                     Err(DeliveryError::Handler {
-                        source: Box::new(IoError::other("handler failure")),
+                        source: Box::new(HandlerErrorDropPanic(source_drop_count.clone())),
                     })
                 } else {
                     Ok(())
@@ -1411,6 +1436,7 @@ fn test_sync_error_handler_drop_panic_still_settles_delivery() {
         3,
         "all deliveries settle after the error callback"
     );
+    assert_eq!(source_drops.load(Ordering::Acquire), 2);
     assert!(
         !worker_failed.load(Ordering::Acquire),
         "error handler failure must not escape into owner boundary"

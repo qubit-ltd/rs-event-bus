@@ -76,7 +76,7 @@ use crate::spi::SettlementToken;
 pub(in crate::facade) fn finish_failed_delivery<T>(
     inner: &Arc<EventBusInner>,
     settler: &OwnerSettlementRouter,
-    token: Option<SettlementToken>,
+    mut token: Option<SettlementToken>,
     event: Arc<EventEnvelope<T>>,
     subscription_id: Id,
     subscriber_id: &SubscriberId,
@@ -134,7 +134,7 @@ pub(in crate::facade) fn finish_failed_delivery<T>(
         settle_token(
             inner,
             settler,
-            token,
+            token.take(),
             disposition,
             &event,
             subscription_id,
@@ -145,7 +145,7 @@ pub(in crate::facade) fn finish_failed_delivery<T>(
         // Keep a durable source token unsettled so the provider can recover it.
     } else if token.as_ref().is_some_and(|token| !token.belongs_to(subscription_id)) {
         settler.settle(
-            token,
+            token.take(),
             requested_disposition,
             event.id().clone(),
             event.topic().name(),
@@ -171,6 +171,16 @@ pub(in crate::facade) fn finish_failed_delivery<T>(
         attempts,
         error: format_diagnostic_error(&error, "handler error formatting panicked").into(),
     });
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(error))) {
+        dispose_panic_payload(payload);
+        inner.emit_internal("handler_error_drop", "handler error source drop panicked".into());
+    }
+    if let Some(token) = token
+        && let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(token)))
+    {
+        dispose_panic_payload(payload);
+        inner.emit_internal("handler_token_drop", "handler settlement token drop panicked".into());
+    }
 }
 
 /// Forwards one failed delivery when its directive requests dead-lettering.

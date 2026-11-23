@@ -245,12 +245,25 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
         attempts: u32,
         directive: FailureDirective,
     ) {
-        let message = format_diagnostic_error(&error, "handler error formatting panicked");
+        let mut error = Some(error);
+        let message = format_diagnostic_error(
+            error.as_ref().expect("handler error exists"),
+            "handler error formatting panicked",
+        );
         self.record_failure_diagnostic(attempts, message.into());
         if directive == FailureDirective::DeadLetter && !delivery.context().is_dead_letter() {
             if let Some(policy) = self.options.dead_letter() {
-                match dead_letter_envelope(&delivery, &error, policy.topic_name()) {
+                match dead_letter_envelope(
+                    &delivery,
+                    error.as_ref().expect("handler error exists"),
+                    policy.topic_name(),
+                ) {
                     Ok(Some(envelope)) => {
+                        // Dead-letter content and the retained diagnostic are
+                        // now independent of the application error. Release
+                        // before awaiting publication so cancellation cannot
+                        // unwind through its destructor.
+                        self.release_handler_error(error.take().expect("handler error exists"));
                         match publish_dead_letter_async(
                             &self.inner,
                             &envelope,
@@ -281,6 +294,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
                         }
                     }
                     Ok(None) => {
+                        self.release_handler_error(error.take().expect("handler error exists"));
                         let source = Error::other("dead-letter envelope unexpectedly absent");
                         self.stop_after_dead_letter_failure(
                             delivery.event().id().clone(),
@@ -290,6 +304,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
                         return;
                     }
                     Err(source) => {
+                        self.release_handler_error(error.take().expect("handler error exists"));
                         self.stop_after_dead_letter_failure(
                             delivery.event().id().clone(),
                             "dead_letter_build",
@@ -299,6 +314,7 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
                     }
                 }
             } else {
+                self.release_handler_error(error.take().expect("handler error exists"));
                 let source = Error::other("dead-letter directive has no configured policy");
                 self.stop_after_dead_letter_failure(
                     delivery.event().id().clone(),
@@ -308,6 +324,9 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
                 return;
             }
         }
+        if let Some(error) = error.take() {
+            self.release_handler_error(error);
+        }
         let disposition = match directive {
             FailureDirective::Requeue => Some(DeliveryDisposition::Retry),
             FailureDirective::DeadLetter | FailureDirective::Discard | FailureDirective::Retry => {
@@ -316,6 +335,18 @@ impl<T: Send + Sync + 'static> DeliveryTaskContext<T> {
         };
         if let Some(disposition) = disposition {
             self.settle_pending(disposition, Some(delivery.event()));
+        }
+    }
+
+    /// Releases an application error source without allowing its destructor
+    /// panic to interrupt settlement or subscription cleanup.
+    fn release_handler_error(&self, error: DeliveryError) {
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(error))) {
+            dispose_panic_payload(payload);
+            self.inner.emit(&Diagnostic::InternalFailure {
+                origin: "handler_error_drop".into(),
+                message: "handler error source drop panicked".into(),
+            });
         }
     }
 

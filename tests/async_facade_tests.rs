@@ -3293,12 +3293,32 @@ fn test_measure_receiver_close_batch() {
 
 #[test]
 fn test_async_failure_with_unsupported_reject_reports_unavailable_without_spi_call() {
+    struct HandlerErrorDropPanic(Arc<AtomicUsize>);
+    impl std::fmt::Display for HandlerErrorDropPanic {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("async handler error source whose destructor panics")
+        }
+    }
+    impl std::fmt::Debug for HandlerErrorDropPanic {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("HandlerErrorDropPanic")
+        }
+    }
+    impl std::error::Error for HandlerErrorDropPanic {}
+    impl Drop for HandlerErrorDropPanic {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+            panic!("async handler error source drop panic");
+        }
+    }
+
     let spi = Arc::new(FakeAsyncEventBusSpi::with_capabilities(
         crate::support::fake_spi::native_no_settlement_capabilities(),
     ));
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
     let diagnostics = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let source_drops = Arc::new(AtomicUsize::new(0));
     let captured = diagnostics.clone();
     let _observer = bus.observe_diagnostics(move |diagnostic| captured.lock().unwrap().push(diagnostic.clone()));
 
@@ -3317,11 +3337,15 @@ fn test_async_failure_with_unsupported_reject_reports_unavailable_without_spi_ca
             Some(SettlementToken::new(subscription.id(), "no-reject-token")),
             Default::default(),
         ));
+        let runner_source_drops = source_drops.clone();
         let runner = std::thread::spawn(move || {
-            let result = block_on(subscription.run(|_| async {
-                Err(DeliveryError::Handler {
-                    source: Box::new(std::io::Error::other("expected")),
-                })
+            let result = block_on(subscription.run(move |_| {
+                let source_drops = runner_source_drops.clone();
+                async move {
+                    Err(DeliveryError::Handler {
+                        source: Box::new(HandlerErrorDropPanic(source_drops)),
+                    })
+                }
             }));
             (result, subscription.delivery_metrics())
         });
@@ -3346,6 +3370,7 @@ fn test_async_failure_with_unsupported_reject_reports_unavailable_without_spi_ca
         );
     });
     assert_eq!(spi.settlement_count(), 0);
+    assert_eq!(source_drops.load(Ordering::Acquire), 1);
     assert!(diagnostics.lock().unwrap().iter().any(|item| matches!(item,
         Diagnostic::SettlementUnavailable { event_id, requested: DeliveryDisposition::Reject, .. }
             if event_id.as_str() == "unsettled-event"
@@ -4828,9 +4853,30 @@ fn test_async_dead_letter_forward_display_panic_preserves_terminal_error() {
 
 #[test]
 fn test_async_unconfirmed_dead_letter_send_is_not_republished_or_settled() {
+    struct DropPanicError(Arc<AtomicUsize>);
+    impl std::fmt::Display for DropPanicError {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("dead-letter handler source")
+        }
+    }
+    impl std::fmt::Debug for DropPanicError {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("DropPanicError")
+        }
+    }
+    impl std::error::Error for DropPanicError {}
+    impl Drop for DropPanicError {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            panic!("dead-letter handler source drop panic");
+        }
+    }
+
     let spi = Arc::new(FakeAsyncEventBusSpi::new());
     let bus =
         AsyncEventBus::from_spi(ProviderId::new("fake").unwrap(), spi.clone()).expect("valid provider capabilities");
+    let source_drops = Arc::new(AtomicUsize::new(0));
+    let observed_source_drops = source_drops.clone();
     block_on(async {
         let options = SubscribeOptions::<u32>::builder()
             .retry_policy(RetryPolicy::builder().max_attempts(3).build().unwrap())
@@ -4851,10 +4897,13 @@ fn test_async_unconfirmed_dead_letter_send_is_not_republished_or_settled() {
             "unconfirmed-source-token",
         ))));
         let error = subscription
-            .run(|_| async {
-                Err(DeliveryError::Handler {
-                    source: Box::new(std::io::Error::other("handler failed")),
-                })
+            .run(move |_| {
+                let source_drops = observed_source_drops.clone();
+                async move {
+                    Err(DeliveryError::Handler {
+                        source: Box::new(DropPanicError(source_drops)),
+                    })
+                }
             })
             .await
             .expect_err("unconfirmed forwarding leaves source unsettled");
@@ -4866,6 +4915,7 @@ fn test_async_unconfirmed_dead_letter_send_is_not_republished_or_settled() {
         );
         let _ = bus.shutdown(ShutdownMode::Immediate).await.unwrap();
     });
+    assert_eq!(source_drops.load(Ordering::SeqCst), 1);
 }
 
 #[test]
