@@ -31,6 +31,7 @@ use super::internal::MailboxKey;
 use super::local_event_bus_spi::missing_native_payload_weight_error;
 use super::local_event_bus_spi::operation_error;
 use super::local_event_bus_spi::pre_admission_publish_error;
+use super::release_events;
 use super::state::LocalEvent;
 use super::state::LocalQueue;
 use super::state::LocalQueueState;
@@ -533,7 +534,7 @@ impl AsyncEventBusSpi for AsyncLocalEventBusSpi {
                 mailbox.queue.async_ready.notify_all();
             }
             self.shared.changed.notify_all();
-            drop(discarded);
+            release_events(discarded);
             Ok(result)
         })
     }
@@ -568,5 +569,5 @@ pub(super) fn close_mailbox(shared: &AsyncLocalShared, mailbox: &Arc<AsyncMailbo
     };
     mailbox.queue.async_ready.notify_all();
     shared.changed.notify_all();
-    drop(discarded);
+    release_events(discarded);
 }

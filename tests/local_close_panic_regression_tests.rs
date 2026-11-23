@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::pin::pin;
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
@@ -365,4 +366,40 @@ fn test_async_shutdown_finishes_state_before_payload_drop_panics() {
     drop(receive);
     assert!(poll(spi.shutdown(ShutdownMode::Immediate), Waker::noop()).is_ready());
     assert!(poll(waiter.receive(Duration::ZERO), Waker::noop()).is_ready());
+}
+
+#[test]
+fn test_sync_close_releases_each_panicking_payload_in_isolated_process() {
+    const CHILD: &str = "LOCAL_CLOSE_PANIC_BATCH_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let config = LocalEventBusConfig::new()
+            .max_total_outstanding(2)
+            .max_total_outstanding_weight_bytes(NonZeroUsize::new(14).expect("positive weight"));
+        let spi = LocalEventBusProvider
+            .create_configured(&EventBusConfig::default().with_provider_options(config.provider_options()))
+            .expect("valid sync SPI");
+        let mut receiver = spi.subscribe(request(901, "local.close.panic")).expect("subscription");
+        let (first, first_dropped) = message();
+        let (second, second_dropped) = message();
+        let _first_ack = spi.publish(first).expect("first publish");
+        let _second_ack = spi.publish(second).expect("second publish");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| receiver.close()));
+        assert!(result.is_err(), "first destructor panic propagates after cleanup");
+        assert_payload_was_released(&first_dropped);
+        assert_payload_was_released(&second_dropped);
+        return;
+    }
+    let status = Command::new(std::env::current_exe().expect("test executable"))
+        .args([
+            "--exact",
+            "test_sync_close_releases_each_panicking_payload_in_isolated_process",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .status()
+        .expect("spawn isolated regression child");
+    assert!(
+        status.success(),
+        "batch cleanup child must survive two destructor panics: {status}"
+    );
 }

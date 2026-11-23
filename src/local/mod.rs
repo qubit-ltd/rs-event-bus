@@ -28,3 +28,33 @@ mod local_event_bus_spi;
 mod local_event_subscription;
 pub(super) mod outstanding_budget;
 mod state;
+
+use std::any::Any;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
+use std::panic::resume_unwind;
+
+use crate::internal::panic_payload::dispose_panic_payload;
+
+/// Releases every event in a detached batch, even when an event destructor
+/// panics. The first panic is resumed after the batch unless this runs during
+/// an existing unwind, in which case it is safely disposed.
+pub(super) fn release_events<T>(events: Vec<T>) {
+    let mut first_panic: Option<Box<dyn Any + Send>> = None;
+    for event in events {
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(event))) {
+            if first_panic.is_none() {
+                first_panic = Some(payload);
+            } else {
+                dispose_panic_payload(payload);
+            }
+        }
+    }
+    if let Some(payload) = first_panic {
+        if std::thread::panicking() {
+            dispose_panic_payload(payload);
+        } else {
+            resume_unwind(payload);
+        }
+    }
+}
