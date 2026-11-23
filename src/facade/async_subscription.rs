@@ -365,3 +365,99 @@ impl<T: 'static> Drop for AsyncSubscription<T> {
         self.control.dispose();
     }
 }
+
+#[cfg(test)]
+mod session_lease_registration_tests {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::task::Context;
+    use std::task::Poll;
+    use std::task::RawWaker;
+    use std::task::RawWakerVTable;
+    use std::task::Waker;
+
+    use crate::facade::AsyncEventBus;
+    use crate::local::LocalEventBusConfig;
+    use crate::model::SubscribeRequest;
+    use crate::model::Topic;
+    use crate::spi::ShutdownMode;
+
+    #[derive(Default)]
+    struct WakerCounts {
+        clones: AtomicUsize,
+        drops: AtomicUsize,
+    }
+
+    unsafe fn clone_counted(data: *const ()) -> RawWaker {
+        // SAFETY: Every raw pointer in this vtable owns an Arc<WakerCounts>.
+        let counts = unsafe { &*data.cast::<WakerCounts>() };
+        counts.clones.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: The returned RawWaker takes ownership of this incremented Arc.
+        unsafe { Arc::<WakerCounts>::increment_strong_count(data.cast()) };
+        RawWaker::new(data, &COUNTED_VTABLE)
+    }
+
+    unsafe fn wake_counted(data: *const ()) {
+        // SAFETY: wake consumes its owned Arc reference.
+        drop(unsafe { Arc::<WakerCounts>::from_raw(data.cast()) });
+    }
+
+    unsafe fn wake_counted_by_ref(_: *const ()) {}
+
+    unsafe fn drop_counted(data: *const ()) {
+        // SAFETY: drop consumes its owned Arc reference.
+        let counts = unsafe { Arc::<WakerCounts>::from_raw(data.cast()) };
+        counts.drops.fetch_add(1, Ordering::Relaxed);
+    }
+
+    static COUNTED_VTABLE: RawWakerVTable =
+        RawWakerVTable::new(clone_counted, wake_counted, wake_counted_by_ref, drop_counted);
+
+    fn counted_waker(counts: &Arc<WakerCounts>) -> Waker {
+        let data = Arc::into_raw(Arc::clone(counts)).cast();
+        // SAFETY: COUNTED_VTABLE maintains one Arc reference per RawWaker.
+        unsafe { Waker::from_raw(RawWaker::new(data, &COUNTED_VTABLE)) }
+    }
+
+    #[test]
+    fn test_session_acquisition_drops_its_signal_registration_waker() {
+        let bus = block_on(AsyncEventBus::local(LocalEventBusConfig::default())).expect("local bus");
+        let topic = Topic::<u32>::new("lease-registration-drop").expect("topic");
+        let subscription =
+            block_on(bus.subscribe(SubscribeRequest::new("lease-registration", topic).expect("request")))
+                .expect("subscription");
+        let counts = Arc::new(WakerCounts::default());
+        let waker = counted_waker(&counts);
+        let mut context = Context::from_waker(&waker);
+        let lease = {
+            let mut lease_future = Box::pin(subscription.control.lease());
+            match Future::poll(Pin::as_mut(&mut lease_future), &mut context) {
+                Poll::Ready(Some(lease)) => lease,
+                Poll::Ready(None) => panic!("live subscription should yield its session"),
+                Poll::Pending => panic!("uncontended session lease should be immediately available"),
+            }
+        };
+
+        assert_eq!(1, counts.clones.load(Ordering::Relaxed));
+        assert_eq!(1, counts.drops.load(Ordering::Relaxed));
+        drop(lease);
+        let mut subscription = subscription;
+        block_on(subscription.close()).expect("close session");
+        let _report = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown bus");
+        drop(waker);
+    }
+
+    fn block_on<F: Future>(future: F) -> F::Output {
+        let mut future = Box::pin(future);
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+        loop {
+            if let Poll::Ready(output) = Future::poll(Pin::as_mut(&mut future), &mut context) {
+                return output;
+            }
+        }
+    }
+}

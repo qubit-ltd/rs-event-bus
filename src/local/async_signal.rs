@@ -440,6 +440,21 @@ mod tests {
     }
 
     #[test]
+    fn test_dropped_waiter_is_not_notified_and_new_waiter_is_independent() {
+        let signal = AsyncSignal::default();
+        let counter = Arc::new(CountWake::default());
+        let waker = Waker::from(Arc::clone(&counter));
+
+        drop(signal.register(&waker));
+        signal.notify_all();
+        assert_eq!(0, counter.0.load(Ordering::Relaxed));
+
+        let _registration = signal.register(&waker);
+        signal.notify_all();
+        assert_eq!(1, counter.0.load(Ordering::Relaxed));
+    }
+
+    #[test]
     fn test_registered_waker_supports_wake_by_reference() {
         let signal = AsyncSignal::default();
         let counter = Arc::new(CountWake::default());
