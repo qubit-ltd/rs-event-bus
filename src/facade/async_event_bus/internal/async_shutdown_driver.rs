@@ -45,7 +45,10 @@ pub(in crate::facade) trait AsyncShutdownDriver: Send + Sync {
     ///
     /// # Returns
     /// The failure retained for subsequent callers.
-    fn store_close_error(&self, failure: Arc<SubscriptionCloseFailure>) -> Arc<SubscriptionCloseFailure>;
+    fn store_close_error(
+        &self,
+        failure: Arc<SubscriptionCloseFailure>,
+    ) -> (Arc<SubscriptionCloseFailure>, Option<Arc<SubscriptionCloseFailure>>);
 
     /// Closes the provider receiver using the selected shutdown policy.
     ///

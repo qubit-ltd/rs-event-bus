@@ -828,6 +828,7 @@ struct CloseFailingSpi {
     receive_future_drops: Arc<AtomicUsize>,
     fail_every_close: bool,
     panic_on_first_receiver_drop: bool,
+    panic_on_secondary_close_error_drop: bool,
     close_succeeds_immediately: bool,
     drop_source_on_close_attempt: DropSourceOnCloseAttempt,
     drop_probe: Arc<Mutex<Option<DropShutdownProbe>>>,
@@ -876,6 +877,7 @@ impl AsyncEventBusSpi for CloseFailingSpi {
         let receive_future_drops = self.receive_future_drops.clone();
         let fail_every_close = self.fail_every_close;
         let panic_on_first_receiver_drop = self.panic_on_first_receiver_drop;
+        let panic_on_secondary_close_error_drop = self.panic_on_secondary_close_error_drop;
         let close_succeeds_immediately = self.close_succeeds_immediately;
         let drop_source_on_close_attempt = self.drop_source_on_close_attempt.lock().expect("probe mutex").clone();
         let drop_probe = self.drop_probe.lock().expect("probe mutex").clone();
@@ -891,6 +893,7 @@ impl AsyncEventBusSpi for CloseFailingSpi {
                 receive_future_drops,
                 fail_every_close,
                 panic_on_first_receiver_drop,
+                panic_on_secondary_close_error_drop,
                 close_succeeds_immediately,
                 drop_source_on_close_attempt,
                 drop_probe,
@@ -931,6 +934,7 @@ struct CloseFailingReceiver {
     receive_future_drops: Arc<AtomicUsize>,
     fail_every_close: bool,
     panic_on_first_receiver_drop: bool,
+    panic_on_secondary_close_error_drop: bool,
     close_succeeds_immediately: bool,
     drop_source_on_close_attempt: Option<(DropShutdownProbe, Arc<AtomicUsize>)>,
     drop_probe: Option<DropShutdownProbe>,
@@ -965,13 +969,18 @@ impl AsyncEventSubscriptionSpi for CloseFailingReceiver {
         let attempt = self.close_attempts.fetch_add(1, Ordering::AcqRel);
         let fail_every_close = self.fail_every_close;
         let close_succeeds_immediately = self.close_succeeds_immediately;
+        let panic_on_secondary_close_error_drop = self.panic_on_secondary_close_error_drop;
         let drop_source_on_close_attempt = self.drop_source_on_close_attempt.clone();
         Box::pin(async move {
             if fail_every_close || (!close_succeeds_immediately && attempt == 0) {
                 let source: Box<dyn std::error::Error + Send + Sync> = if attempt == 1
                     && let Some((probe, drops)) = drop_source_on_close_attempt
                 {
-                    Box::new(DropShutdownErrorSource { probe, drops })
+                    Box::new(DropShutdownErrorSource {
+                        probe,
+                        drops,
+                        panic_on_drop: panic_on_secondary_close_error_drop,
+                    })
                 } else {
                     Box::new(Error::other("test close failure"))
                 };
@@ -993,6 +1002,7 @@ impl AsyncEventSubscriptionSpi for CloseFailingReceiver {
 struct DropShutdownErrorSource {
     probe: DropShutdownProbe,
     drops: Arc<AtomicUsize>,
+    panic_on_drop: bool,
 }
 
 impl std::fmt::Display for DropShutdownErrorSource {
@@ -1013,6 +1023,7 @@ impl Drop for DropShutdownErrorSource {
     fn drop(&mut self) {
         self.drops.fetch_add(1, Ordering::AcqRel);
         self.probe.check_nested_shutdown();
+        assert!(!self.panic_on_drop, "secondary close error source drop panic");
     }
 }
 
@@ -1271,6 +1282,53 @@ fn test_cancelled_shutdown_retry_preserves_one_canonical_close_failure() {
         "discarded retry source drops once"
     );
     drop(subscription);
+}
+
+#[test]
+fn test_shutdown_keeps_first_close_error_when_later_error_drop_panics() {
+    let source_drops = Arc::new(AtomicUsize::new(0));
+    let spi = Arc::new(CloseFailingSpi {
+        fail_every_close: true,
+        panic_on_secondary_close_error_drop: true,
+        ..CloseFailingSpi::default()
+    });
+    let bus = AsyncEventBus::from_spi(
+        ProviderId::new("close-failing").expect("static test provider ID must be valid"),
+        spi.clone(),
+    )
+    .expect("valid provider capabilities");
+    let drop_probe = nested_shutdown_probe(bus.clone());
+    *spi.drop_source_on_close_attempt.lock().expect("probe mutex") = Some((drop_probe.clone(), source_drops.clone()));
+    let mut subscription = block_on(async {
+        bus.subscribe(SubscribeRequest::new("secondary-close-drop-panic", topic()).expect("valid subscriber ID"))
+            .await
+            .expect("async subscription must be created")
+    });
+
+    let LifecycleError::SubscriptionClose(first_errors) =
+        block_on(subscription.close()).expect_err("explicit close records the canonical error")
+    else {
+        panic!("first receiver close error must be structured");
+    };
+    let first_failure = first_errors.iter().next().expect("one canonical close failure");
+    let first_error = first_failure.error();
+    let first_source = std::error::Error::source(first_error).expect("canonical source is retained");
+
+    let Err(ShutdownError::SubscriptionClose(shutdown_errors)) = block_on(bus.shutdown(ShutdownMode::Immediate)) else {
+        panic!("shutdown returns the first receiver close error");
+    };
+    let shutdown_failure = shutdown_errors.iter().next().expect("one close failure");
+    assert!(std::ptr::eq(first_failure, shutdown_failure));
+    assert!(std::ptr::eq(first_error, shutdown_failure.error()));
+    assert!(std::ptr::eq(
+        first_source,
+        std::error::Error::source(shutdown_failure.error()).expect("original source retained"),
+    ));
+    assert_eq!(source_drops.load(Ordering::Acquire), 1);
+    assert_eq!(spi.provider_shutdown_attempts.load(Ordering::Acquire), 1);
+    assert_eq!(spi.receiver_drops.load(Ordering::Acquire), 1);
+    assert_eq!(spi.close_attempts.load(Ordering::Acquire), 2);
+    assert_one_nested_shutdown_rejected(&drop_probe);
 }
 
 #[test]

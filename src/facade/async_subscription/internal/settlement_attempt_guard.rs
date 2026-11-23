@@ -9,6 +9,8 @@
 
 use std::io::Error;
 use std::io::ErrorKind;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 
 use qubit_clock::Timer;
@@ -16,6 +18,7 @@ use qubit_clock::Timer;
 use super::settlement_progress::SettlementProgress;
 use crate::error::SpiError;
 use crate::facade::internal::SettlementRetryDecision;
+use crate::internal::panic_payload::dispose_panic_payload;
 
 /// Records an interrupted SPI attempt only if its future is actually cancelled.
 ///
@@ -58,7 +61,12 @@ impl Drop for SettlementAttemptGuard<'_> {
             }
             Err(error) => self.progress.infrastructure_error = Some(error),
         }
-        self.progress.last_error = Some(error);
         self.progress.cancelled = true;
+        let previous = self.progress.last_error.replace(error);
+        if let Some(previous) = previous
+            && let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(previous)))
+        {
+            dispose_panic_payload(payload);
+        }
     }
 }

@@ -132,6 +132,31 @@ struct Probe {
     close_after_messages: AtomicUsize,
     fail_receive_after_messages: AtomicUsize,
     receive_outcomes: Mutex<Vec<&'static str>>,
+    panic_next_settlement_source_drop: AtomicBool,
+    settlement_source_drops: Arc<AtomicUsize>,
+}
+
+struct SettlementErrorDropPanic(Arc<AtomicUsize>);
+
+impl std::fmt::Display for SettlementErrorDropPanic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("settlement source whose destructor panics")
+    }
+}
+
+impl std::fmt::Debug for SettlementErrorDropPanic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SettlementErrorDropPanic")
+    }
+}
+
+impl std::error::Error for SettlementErrorDropPanic {}
+
+impl Drop for SettlementErrorDropPanic {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        panic!("settlement source drop panic");
+    }
 }
 /// SPI adapter that instruments a fake provider while preserving its behavior.
 struct ProbeBus {
@@ -275,13 +300,22 @@ impl AsyncEventSubscriptionSpi for ProbeReceiver {
                     .pop_front()
             };
             if let Some(retryable) = failure {
+                let source: Box<dyn std::error::Error + Send + Sync> = if self
+                    .probe
+                    .panic_next_settlement_source_drop
+                    .swap(false, Ordering::SeqCst)
+                {
+                    Box::new(SettlementErrorDropPanic(self.probe.settlement_source_drops.clone()))
+                } else {
+                    Box::new(std::io::Error::other("probe failure"))
+                };
                 return Err(SpiError::Operation {
                     provider_id: "probe".into(),
                     operation: "settle",
                     resource: None,
                     kind: "injected",
                     retryable,
-                    source: Box::new(std::io::Error::other("probe failure")),
+                    source,
                 });
             }
             Ok(())
@@ -1094,6 +1128,77 @@ fn test_drop_run_during_settlement_backoff_resumes_same_token() {
     assert_eq!(completed.settlement_duration_total_nanos, 10_000_000);
     block_on(sub.close()).expect("subscription close must succeed");
     assert_eq!(sub.delivery_metrics().metrics, completed);
+}
+
+#[test]
+fn test_async_replaced_settlement_error_drop_panic_preserves_terminal_retry() {
+    let (bus, fake, probe, clock) = setup(config(1, 4, 4, 2, 2));
+    probe
+        .failures
+        .lock()
+        .expect("injected failure queue mutex must not be poisoned")
+        .extend([Some(true), Some(false)]);
+    probe.panic_next_settlement_source_drop.store(true, Ordering::SeqCst);
+    let sub = subscribe(&bus, "async-error-drop-panic");
+    enqueue(&fake, sub.id(), 1, "A");
+    let mut run = Box::pin(sub.run(|_| async { Ok(()) }));
+    poll_pending(run.as_mut());
+    assert_eq!(probe.attempts.lock().expect("attempt log").len(), 1);
+    clock.advance(Duration::from_millis(10)).expect("advance retry backoff");
+
+    let result = (0..16).find_map(|_| match poll_once(run.as_mut()) {
+        Poll::Ready(result) => Some(result),
+        Poll::Pending => None,
+    });
+    assert!(matches!(result, Some(Err(ReceiveError::Stopped(ref reason)))
+        if matches!(reason.as_ref(), SubscriptionStopReason::Settlement { attempts: 2, termination: SettlementTermination::PermanentError, error, .. }
+            if error.kind() == "injected")));
+    let attempts = probe.attempts.lock().expect("attempt log");
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[0], attempts[1]);
+    assert_eq!(probe.settlement_source_drops.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.closes.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn test_cancelled_settlement_replaces_panicking_old_error_after_recording_pause() {
+    let (bus, fake, probe, clock) = setup(config(1, 4, 4, 2, 4));
+    probe
+        .failures
+        .lock()
+        .expect("injected failure queue mutex must not be poisoned")
+        .push_back(Some(true));
+    probe.panic_next_settlement_source_drop.store(true, Ordering::SeqCst);
+    let sub = subscribe(&bus, "cancel-error-drop-panic");
+    enqueue(&fake, sub.id(), 1, "A");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = calls.clone();
+    let mut first_run = Box::pin(sub.run(move |_| {
+        seen.fetch_add(1, Ordering::SeqCst);
+        async { Ok(()) }
+    }));
+    poll_pending(first_run.as_mut());
+    drop(first_run);
+    clock.advance(Duration::from_millis(10)).expect("advance retry backoff");
+
+    probe.pause.store(true, Ordering::SeqCst);
+    let mut paused_run = Box::pin(sub.run(|_| async { panic!("completed handler must not restart") }));
+    poll_pending(paused_run.as_mut());
+    assert_eq!(probe.attempts.lock().expect("attempt log").len(), 2);
+    drop(paused_run);
+    assert!(sub.terminal_failure().is_none());
+    assert_eq!(probe.settlement_source_drops.load(Ordering::SeqCst), 1);
+    clock
+        .advance(Duration::from_millis(20))
+        .expect("advance cancellation backoff");
+
+    let mut resumed = Box::pin(sub.run(|_| async { panic!("completed handler must not restart") }));
+    poll_pending(resumed.as_mut());
+    let attempts = probe.attempts.lock().expect("attempt log");
+    assert_eq!(attempts.len(), 3);
+    assert_eq!(attempts[0], attempts[1]);
+    assert_eq!(attempts[1], attempts[2]);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 /// Cancelled in-flight SPI work consumes one attempt and waits before

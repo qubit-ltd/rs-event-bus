@@ -245,9 +245,17 @@ impl<T: Send + Sync + 'static> AsyncShutdownDriver for AsyncSubscriptionControl<
     ///
     /// # Returns
     /// The first stored failure.
-    fn store_close_error(&self, failure: Arc<SubscriptionCloseFailure>) -> Arc<SubscriptionCloseFailure> {
+    fn store_close_error(
+        &self,
+        failure: Arc<SubscriptionCloseFailure>,
+    ) -> (Arc<SubscriptionCloseFailure>, Option<Arc<SubscriptionCloseFailure>>) {
         let mut stored = self.close_error.lock().unwrap_or_else(PoisonError::into_inner);
-        stored.get_or_insert(failure).clone()
+        if let Some(canonical) = stored.as_ref() {
+            (canonical.clone(), Some(failure))
+        } else {
+            *stored = Some(failure.clone());
+            (failure, None)
+        }
     }
 
     /// Stops the session, resumes its runner if needed, and closes its

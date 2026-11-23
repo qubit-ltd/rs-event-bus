@@ -9,6 +9,8 @@
 
 use std::future::poll_fn;
 use std::io::Error;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::task::Poll;
 
@@ -20,6 +22,7 @@ use crate::facade::async_event_bus::catch_cleanup_spi_future;
 use crate::facade::async_subscription::internal::AsyncSession;
 use crate::facade::async_subscription::internal::settlement_attempt_guard::SettlementAttemptGuard;
 use crate::facade::internal::SettlementRetryDecision;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::SettlementTermination;
 use crate::model::SubscriptionStopReason;
 use crate::spi::DeliveryDisposition;
@@ -302,26 +305,33 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                     attempt,
                     error: error.clone(),
                 };
-                pending.settlement.last_error = Some(error.clone());
+                let previous_error = pending.settlement.last_error.replace(error.clone());
                 let elapsed = match pending.settlement.elapsed(self.inner.timer.as_ref()) {
                     Ok(elapsed) => elapsed,
                     Err(error) => {
                         self.stop_infrastructure(index, error, Some(failure));
+                        dispose_previous_settlement_error(previous_error);
                         return;
                     }
                 };
-                match pending.settlement.retry.after_error(&error, elapsed) {
+                let decision = pending.settlement.retry.after_error(&error, elapsed);
+                match decision {
                     SettlementRetryDecision::Stop(termination) => {
-                        self.stop_settlement(index, error, termination, Some(failure))
+                        self.stop_settlement(index, error, termination, Some(failure));
+                        dispose_previous_settlement_error(previous_error);
                     }
                     SettlementRetryDecision::RetryAfter(delay) => {
                         pending.settlement.due = elapsed.saturating_add(delay);
                         match self.inner.timer.after(delay) {
                             Ok(timer) => {
                                 pending.settlement.timer = Some(timer);
+                                dispose_previous_settlement_error(previous_error);
                                 self.inner.emit(&failure);
                             }
-                            Err(error) => self.stop_infrastructure(index, error, Some(failure)),
+                            Err(error) => {
+                                self.stop_infrastructure(index, error, Some(failure));
+                                dispose_previous_settlement_error(previous_error);
+                            }
                         }
                     }
                 }
@@ -461,10 +471,29 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
             }
             self.emit_failure_diagnostic(
                 delivery.failure_diagnostic.take(),
-                delivery.event_id,
+                delivery.event_id.clone(),
                 self.topic.name().into(),
             );
+            if self.drop_abandoned_delivery(delivery) {
+                self.inner.emit(&Diagnostic::InternalFailure {
+                    origin: "abandoned_delivery_drop".into(),
+                    message: "abandoned delivery drop panicked".into(),
+                });
+            }
         }
+    }
+}
+
+/// Releases a replaced provider error while containing a secondary destructor
+/// panic.
+///
+/// # Parameters
+/// - `error`: Previous error removed from the settlement progress.
+fn dispose_previous_settlement_error(error: Option<Arc<SpiError>>) {
+    if let Some(error) = error
+        && let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(error)))
+    {
+        dispose_panic_payload(payload);
     }
 }
 

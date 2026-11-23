@@ -8,6 +8,8 @@
 //! Shared asynchronous facade state and its admission and diagnostic methods.
 
 use std::collections::HashMap;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
@@ -34,6 +36,7 @@ use crate::facade::internal::DeliverySchedulerCore;
 use crate::facade::observer_entry::ObserverEntry;
 use crate::facade::publish_metrics::PublishMetrics;
 use crate::facade::shutdown_report::ShutdownReport;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::ProviderId;
 use crate::model::SubscriberId;
 use crate::pipeline::Diagnostic;
@@ -164,12 +167,18 @@ impl AsyncEventBusInner {
         error: SpiError,
     ) -> Arc<SubscriptionCloseFailure> {
         if let Some(failure) = control.close_error() {
+            dispose_close_error_value(error);
             return failure.clone();
         }
         let failure = Arc::new(SubscriptionCloseFailure::new(subscriber_id.clone(), error));
-        let canonical = control.store_close_error(failure.clone());
+        let (canonical, rejected) = control.store_close_error(failure.clone());
+        if let Some(rejected) = rejected {
+            dispose_close_error_value(rejected);
+        }
         if Arc::ptr_eq(&failure, &canonical) {
             self.record_close_failure(&failure);
+        } else {
+            dispose_close_error_value(failure);
         }
         canonical
     }
@@ -200,16 +209,36 @@ impl AsyncEventBusInner {
     }
 }
 
+/// Releases a secondary close error while containing a destructor panic.
+///
+/// # Type Parameters
+/// - `T`: Rejected error value being released.
+///
+/// # Parameters
+/// - `value`: Rejected close error or candidate failure record.
+fn dispose_close_error_value<T>(value: T) {
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(value))) {
+        dispose_panic_payload(payload);
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
+    use std::fmt::Display;
+    use std::fmt::Formatter;
     use std::future::Future;
+    use std::io::Error as IoError;
     use std::num::NonZeroUsize;
     use std::pin::pin;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     use std::task::Context;
     use std::task::Poll;
     use std::task::Waker;
 
+    use crate::error::SpiError;
     use crate::facade::AsyncEventBus;
     use crate::facade::DeliverySchedulingConfig;
     use crate::facade::EventBusFacadeConfig;
@@ -217,6 +246,29 @@ mod tests {
     use crate::model::ProviderId;
     use crate::model::SubscribeRequest;
     use crate::model::Topic;
+
+    struct PanicOnDropSource(Arc<AtomicUsize>);
+
+    impl Display for PanicOnDropSource {
+        fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("secondary close error")
+        }
+    }
+
+    impl std::fmt::Debug for PanicOnDropSource {
+        fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("PanicOnDropSource")
+        }
+    }
+
+    impl Error for PanicOnDropSource {}
+
+    impl Drop for PanicOnDropSource {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+            panic!("secondary close error drop panic");
+        }
+    }
 
     /// Drives a synchronous-ready local-provider operation without a runtime.
     ///
@@ -268,5 +320,62 @@ mod tests {
         }
         assert_eq!(closed_handles.len(), 1000);
         assert_eq!(bus.delivery_metrics(), Default::default());
+    }
+
+    #[test]
+    fn test_record_close_error_keeps_first_error_when_secondary_drop_panics() {
+        let provider = Arc::new(AsyncLocalEventBusSpi::new(&Default::default()).expect("local provider"));
+        let bus = AsyncEventBus::with_config(
+            ProviderId::new("local").expect("provider"),
+            provider,
+            EventBusFacadeConfig::default(),
+        )
+        .expect("bus");
+        let subscription = ready(
+            bus.subscribe(
+                SubscribeRequest::new(
+                    "close-drop-panic",
+                    Topic::<u32>::new("close-drop-panic").expect("topic"),
+                )
+                .expect("request"),
+            ),
+        )
+        .expect("subscription");
+        let control = bus
+            .inner
+            .controls
+            .lock()
+            .expect("controls lock")
+            .get(&subscription.id())
+            .cloned()
+            .expect("registered control");
+        let first = bus.inner.record_close_error(
+            control.as_ref(),
+            subscription.subscriber_id(),
+            SpiError::Operation {
+                provider_id: "local".into(),
+                operation: "close",
+                resource: None,
+                kind: "first_close_failure",
+                retryable: Some(false),
+                source: Box::new(IoError::other("first close error")),
+            },
+        );
+        let source_drops = Arc::new(AtomicUsize::new(0));
+        let repeated = bus.inner.record_close_error(
+            control.as_ref(),
+            subscription.subscriber_id(),
+            SpiError::Operation {
+                provider_id: "local".into(),
+                operation: "close",
+                resource: None,
+                kind: "secondary_close_failure",
+                retryable: Some(false),
+                source: Box::new(PanicOnDropSource(source_drops.clone())),
+            },
+        );
+        assert!(Arc::ptr_eq(&first, &repeated));
+        assert_eq!(source_drops.load(Ordering::Acquire), 1);
+        assert_eq!(bus.inner.close_errors_snapshot().expect("ledger").total_count(), 1);
     }
 }

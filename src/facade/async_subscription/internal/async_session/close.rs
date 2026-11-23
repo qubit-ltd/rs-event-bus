@@ -178,29 +178,59 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
 
     /// Counts and releases unresolved buffered and completed deliveries.
     pub(super) fn abandon_queued_and_completed(&mut self) {
+        let mut drop_panicked = false;
         while let Some(mut delivery) = self.buffered.pop_front() {
             self.record_abandoned_delivery();
             self.emit_failure_diagnostic(
                 delivery.failure_diagnostic.take(),
-                delivery.event_id,
+                delivery.event_id.clone(),
                 self.topic.name().into(),
             );
+            drop_panicked |= self.drop_abandoned_delivery(delivery);
         }
         while let Some(mut delivery) = self.completed.pop_front() {
-            self.record_abandoned_delivery();
+            if !delivery.settlement.confirmed {
+                self.record_abandoned_delivery();
+            }
             self.emit_failure_diagnostic(
                 delivery.failure_diagnostic.take(),
-                delivery.event_id,
+                delivery.event_id.clone(),
                 self.topic.name().into(),
             );
+            drop_panicked |= self.drop_abandoned_delivery(delivery);
         }
         while let Some(mut delivery) = self.completed_during_settlement.pop_front() {
-            self.record_abandoned_delivery();
+            if !delivery.settlement.confirmed {
+                self.record_abandoned_delivery();
+            }
             self.emit_failure_diagnostic(
                 delivery.failure_diagnostic.take(),
-                delivery.event_id,
+                delivery.event_id.clone(),
                 self.topic.name().into(),
             );
+            drop_panicked |= self.drop_abandoned_delivery(delivery);
+        }
+        if drop_panicked {
+            self.inner.emit(&Diagnostic::InternalFailure {
+                origin: "abandoned_delivery_drop".into(),
+                message: "abandoned delivery drop panicked".into(),
+            });
+        }
+    }
+
+    /// Drops one abandoned delivery without interrupting the remaining cleanup.
+    ///
+    /// # Parameters
+    /// - `delivery`: Removed delivery whose payload is being released.
+    pub(super) fn drop_abandoned_delivery(
+        &self,
+        delivery: crate::facade::async_subscription::internal::pending_delivery::PendingDelivery<T>,
+    ) -> bool {
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(delivery))) {
+            dispose_panic_payload(payload);
+            true
+        } else {
+            false
         }
     }
 
@@ -353,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn test_abandon_queued_and_completed_does_not_count_retained_deliveries_twice() {
+    fn test_terminal_settlement_cleans_completed_deliveries_after_drop_panic() {
         let (bus, subscription) = setup();
         let mut lease = block_on(subscription.control.lease()).expect("session lease");
         let session = lease.session.as_mut().expect("leased session");
@@ -381,15 +411,15 @@ mod tests {
         session.completed.push_back(first);
         session.completed_during_settlement.push_back(second);
 
-        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            session.abandon_queued_and_completed();
-        }))
-        .expect_err("the popped delivery owns a panicking payload");
-        assert_eq!(panic.downcast_ref::<&str>(), Some(&"abandoned payload probe"));
+        let close_result = block_on(session.close_inner(&subscription.control));
+        assert!(
+            close_result.is_ok(),
+            "receiver close continues after delivery drop panic"
+        );
         assert!(session.completed.is_empty());
-        assert_eq!(session.completed_during_settlement.len(), 1);
-        assert_eq!(session.inner.abandoned_deliveries.load(Ordering::Acquire), 1);
-        assert_eq!(subscription.delivery_metrics().metrics.abandoned_ephemeral, 1);
+        assert!(session.completed_during_settlement.is_empty());
+        assert_eq!(session.inner.abandoned_deliveries.load(Ordering::Acquire), 2);
+        assert_eq!(subscription.delivery_metrics().metrics.abandoned_ephemeral, 2);
 
         session.abandon_queued_and_completed();
         assert!(session.buffered.is_empty());

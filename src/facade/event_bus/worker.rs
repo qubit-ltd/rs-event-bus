@@ -1144,10 +1144,12 @@ fn attempt_settlement<T>(
                     return None;
                 }
             };
-            delivery.last_error = Some(error.clone());
-            match delivery.retry.after_error(&error, elapsed) {
+            let previous_error = delivery.last_error.replace(error.clone());
+            let decision = delivery.retry.after_error(&error, elapsed);
+            match decision {
                 SettlementRetryDecision::RetryAfter(delay) => {
                     delivery.next_attempt = elapsed.saturating_add(delay);
+                    dispose_replaced_settlement_error(previous_error);
                     inner.emit(failed);
                     if stopping { None } else { Some(delay) }
                 }
@@ -1164,10 +1166,23 @@ fn attempt_settlement<T>(
                         error,
                         Some(failed),
                     );
+                    dispose_replaced_settlement_error(previous_error);
                     None
                 }
             }
         }
+    }
+}
+
+/// Releases an obsolete provider error while containing a destructor panic.
+///
+/// # Parameters
+/// - `error`: Previous error removed from the delivery state.
+fn dispose_replaced_settlement_error(error: Option<Arc<SpiError>>) {
+    if let Some(error) = error
+        && let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(error)))
+    {
+        dispose_panic_payload(payload);
     }
 }
 

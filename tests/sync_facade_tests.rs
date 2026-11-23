@@ -46,6 +46,29 @@ impl Drop for PanicOnDrop {
     }
 }
 
+struct SettlementErrorDropPanic(Arc<AtomicUsize>);
+
+impl std::fmt::Display for SettlementErrorDropPanic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("settlement source whose destructor panics")
+    }
+}
+
+impl std::fmt::Debug for SettlementErrorDropPanic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SettlementErrorDropPanic")
+    }
+}
+
+impl Error for SettlementErrorDropPanic {}
+
+impl Drop for SettlementErrorDropPanic {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::AcqRel);
+        panic!("settlement source drop panic");
+    }
+}
+
 struct PanicOnDisplay {
     displays: Arc<AtomicUsize>,
     drops: Arc<AtomicUsize>,
@@ -400,6 +423,7 @@ struct TestBackendState {
     fail_next_settle: bool,
     fail_settle_always: bool,
     settlement_retryability: Option<bool>,
+    panic_on_first_settlement_error_drop: Option<Arc<AtomicUsize>>,
     published_topics: Vec<Box<str>>,
     attempted_event_ids: Vec<EventId>,
     operations: Vec<(&'static str, Option<DeliveryDisposition>)>,
@@ -1003,13 +1027,20 @@ impl EventSubscriptionSpi for TestSubscription {
             state.settlement_token_states.push((*value).to_owned());
         }
         if state.fail_settle_always {
+            let source: Box<dyn Error + Send + Sync> = if state.settlement_calls == 1
+                && let Some(drops) = state.panic_on_first_settlement_error_drop.clone()
+            {
+                Box::new(SettlementErrorDropPanic(drops))
+            } else {
+                Box::new(IoError::other("original settlement source"))
+            };
             return Err(SpiError::Operation {
                 provider_id: "sync-test".into(),
                 operation: "settle",
                 resource: None,
                 kind: "settlement_failure",
                 retryable: state.settlement_retryability,
-                source: Box::new(IoError::other("original settlement source")),
+                source,
             });
         }
         if take(&mut state.fail_next_settle) {
@@ -2534,6 +2565,60 @@ fn test_sync_settlement_failure_retries_same_token_without_rerunning_handler() {
     );
     assert_eq!(bus.delivery_metrics().completed, 1);
     finish_sync_bus_cleanup(cleanup);
+}
+
+#[test]
+fn test_sync_replaced_settlement_error_drop_panic_does_not_interrupt_retry() {
+    let backend = Arc::new(TestBackend::new());
+    let source_drops = Arc::new(AtomicUsize::new(0));
+    {
+        let mut state = backend.state.lock().expect("state lock");
+        state.fail_settle_always = true;
+        state.settlement_retryability = Some(true);
+        state.panic_on_first_settlement_error_drop = Some(source_drops.clone());
+    }
+    let config = EventBusFacadeConfig::new().with_settlement_retry(
+        SettlementRetryConfig::new(
+            NonZeroU32::new(2).expect("two attempts"),
+            Duration::from_secs(10),
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+        )
+        .expect("valid retry policy"),
+    );
+    let bus =
+        EventBus::with_config(ProviderId::new("sync-test").expect("provider"), backend.clone(), config).expect("bus");
+    let cleanup = SyncBusCleanup::new(bus.clone());
+    let (stopped_tx, stopped_rx) = mpsc::channel();
+    let _observer = bus.observe_diagnostics(move |diagnostic| {
+        if let Diagnostic::SettlementStopped { attempts, error, .. } = diagnostic {
+            let _ = stopped_tx.send((*attempts, error.kind().to_owned()));
+        }
+    });
+    let subscription = bus
+        .subscribe(
+            SubscribeRequest::new("sync-error-drop-panic", topic()).expect("request"),
+            |_: Delivery<String>| {},
+        )
+        .expect("subscription");
+    backend.enqueue_marked(subscription.id());
+
+    let (attempts, error_kind) = stopped_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("retry reaches terminal classification");
+    assert_eq!(attempts, 2);
+    assert_eq!(error_kind, "settlement_failure");
+    assert_eq!(backend.settlement_calls(), 2);
+    assert_eq!(source_drops.load(Ordering::Acquire), 1);
+    assert!(matches!(
+        subscription.terminal_failure().as_deref(),
+        Some(SubscriptionStopReason::Settlement { attempts: 2, .. })
+    ));
+    subscription
+        .cancel()
+        .expect("receiver closes after terminal settlement");
+    assert_eq!(backend.close_calls(), 1);
+    let _ = cleanup.finish().expect("bus cleanup");
 }
 
 #[test]
