@@ -671,6 +671,14 @@ fn run_subscription_worker_body<T>(
 
 /// Releases one resource from a receive-stop branch without allowing its
 /// destructor panic to skip cleanup of the remaining transport state.
+///
+/// # Type Parameters
+/// - `T`: rejected resource type.
+///
+/// # Parameters
+/// - `inner`: event bus state used to emit a cleanup diagnostic.
+/// - `resource`: resource to release.
+/// - `message`: diagnostic emitted if the destructor panics.
 fn cleanup_rejected_receive_resource<T>(inner: &EventBusInner, resource: T, message: &'static str) {
     if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(resource))) {
         dispose_panic_payload(payload);

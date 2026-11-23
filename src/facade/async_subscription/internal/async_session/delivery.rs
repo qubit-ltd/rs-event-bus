@@ -244,6 +244,13 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
 
     /// Drops one rejected transport resource under its subscription context.
     /// A panic is contained so cleanup of the other resource can continue.
+    ///
+    /// # Type Parameters
+    /// - `R`: rejected resource type.
+    ///
+    /// # Parameters
+    /// - `resource`: resource to release.
+    /// - `message`: diagnostic emitted if the destructor panics.
     fn cleanup_rejected_receive_resource<R>(&self, resource: R, message: &'static str) {
         let bus_key = Arc::as_ptr(&self.inner) as usize;
         let subscription_id = self.id;

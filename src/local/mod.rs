@@ -39,6 +39,12 @@ use crate::internal::panic_payload::dispose_panic_payload;
 /// Releases every event in a detached batch, even when an event destructor
 /// panics. The first panic is resumed after the batch unless this runs during
 /// an existing unwind, in which case it is safely disposed.
+///
+/// # Type Parameters
+/// - `T`: event type in the detached batch.
+///
+/// # Parameters
+/// - `events`: detached events to release.
 pub(super) fn release_events<T>(events: Vec<T>) {
     let mut first_panic: Option<Box<dyn Any + Send>> = None;
     for event in events {
