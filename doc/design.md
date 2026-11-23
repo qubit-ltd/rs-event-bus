@@ -738,6 +738,23 @@ cancelled attempt can be retried by a later caller. The facade-level API returns
 synchronous side uses `ShutdownCoordinator`. The asynchronous side uses a
 leader CAS and lets `Immediate` upgrade an in-flight `Graceful` request.
 
+The synchronous SPI trait is named `EventBusSpi`; its `shutdown` runs on the
+background coordinator thread. A `ticket.wait` observation can time out while
+that blocking call continues. If it later returns
+`Ok(ShutdownOutcome::TimedOut)`, the facade caches that outcome in the final
+report and closes the bus; the report does not say whether a handler's business
+write succeeded. The asynchronous trait is `AsyncEventBusSpi`; its shutdown
+future is driven by the caller's `AsyncEventBus::shutdown` future and receives
+the remaining time from that call's absolute deadline. A provider-returned
+`Ok(ShutdownOutcome::TimedOut)` is likewise terminal: the facade disposes
+remaining controls, caches the report, and closes. If the caller deadline wins
+first, the facade returns `ShutdownError::TimedOut` and drops the SPI future;
+no provider outcome is cached yet, and a later call may safely retry or finish
+provider cleanup. In either facade, `known_abandoned_deliveries` reports only
+facade-known unresolved ephemeral work, while
+`provider_may_have_abandoned_deliveries` expresses provider uncertainty. Neither
+field establishes business rollback or persistence.
+
 ---
 
 ## 5. Capability model

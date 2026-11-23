@@ -690,6 +690,18 @@ pub struct SettlementToken {
 facade 同一时刻最多只有一个 provider `shutdown` 调用在途；失败或取消后后续调用可重试。
 facade API 返回 `ShutdownReport`，SPI 方法仍返回 `ShutdownOutcome`。
 
+同步 SPI trait 的名称是 `EventBusSpi`，其 `shutdown` 在后台协调线程中运行。
+即使 `ticket.wait` 这次观察已经超时，阻塞中的 provider 调用仍会继续。如果它之后返回
+`Ok(ShutdownOutcome::TimedOut)`，facade 会把该结果缓存到最终报告并关闭总线；报告不能
+说明 handler 的业务写入是否成功。异步 SPI trait 名为 `AsyncEventBusSpi`；它的 shutdown
+future 由调用方持续 poll `AsyncEventBus::shutdown`，并收到该调用绝对 deadline 的剩余时间。
+若 provider 返回 `Ok(ShutdownOutcome::TimedOut)`，这同样是终态：facade 处置剩余 control、
+缓存报告并关闭总线。若调用方 deadline 先到，facade 返回 `ShutdownError::TimedOut` 并丢弃
+SPI future；此时尚无 provider 结果可缓存，后续调用可以安全重试或继续 provider 清理。
+两种 facade 的 `known_abandoned_deliveries` 都只统计 facade 能确认的未解决 ephemeral 工作；
+`provider_may_have_abandoned_deliveries` 表示 provider 侧仍有不确定性。这两个字段都不能证明
+业务已回滚或持久化。
+
 ---
 
 ## 5. 能力模型

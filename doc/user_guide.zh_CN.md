@@ -368,6 +368,8 @@ if let PublishAcknowledgement::DestinationAdmissions(destinations) = receipt.ack
 
 ### 预检拒绝与未确认发送
 
+`SentUnconfirmed` 来自 core `v0.21.4` 之后的源码变更，详见[迁移指南](migration.zh_CN.md#未确认的发布回执v0214-之后的源码变更)。选择 checked publish 行为时，要确认应用实际依赖的已发布版本是否包含这项变化。
+
 这两种条件需要 provider 报告每个目标的接纳情况。上面的订单示例使用 local，能提供这类回执；Redis 等不公开目标的 provider 会在发布前返回 `CheckedPublishError::UnsupportedVisibility { event_id, provider_id }`，不会运行拦截器、编码器或 SPI 发布，也不会增加发布指标。这是预检拒绝，本次没有发布。如果业务只要求 provider 接纳事件，应改用 `ProviderOrDestinationAccepted`：
 
 ```rust
@@ -2011,6 +2013,8 @@ pub async fn observe_shutdown_ticket(
 ### 非阻塞地请求停机
 
 `EventBus::request_shutdown(mode)` 会关闭新接纳并返回 `EventBusShutdown` ticket，由后台协调器继续清理。可以在 handler 中请求停机；应等退出总线拥有的回调后再等待 ticket。`ticket.wait(Some(timeout))` 只限制当前调用方的等待，不会取消停机；`ticket.wait_async().await` 可观察完成，不阻塞线程，也不要求特定运行时。在同一 bus 拥有的 callback 或 worker 中首次轮询 `wait_async` 会返回 `WouldDeadlock`（operation 为 `shutdown`），缓存 ticket 也一样；在其中创建 future 是允许的。这只拒绝此次观察，不会取消停机；回调返回后可由外部生命周期任务等待。丢弃 ticket 只释放该观察者，停机仍继续。后续请求会加入当前停机尝试，`Immediate` 请求可以把 graceful 尝试加强为立即取消。`Immediate` 仍不能中断正在运行的 handler 或 provider 调用；调用方超时后，后台协调器可能继续等待。
+
+这项保护会在每次 poll 时执行，而不只检查 future 创建时的上下文。如果外部任务先 poll `ticket.wait_async()` 得到 `Pending`，之后同一个 future 被移到该总线拥有的 callback 或 worker 中再次 poll，该次 poll 会返回 `WouldDeadlock`。被拒绝的观察随即释放这次 poll 登记的 waker；保留同一个 ticket，等 callback 返回后再由外部生命周期任务等待即可。`AsyncEventBus::wait_for_received_deliveries` 也会在每次 poll 检查当前总线；挂起中的等待若在同一 async bus 拥有的工作中再次 poll，会返回 `LifecycleError::WouldDeadlock`。
 
 下面示例在 receiver 关闭错误后读取 `shutdown_report()`；这要求源码或包含 `v0.21.4` tag 之后加入此 API 的发行版。使用 `v0.21.4` 时，应保留并传播原始 `SubscriptionClose` 错误，并省略缓存报告分支。
 

@@ -368,6 +368,8 @@ When one order event goes to both audit and the customer view, the two condition
 
 ### Preflight rejection and an unconfirmed send
 
+`SentUnconfirmed` was added in source changes after core `v0.21.4`; see the [migration guide](migration.md#unconfirmed-publish-acknowledgements-source-changes-after-v0214). This version boundary matters when choosing which checked-publish behavior a released dependency provides.
+
 These two conditions require a provider that reports destination admissions. The order example uses local, which does. With an opaque provider such as Redis, `publish_checked` returns `CheckedPublishError::UnsupportedVisibility { event_id, provider_id }` before interceptors, codec encoding, metrics, or the provider publish call. This preflight rejection means no publish occurred. If the application only needs the provider to accept the event, use `ProviderOrDestinationAccepted` instead:
 
 ```rust
@@ -2013,6 +2015,8 @@ Bounded waiting does not force process exit. The sync background coordinator may
 ### Request shutdown without waiting
 
 `EventBus::request_shutdown(mode)` closes admission and returns an `EventBusShutdown` ticket while a background coordinator performs cleanup. This is safe to call from a handler; wait for the ticket only after returning from bus-owned work. `ticket.wait(Some(timeout))` bounds this caller's wait without cancelling shutdown, and `ticket.wait_async().await` observes completion without blocking a thread or requiring a runtime. The first poll of `wait_async` from a callback or worker owned by the same bus returns `WouldDeadlock` (with operation `shutdown`), including for a cached ticket; creating the future there is allowed. This rejects only that observation and does not cancel shutdown, so an external lifecycle task can wait after the callback returns. Dropping the ticket only releases that observer; shutdown continues. A later request joins the active attempt, and an `Immediate` request can strengthen a graceful attempt. `Immediate` still cannot interrupt a running handler or provider call, and the background coordinator may continue waiting after a caller times out.
+
+The guard also applies on every poll, not just when the future is first created. If an external task polls `ticket.wait_async()` to `Pending` and the same future is later polled from a callback or worker owned by that bus, that poll returns `WouldDeadlock`. The pending poll's waker registration is removed as the rejected observation is dropped; keep the same ticket and wait again from an external lifecycle task after the callback returns. Likewise, `AsyncEventBus::wait_for_received_deliveries` checks the current bus on each poll and returns `LifecycleError::WouldDeadlock` if a pending wait is polled from work owned by that same async bus.
 
 The example reads `shutdown_report()` after a close error, which requires source or a release that includes the API added after the `v0.21.4` tag. With `v0.21.4`, keep and propagate the original `SubscriptionClose` error and omit the cached-report branch.
 
