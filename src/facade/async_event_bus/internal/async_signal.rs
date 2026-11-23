@@ -53,7 +53,9 @@ impl AsyncSignal {
             let mut wakers = self.wakers.lock().unwrap_or_else(PoisonError::into_inner);
             wakers.insert(id, owned_waker)
         };
-        drop(replaced);
+        if let Some(replaced) = replaced {
+            dispose_waker(replaced);
+        }
     }
 
     /// Removes a waiter's registration when its future completes or is dropped.
@@ -65,7 +67,9 @@ impl AsyncSignal {
             let mut wakers = self.wakers.lock().unwrap_or_else(PoisonError::into_inner);
             wakers.remove(&id)
         };
-        drop(removed);
+        if let Some(removed) = removed {
+            dispose_waker(removed);
+        }
     }
 
     /// Allocates a unique identifier for a new wait registration.
@@ -77,6 +81,13 @@ impl AsyncSignal {
     #[inline]
     pub(in crate::facade) fn next_waiter_id(&self) -> u64 {
         self.next_waiter.fetch_add(1, Ordering::Relaxed)
+    }
+}
+
+/// Drops an owned waker without allowing its destructor to interrupt cleanup.
+fn dispose_waker(waker: Waker) {
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(waker))) {
+        dispose_panic_payload(payload);
     }
 }
 

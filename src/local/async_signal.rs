@@ -477,4 +477,56 @@ mod tests {
         drop(registration);
         drop(waker);
     }
+
+    struct DropPanicProbe {
+        panic_on_drop: AtomicBool,
+    }
+
+    unsafe fn clone_drop_panic_probe(data: *const ()) -> RawWaker {
+        // SAFETY: Each raw waker owns one Arc reference to DropPanicProbe.
+        unsafe { Arc::<DropPanicProbe>::increment_strong_count(data.cast()) };
+        RawWaker::new(data, &DROP_PANIC_PROBE_VTABLE)
+    }
+
+    unsafe fn wake_drop_panic_probe(data: *const ()) {
+        // SAFETY: wake consumes the Arc reference owned by this raw waker.
+        drop(unsafe { Arc::<DropPanicProbe>::from_raw(data.cast()) });
+    }
+
+    unsafe fn wake_drop_panic_probe_by_ref(_: *const ()) {}
+
+    unsafe fn drop_drop_panic_probe(data: *const ()) {
+        // SAFETY: drop consumes the Arc reference owned by this raw waker.
+        let probe = unsafe { Arc::<DropPanicProbe>::from_raw(data.cast()) };
+        assert!(
+            !probe.panic_on_drop.load(Ordering::Relaxed),
+            "intentional local waker drop panic"
+        );
+    }
+
+    static DROP_PANIC_PROBE_VTABLE: RawWakerVTable = RawWakerVTable::new(
+        clone_drop_panic_probe,
+        wake_drop_panic_probe,
+        wake_drop_panic_probe_by_ref,
+        drop_drop_panic_probe,
+    );
+
+    #[test]
+    fn test_pending_waiter_cancellation_contains_waker_drop_panic() {
+        let signal = AsyncSignal::default();
+        let probe = Arc::new(DropPanicProbe {
+            panic_on_drop: AtomicBool::new(false),
+        });
+        let data = Arc::into_raw(Arc::clone(&probe)).cast();
+        // SAFETY: The vtable keeps one Arc reference for each raw waker.
+        let waker = unsafe { Waker::from_raw(RawWaker::new(data, &DROP_PANIC_PROBE_VTABLE)) };
+        let waiter = signal.register(&waker);
+
+        probe.panic_on_drop.store(true, Ordering::Relaxed);
+        drop(waiter);
+        assert_eq!(0, signal.waiter_count(), "canceled waiter is removed");
+
+        probe.panic_on_drop.store(false, Ordering::Relaxed);
+        drop(waker);
+    }
 }

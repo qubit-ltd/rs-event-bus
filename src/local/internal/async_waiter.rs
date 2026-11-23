@@ -8,10 +8,14 @@
 //! Registration guard that removes its waker when dropped.
 
 use std::collections::HashMap;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::task::Waker;
+
+use crate::internal::panic_payload::dispose_panic_payload;
 
 /// Guard that unregisters one task waker when its wait is canceled or ends.
 #[must_use = "dropping the waiter immediately unregisters its waker"]
@@ -56,7 +60,9 @@ impl AsyncWaiter {
             let mut waiters = self.waiters.lock().unwrap_or_else(PoisonError::into_inner);
             waiters.insert(self.id, candidate)
         };
-        drop(replaced);
+        if let Some(replaced) = replaced {
+            dispose_waker(replaced);
+        }
     }
 }
 
@@ -67,6 +73,15 @@ impl Drop for AsyncWaiter {
             let mut waiters = self.waiters.lock().unwrap_or_else(PoisonError::into_inner);
             waiters.remove(&self.id)
         };
-        drop(removed);
+        if let Some(removed) = removed {
+            dispose_waker(removed);
+        }
+    }
+}
+
+/// Drops an owned waker without allowing its destructor to interrupt cleanup.
+fn dispose_waker(waker: Waker) {
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(waker))) {
+        dispose_panic_payload(payload);
     }
 }
