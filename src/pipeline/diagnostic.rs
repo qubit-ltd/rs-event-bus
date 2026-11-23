@@ -189,3 +189,63 @@ pub(crate) fn emit_diagnostic(observers: &[Arc<DiagnosticObserver>], diagnostic:
         }
     }
 }
+
+/// Emits a diagnostic and independently releases every callback retained by
+/// the owned snapshot, containing callback-capture destructor panics.
+///
+/// # Parameters
+/// - `observers`: strong callback references retained by the snapshot.
+/// - `diagnostic`: runtime fact passed to each observer.
+pub(crate) fn emit_diagnostic_owned(observers: Vec<Arc<DiagnosticObserver>>, diagnostic: &Diagnostic) {
+    emit_diagnostic(&observers, diagnostic);
+    for observer in observers {
+        if let Err(payload) = panic::catch_unwind(panic::AssertUnwindSafe(|| drop(observer))) {
+            dispose_panic_payload(payload);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    use super::Diagnostic;
+    use super::DiagnosticObserver;
+    use super::emit_diagnostic_owned;
+
+    struct DropProbe(Arc<AtomicUsize>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            panic!("observer capture drop");
+        }
+    }
+
+    #[test]
+    fn test_owned_diagnostic_snapshot_contains_capture_drop_panics() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let capture = Arc::new(DropProbe(drops.clone()));
+        let calls_by_callback = calls.clone();
+        let callback: Arc<DiagnosticObserver> = {
+            let capture = capture.clone();
+            Arc::new(move |_| {
+                let _ = &capture;
+                calls_by_callback.fetch_add(1, Ordering::SeqCst);
+            })
+        };
+        drop(capture);
+        let diagnostic = Diagnostic::InternalFailure {
+            origin: "test".into(),
+            message: "test".into(),
+        };
+
+        emit_diagnostic_owned(vec![callback], &diagnostic);
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+}

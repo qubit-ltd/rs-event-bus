@@ -242,7 +242,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
                 let mut drop_panicked = false;
                 while let Some(delivery) = self.buffered.pop_front() {
                     self.record_abandoned_delivery();
-                    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(delivery))) {
+                    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| delivery.drop_independently())) {
                         dispose_panic_payload(payload);
                         drop_panicked = true;
                     }

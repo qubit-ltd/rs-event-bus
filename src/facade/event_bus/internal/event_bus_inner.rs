@@ -45,7 +45,7 @@ use crate::model::ProviderId;
 use crate::pipeline::Diagnostic;
 use crate::pipeline::DiagnosticObserver;
 use crate::pipeline::PublisherPipeline;
-use crate::pipeline::emit_diagnostic;
+use crate::pipeline::emit_diagnostic_owned;
 use crate::spi::DurabilityCapability;
 use crate::spi::EventBusCapabilities;
 use crate::spi::EventBusSpi;
@@ -160,7 +160,7 @@ impl EventBusInner {
     /// # Parameters
     /// - `diagnostic`: event delivered to active observer callbacks.
     pub(in crate::facade) fn emit(&self, diagnostic: Diagnostic) {
-        emit_diagnostic(&self.observer_snapshot(), &diagnostic);
+        emit_diagnostic_owned(self.observer_snapshot(), &diagnostic);
     }
 
     /// Emits a non-fatal internal failure through the common observer path.

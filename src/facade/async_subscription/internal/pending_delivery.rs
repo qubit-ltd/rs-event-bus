@@ -8,12 +8,16 @@
 //! Single-owner state retained from receive through delivery settlement.
 
 use std::num::NonZeroU32;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
+use std::panic::resume_unwind;
 use std::sync::Arc;
 
 use super::owned_delivery_lease::OwnedDeliveryLease;
 use super::settlement_progress::SettlementProgress;
 use crate::EventId;
 use crate::facade::async_event_bus::AsyncDeliveryGuard;
+use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::EventEnvelope;
 use crate::model::ProviderMessageMetadata;
 use crate::spi::DeliveryDisposition;
@@ -46,4 +50,31 @@ pub(in crate::facade) struct PendingDelivery<T: 'static> {
     pub(in crate::facade) failure_diagnostic: Option<(u32, Box<str>)>,
     /// Single receive-to-completion credit, released when ownership ends.
     pub(in crate::facade) lease: OwnedDeliveryLease,
+}
+
+impl<T: 'static> PendingDelivery<T> {
+    /// Releases the event and provider token in independent unwind boundaries,
+    /// then releases the remaining delivery state before propagating the first
+    /// destructor panic.
+    pub(in crate::facade) fn drop_independently(self) {
+        let mut delivery = self;
+        let mut first_panic = None;
+        macro_rules! release {
+            ($value:expr) => {
+                if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop($value))) {
+                    if first_panic.is_none() {
+                        first_panic = Some(payload);
+                    } else {
+                        dispose_panic_payload(payload);
+                    }
+                }
+            };
+        }
+        release!(delivery.event.take());
+        release!(delivery.token.take());
+        release!(delivery);
+        if let Some(payload) = first_panic {
+            resume_unwind(payload);
+        }
+    }
 }

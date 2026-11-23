@@ -122,6 +122,19 @@ impl<T: 'static> Drop for AsyncSession<T> {
                 }
             };
         }
+        macro_rules! release_delivery {
+            ($delivery:expr) => {
+                if let Err(payload) = catch_unwind(AssertUnwindSafe(|| {
+                    with_subscription_scope(bus_key, subscription_id, || $delivery.drop_independently());
+                })) {
+                    if first_panic.is_none() {
+                        first_panic = Some(payload);
+                    } else {
+                        crate::internal::panic_payload::dispose_panic_payload(payload);
+                    }
+                }
+            };
+        }
         {
             let mut tasks = std::mem::take(&mut self.tasks);
             let mut buffered = std::mem::take(&mut self.buffered);
@@ -136,7 +149,7 @@ impl<T: 'static> Drop for AsyncSession<T> {
                     delivery.event_id.clone(),
                     self.topic.name().into(),
                 );
-                release!(delivery);
+                release_delivery!(delivery);
             }
             while let Some(mut delivery) = completed.pop_front() {
                 self.emit_failure_diagnostic(
@@ -144,7 +157,7 @@ impl<T: 'static> Drop for AsyncSession<T> {
                     delivery.event_id.clone(),
                     self.topic.name().into(),
                 );
-                release!(delivery);
+                release_delivery!(delivery);
             }
             while let Some(mut delivery) = completed_during_settlement.pop_front() {
                 self.emit_failure_diagnostic(
@@ -152,7 +165,7 @@ impl<T: 'static> Drop for AsyncSession<T> {
                     delivery.event_id.clone(),
                     self.topic.name().into(),
                 );
-                release!(delivery);
+                release_delivery!(delivery);
             }
         }
         drop(registration);

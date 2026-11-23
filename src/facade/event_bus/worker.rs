@@ -8,6 +8,7 @@
 //! Single-threaded provider receive, settlement, and delivery ownership.
 #![allow(clippy::too_many_arguments)]
 
+use std::any::Any;
 use std::collections::HashMap;
 use std::convert::identity;
 use std::panic::AssertUnwindSafe;
@@ -657,8 +658,28 @@ fn run_subscription_worker_body<T>(
             }
         }
     }
+    release_resource(spi_subscription, &mut first_panic);
+    release_resource(handler, &mut first_panic);
     if let Some(payload) = first_panic {
         resume_unwind(payload);
+    }
+}
+
+/// Releases a worker-owned resource while preserving the first cleanup panic.
+///
+/// # Type Parameters
+/// - `T`: resource type being released.
+///
+/// # Parameters
+/// - `resource`: value whose destructor is invoked.
+/// - `first_panic`: slot retaining the first destructor panic.
+fn release_resource<T>(resource: T, first_panic: &mut Option<Box<dyn Any + Send>>) {
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(resource))) {
+        if first_panic.is_none() {
+            *first_panic = Some(payload);
+        } else {
+            dispose_panic_payload(payload);
+        }
     }
 }
 
@@ -1391,4 +1412,54 @@ fn canceled_intent(
         requested: DeliveryDisposition::Retry,
     });
     None
+}
+
+#[cfg(test)]
+mod final_cleanup_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    use super::release_resource;
+    use crate::internal::panic_payload::dispose_panic_payload;
+
+    struct PanickingResource {
+        drops: Arc<AtomicUsize>,
+        message: &'static str,
+    }
+
+    impl Drop for PanickingResource {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+            panic!("{}", self.message);
+        }
+    }
+
+    #[test]
+    fn test_final_resource_release_keeps_first_panic_and_releases_later_resources() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut first = None;
+        release_resource(
+            PanickingResource {
+                drops: drops.clone(),
+                message: "first cleanup panic",
+            },
+            &mut first,
+        );
+        release_resource(
+            PanickingResource {
+                drops: drops.clone(),
+                message: "second cleanup panic",
+            },
+            &mut first,
+        );
+
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+        let payload = first.expect("first cleanup panic is retained");
+        assert_eq!(
+            payload.downcast_ref::<String>().map(String::as_str),
+            Some("first cleanup panic")
+        );
+        dispose_panic_payload(payload);
+    }
 }

@@ -32,7 +32,9 @@ pub use diagnostic::DiagnosticObserver;
 pub(crate) use diagnostic::PipelineFailure;
 #[cfg(test)]
 pub(crate) use diagnostic::PipelineFailureOrigin;
+#[cfg(test)]
 pub(crate) use diagnostic::emit_diagnostic;
+pub(crate) use diagnostic::emit_diagnostic_owned;
 pub(crate) use diagnostic::format_diagnostic_error;
 pub(crate) use failure_decision::choose_failure_directive;
 pub(crate) use global_publisher_interceptor::GlobalPublisherInterceptor;

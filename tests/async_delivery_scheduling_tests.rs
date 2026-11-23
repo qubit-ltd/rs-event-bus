@@ -1200,9 +1200,27 @@ fn test_async_settlement_success_after_retry_drop_panic_keeps_receiving() {
 
 #[test]
 fn test_async_confirmed_settlement_continues_after_payload_drop_panic() {
+    const CASE: &str = "confirmed-payload-and-token-drop-panic";
+    if std::env::var("QUBIT_EVENT_BUS_ISOLATED_CASE").as_deref() != Ok(CASE) {
+        crate::support::isolated_process::run_case_with_timeout(
+            "test_async_confirmed_settlement_continues_after_payload_drop_panic",
+            CASE,
+            Duration::from_secs(10),
+        );
+        return;
+    }
+
     struct DropProbe {
         should_panic: bool,
         drops: Arc<AtomicUsize>,
+    }
+
+    struct TokenDropProbe(Arc<AtomicUsize>);
+    impl Drop for TokenDropProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            panic!("confirmed token drop probe");
+        }
     }
     impl Drop for DropProbe {
         fn drop(&mut self) {
@@ -1228,6 +1246,7 @@ fn test_async_confirmed_settlement_continues_after_payload_drop_panic() {
     )
     .expect("subscription accepted");
     let drops = Arc::new(AtomicUsize::new(0));
+    let token_drops = Arc::new(AtomicUsize::new(0));
     for (number, should_panic) in [(1, true), (2, false)] {
         fake.enqueue(InboundMessage::new(
             TopicAddress::new("test.topic").expect("valid topic address"),
@@ -1239,7 +1258,7 @@ fn test_async_confirmed_settlement_continues_after_payload_drop_panic() {
                 should_panic,
                 drops: drops.clone(),
             })),
-            Some(SettlementToken::new(sub.id(), format!("drop-token-{number}"))),
+            Some(SettlementToken::new(sub.id(), TokenDropProbe(token_drops.clone()))),
             Default::default(),
         ));
     }
@@ -1259,6 +1278,7 @@ fn test_async_confirmed_settlement_continues_after_payload_drop_panic() {
     );
     assert_eq!(probe.attempts.lock().expect("attempt log").len(), 2);
     assert_eq!(drops.load(Ordering::SeqCst), 2);
+    assert_eq!(token_drops.load(Ordering::SeqCst), 2);
     let metrics = sub.delivery_metrics().metrics;
     assert_eq!((metrics.completed, metrics.abandoned_ephemeral), (2, 0));
     drop(run);

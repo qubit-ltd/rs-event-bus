@@ -226,7 +226,7 @@ impl<T: Send + Sync + 'static> AsyncSession<T> {
         &self,
         delivery: crate::facade::async_subscription::internal::pending_delivery::PendingDelivery<T>,
     ) -> bool {
-        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(delivery))) {
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| delivery.drop_independently())) {
             dispose_panic_payload(payload);
             true
         } else {

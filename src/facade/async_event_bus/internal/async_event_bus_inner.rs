@@ -42,7 +42,7 @@ use crate::model::SubscriberId;
 use crate::pipeline::Diagnostic;
 use crate::pipeline::DiagnosticObserver;
 use crate::pipeline::PublisherPipeline;
-use crate::pipeline::emit_diagnostic;
+use crate::pipeline::emit_diagnostic_owned;
 use crate::spi::AsyncEventBusSpi;
 use crate::spi::EventBusCapabilities;
 
@@ -148,7 +148,7 @@ impl AsyncEventBusInner {
     /// # Parameters
     /// - `diagnostic`: event delivered to active observers.
     pub(in crate::facade) fn emit(&self, diagnostic: &Diagnostic) {
-        emit_diagnostic(&self.observer_snapshot(), diagnostic);
+        emit_diagnostic_owned(self.observer_snapshot(), diagnostic);
     }
 
     /// Records the first close failure for a subscription control.
