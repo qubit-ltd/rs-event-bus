@@ -77,8 +77,10 @@ pub struct DeliveryMetricsSnapshot {
     /// Longest settlement duration in nanoseconds.
     pub settlement_duration_max_nanos: u64,
     /// Age of the oldest owner-marked receive reservation or delivery. `None`
-    /// means no owned entry has a timestamp, or checked clock validation
-    /// failed and was diagnosed. Unclaimed reservations contribute to
-    /// gauges but have no age.
+    /// means no owned entry has a usable start timestamp, or a captured
+    /// timestamp cannot be compared with the sampled clock. Unclaimed
+    /// reservations contribute to the other gauges but have no age. Sampling
+    /// is observational: an unavailable age does not change subscription
+    /// state, cancel work, or emit a diagnostic.
     pub oldest_owned_age: Option<Duration>,
 }
