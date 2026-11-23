@@ -180,9 +180,22 @@ fn test_run_handoff_contains_waker_drop_panics_and_preserves_session() {
 
         let resumed_calls = Arc::new(AtomicUsize::new(0));
         let resumed_calls_in_runner = Arc::clone(&resumed_calls);
+        let allow_resumed_completion = Arc::new(AtomicBool::new(false));
+        let allow_completion_in_runner = Arc::clone(&allow_resumed_completion);
         let mut waiting_runner = Box::pin(subscription.run(move |_| {
             resumed_calls_in_runner.fetch_add(1, Ordering::AcqRel);
-            async { std::future::pending::<Result<(), DeliveryError>>().await }
+            let allow_completion = Arc::clone(&allow_completion_in_runner);
+            async move {
+                std::future::poll_fn(|cx| {
+                    if allow_completion.load(Ordering::Acquire) {
+                        Poll::Ready(Ok(()))
+                    } else {
+                        cx.waker().wake_by_ref();
+                        Poll::Pending
+                    }
+                })
+                .await
+            }
         }));
 
         let old_state = Arc::new(DropPanicState {
@@ -217,15 +230,26 @@ fn test_run_handoff_contains_waker_drop_panics_and_preserves_session() {
             .await
             .expect("publish");
         new_state.panic_on_drop.store(true, Ordering::Relaxed);
-        let resumed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            Future::poll(Pin::as_mut(&mut waiting_runner), &mut new_context)
-        }));
-        assert!(matches!(
-            resumed.expect("waker cleanup panic is contained"),
-            Poll::Pending
-        ));
+        for attempt in 0..100 {
+            let resumed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                Future::poll(Pin::as_mut(&mut waiting_runner), &mut new_context)
+            }));
+            assert!(matches!(
+                resumed.expect("waker cleanup panic is contained"),
+                Poll::Pending
+            ));
+            if attempt == 0 {
+                new_state.panic_on_drop.store(false, Ordering::Relaxed);
+            }
+            if resumed_calls.load(Ordering::Acquire) == 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
         assert_eq!(1, resumed_calls.load(Ordering::Acquire));
 
+        allow_resumed_completion.store(true, Ordering::Release);
+        old_state.panic_on_drop.store(false, Ordering::Relaxed);
         new_state.panic_on_drop.store(false, Ordering::Relaxed);
         drop(waiting_runner);
         drop(old_waker);

@@ -8,14 +8,8 @@
 //! Caller-driven asynchronous subscription runner.
 
 use std::future::Future;
-use std::ops::Deref;
-use std::panic::AssertUnwindSafe;
-use std::panic::catch_unwind;
 use std::sync::Arc;
 use std::sync::PoisonError;
-use std::sync::Weak;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 
 use qubit_id::Id;
 
@@ -29,14 +23,12 @@ use super::async_event_bus::AsyncRunnerGuard;
 use super::async_event_bus::AsyncShutdownDriver;
 use super::async_event_bus::BusState;
 use super::async_event_bus::SignalRegistration;
-use crate::Diagnostic;
 use crate::codec::EventCodec;
 use crate::error::DeliveryError;
 use crate::error::LifecycleError;
 use crate::error::ReceiveError;
 use crate::error::SubscriptionCloseErrors;
 use crate::facade::SubscriptionDeliveryMetricsSnapshot;
-use crate::internal::panic_payload::dispose_panic_payload;
 use crate::model::Delivery;
 use crate::model::FailureDirective;
 use crate::model::SubscribeOptions;
@@ -46,7 +38,6 @@ use crate::model::Topic;
 use crate::pipeline::terminal_directive as choose_terminal_directive;
 use crate::spi::AsyncEventSubscriptionSpi;
 use crate::spi::ShutdownMode;
-use crate::spi::SpiFuture;
 
 mod internal;
 // Publishes asynchronous dead-letter records through the facade pipeline.
@@ -55,87 +46,12 @@ mod dead_letter;
 mod delivery_task;
 
 pub(super) use internal::BusContextFuture;
+pub(in crate::facade::async_subscription) use internal::async_handler_owner::AsyncHandlerOwner;
+use internal::async_handler_owner::SharedAsyncHandler;
 pub(super) use internal::is_current_bus_poll;
 pub(super) use internal::with_bus_scope;
 pub(super) use internal::with_subscription_scope;
 
-/// Boxed subscriber handler that returns a runtime-neutral future.
-/// The callback can be shared by delivery tasks without tying the session to
-/// a specific executor's future type.
-///
-/// # Type Parameters
-/// - `T`: payload type accepted by the handler.
-type AsyncHandler<T> = dyn Fn(Delivery<T>) -> SpiFuture<'static, Result<(), DeliveryError>> + Send + Sync;
-/// Shared owner of a subscriber handler callback.
-/// Clones retain the same callback for concurrent delivery tasks.
-///
-/// # Type Parameters
-/// - `T`: payload type accepted by the handler.
-type SharedAsyncHandler<T> = Arc<AsyncHandlerOwner<T>>;
-
-/// Shared callback owner that contains destruction only after replacement.
-struct AsyncHandlerOwner<T: 'static> {
-    callback: Option<Box<AsyncHandler<T>>>,
-    replaced: AtomicBool,
-    inner: Weak<AsyncEventBusInner>,
-    subscription_id: qubit_id::Id,
-}
-
-impl<T: 'static> AsyncHandlerOwner<T> {
-    fn new<F>(callback: F, inner: Arc<AsyncEventBusInner>, subscription_id: qubit_id::Id) -> SharedAsyncHandler<T>
-    where
-        F: Fn(Delivery<T>) -> SpiFuture<'static, Result<(), DeliveryError>> + Send + Sync + 'static,
-    {
-        Arc::new(Self {
-            callback: Some(Box::new(callback)),
-            replaced: AtomicBool::new(false),
-            inner: Arc::downgrade(&inner),
-            subscription_id,
-        })
-    }
-
-    fn mark_replaced(&self) {
-        self.replaced.store(true, Ordering::Release);
-    }
-}
-
-impl<T: 'static> Deref for AsyncHandlerOwner<T> {
-    type Target = AsyncHandler<T>;
-
-    fn deref(&self) -> &Self::Target {
-        self.callback
-            .as_deref()
-            .expect("handler callback retained until owner drop")
-    }
-}
-
-impl<T: 'static> Drop for AsyncHandlerOwner<T> {
-    fn drop(&mut self) {
-        let Some(callback) = self.callback.take() else {
-            return;
-        };
-        if !self.replaced.load(Ordering::Acquire) {
-            drop(callback);
-            return;
-        }
-        let Some(inner) = self.inner.upgrade() else {
-            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(callback))) {
-                dispose_panic_payload(payload);
-            }
-            return;
-        };
-        let bus_key = Arc::as_ptr(&inner) as usize;
-        with_subscription_scope(bus_key, self.subscription_id, || {
-            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(callback))) {
-                dispose_panic_payload(payload);
-                inner.emit(&Diagnostic::InternalFailure {
-                    origin: "replaced_async_handler_drop".into(),
-                    message: "replaced async handler drop panicked".into(),
-                });
-            }
-        });
-    }
-}
 /// Delivery failure, number of attempts, and selected terminal directive.
 type RetryFailure = (Box<DeliveryError>, u32, FailureDirective);
 
