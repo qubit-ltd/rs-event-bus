@@ -81,6 +81,7 @@ struct CoverageState {
     fail_next_publish: AtomicBool,
     fail_next_subscribe: AtomicBool,
     fail_next_shutdown: AtomicBool,
+    idle_wait_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     close_fails: bool,
     ordering: OrderingCapability,
 }
@@ -118,6 +119,7 @@ impl CoverageSpi {
                     fail_next_publish: AtomicBool::new(false),
                     fail_next_subscribe: AtomicBool::new(false),
                     fail_next_shutdown: AtomicBool::new(false),
+                    idle_wait_hook: Mutex::new(None),
                     close_fails,
                     ordering,
                 }),
@@ -144,6 +146,11 @@ impl CoverageSpi {
     /// Makes the next shutdown call return a configured provider error.
     fn fail_next_shutdown(&self) {
         self.state.fail_next_shutdown.store(true, Ordering::Release);
+    }
+
+    /// Installs one callback for the next provider topic-idle query.
+    fn on_next_idle_wait(&self, callback: impl Fn() + Send + Sync + 'static) {
+        *self.state.idle_wait_hook.lock().expect("idle wait hook lock") = Some(Arc::new(callback));
     }
 }
 
@@ -228,6 +235,15 @@ impl EventBusSpi for CoverageSpi {
             return Err(spi_error("shutdown", "configured_failure"));
         }
         Ok(ShutdownOutcome::Complete)
+    }
+
+    /// Runs the one-shot reentry probe before reporting the topic idle.
+    fn wait_for_topic_idle(&self, _: &TopicAddress, _: Option<Duration>) -> Result<Option<bool>, SpiError> {
+        let hook = self.state.idle_wait_hook.lock().expect("idle wait hook lock").take();
+        if let Some(hook) = hook {
+            hook();
+        }
+        Ok(Some(true))
     }
 }
 
@@ -533,6 +549,31 @@ fn test_shutdown_is_idempotent_and_caches_the_provider_outcome() {
         .outcome
     );
     assert_eq!(1, spi.shutdown_calls());
+}
+
+#[test]
+fn test_provider_topic_idle_reentry_completes_without_self_wait() {
+    let (bus, spi, _) = create_bus(1, 1);
+    let bus_slot = Arc::new(Mutex::new(Some(bus.clone())));
+    let callback_bus = bus_slot.clone();
+    let (nested_tx, nested_rx) = mpsc::channel();
+    spi.on_next_idle_wait(move || {
+        let bus = callback_bus.lock().expect("bus slot").clone().expect("bus installed");
+        let nested = bus.wait_for_idle(&topic(), Some(Duration::ZERO));
+        nested_tx.send(nested).expect("test receives nested provider call");
+    });
+
+    let outer = bus.wait_for_idle(&topic(), Some(Duration::ZERO));
+    assert_eq!(WaitOutcome::Idle, outer.expect("outer provider call completes"));
+    assert_eq!(
+        WaitOutcome::Idle,
+        nested_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("nested provider call completes")
+            .expect("nested provider call succeeds")
+    );
+    *bus_slot.lock().expect("bus slot") = None;
+    let _ = bus.shutdown(ShutdownMode::Immediate).expect("bus shuts down");
 }
 
 #[test]

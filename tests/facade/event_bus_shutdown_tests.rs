@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use qubit_event_bus::EventBus;
 use qubit_event_bus::ShutdownError;
+use qubit_event_bus::ShutdownReport;
 use qubit_event_bus::Subscription;
 use qubit_event_bus::local::LocalEventBusConfig;
 use qubit_event_bus::model::PublishRequest;
@@ -31,6 +32,8 @@ use qubit_event_bus::spi::ShutdownMode;
 use qubit_event_bus::spi::ShutdownOutcome;
 
 const LIMIT: Duration = Duration::from_secs(5);
+
+type ShutdownFuture = Pin<Box<dyn Future<Output = Result<ShutdownReport, ShutdownError>> + Send>>;
 
 /// Releases the handler even when a test unwinds.
 struct Gate(Arc<(Mutex<bool>, Condvar)>);
@@ -91,7 +94,7 @@ impl Wake for Signal {
 }
 
 /// Polls a pinned observer with the supplied waker.
-fn poll<F: Future>(future: Pin<&mut F>, waker: &Waker) -> Poll<F::Output> {
+fn poll<F: Future + ?Sized>(future: Pin<&mut F>, waker: &Waker) -> Poll<F::Output> {
     future.poll(&mut Context::from_waker(waker))
 }
 
@@ -240,6 +243,65 @@ fn test_async_wait_from_handler_is_rejected_but_ticket_remains_observable() {
     assert!(rejected, "same-bus async observation must be rejected");
     let report = ticket.wait(Some(LIMIT)).expect("external wait");
     assert_eq!(report.outcome, ShutdownOutcome::Complete);
+}
+
+#[test]
+fn test_pending_async_wait_repolled_from_handler_is_rejected_and_ticket_remains_observable() {
+    let bus = EventBus::local(LocalEventBusConfig::default()).expect("bus");
+    let topic = Topic::<String>::new("shutdown.async-repoll").expect("topic");
+    let callback_bus = bus.clone();
+    let (ticket_tx, ticket_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let resume_rx = Arc::new(Mutex::new(resume_rx));
+    let (rejected_tx, rejected_rx) = mpsc::channel();
+    let future_slot = Arc::new(Mutex::new(None::<ShutdownFuture>));
+    let callback_slot = future_slot.clone();
+    let callback_resume = resume_rx.clone();
+    let _subscription = bus
+        .subscribe(
+            SubscribeRequest::new("async-repoll", topic.clone()).expect("request"),
+            move |_| {
+                let ticket = Arc::new(
+                    callback_bus
+                        .request_shutdown(ShutdownMode::Immediate)
+                        .expect("nonblocking request"),
+                );
+                ticket_tx.send(ticket).expect("send ticket to external observer");
+                callback_resume
+                    .lock()
+                    .expect("resume receiver lock")
+                    .recv()
+                    .expect("external observer permits callback poll");
+                let mut future = callback_slot
+                    .lock()
+                    .expect("future slot")
+                    .take()
+                    .expect("pending future");
+                let rejected = matches!(
+                    poll(future.as_mut(), Waker::noop()),
+                    Poll::Ready(Err(ShutdownError::Lifecycle(
+                        qubit_event_bus::LifecycleError::WouldDeadlock { operation: "shutdown" }
+                    )))
+                );
+                rejected_tx.send(rejected).expect("send nested poll result");
+            },
+        )
+        .expect("subscribe");
+    let _ = bus
+        .publish(PublishRequest::new(topic, "payload".to_owned()).expect("request"))
+        .expect("publish");
+
+    let ticket = ticket_rx.recv_timeout(LIMIT).expect("handler starts shutdown");
+    let future_ticket = ticket.clone();
+    let mut future: ShutdownFuture = Box::pin(async move { future_ticket.wait_async().await });
+    assert!(poll(future.as_mut(), Waker::noop()).is_pending());
+    *future_slot.lock().expect("future slot") = Some(future);
+    resume_tx.send(()).expect("resume handler");
+
+    assert!(rejected_rx.recv_timeout(LIMIT).expect("nested poll completes"));
+    let report = ticket.wait(Some(LIMIT)).expect("external wait observes completion");
+    let mut fresh = Box::pin(ticket.wait_async());
+    assert!(matches!(poll(fresh.as_mut(), Waker::noop()), Poll::Ready(Ok(actual)) if actual == report));
 }
 
 #[test]

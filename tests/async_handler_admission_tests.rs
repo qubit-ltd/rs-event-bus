@@ -14,10 +14,13 @@ use std::future::poll_fn;
 use std::io::Error;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 use std::time::Duration;
 
 use qubit_clock::ManualMonotonicClock;
@@ -46,6 +49,8 @@ use support::fake_spi::FakeAsyncEventBusSpi;
 use support::fake_spi::inbound_message;
 use support::manual_async::block_on;
 use support::manual_async::poll_once;
+
+type ReceivedWaitFuture = Pin<Box<dyn Future<Output = Result<WaitOutcome, LifecycleError>> + Send>>;
 
 /// Drives a finite number of turns without a background executor or wall clock.
 fn poll_pending<F: Future>(mut future: Pin<&mut F>) {
@@ -599,6 +604,80 @@ fn test_pending_runner_poll_does_not_leave_bus_context_active() {
     assert!(block_on(bus.wait_for_received_deliveries(&topic, Some(Duration::ZERO))).is_ok());
     drop(run);
     let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+}
+
+#[test]
+fn test_pending_received_wait_repolled_from_handler_is_rejected_then_observes_idle() {
+    let fake = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("received-repoll").expect("provider"), fake.clone()).expect("bus");
+    let topic = Topic::<u32>::new("received.repoll").expect("topic");
+    let future_slot = Arc::new(Mutex::new(None::<ReceivedWaitFuture>));
+    let callback_slot = future_slot.clone();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+    let resume_rx = Arc::new(Mutex::new(resume_rx));
+    let (rejected_tx, rejected_rx) = std::sync::mpsc::channel();
+    let sub = block_on(bus.subscribe(SubscribeRequest::new("received-repoll", topic.clone()).expect("request")))
+        .expect("subscribe");
+    fake.enqueue(inbound_message(None));
+    let callback_resume = resume_rx.clone();
+    let runner = std::thread::spawn(move || {
+        block_on(sub.run(move |_| {
+            let callback_slot = callback_slot.clone();
+            let callback_resume = callback_resume.clone();
+            let entered_tx = entered_tx.clone();
+            let rejected_tx = rejected_tx.clone();
+            async move {
+                entered_tx.send(()).expect("signal active handler");
+                callback_resume
+                    .lock()
+                    .expect("resume receiver lock")
+                    .recv()
+                    .expect("external observer permits nested poll");
+                let mut future = callback_slot
+                    .lock()
+                    .expect("future slot")
+                    .take()
+                    .expect("pending future");
+                let rejected = matches!(
+                    future.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+                    Poll::Ready(Err(LifecycleError::WouldDeadlock {
+                        operation: "wait_for_received_deliveries"
+                    }))
+                );
+                rejected_tx.send(rejected).expect("send nested poll result");
+                Ok(())
+            }
+        }))
+    });
+
+    entered_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("handler has an accepted delivery");
+    let wait_bus = bus.clone();
+    let wait_topic = topic.clone();
+    let mut future: ReceivedWaitFuture =
+        Box::pin(async move { wait_bus.wait_for_received_deliveries(&wait_topic, None).await });
+    assert!(
+        future
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    *future_slot.lock().expect("future slot") = Some(future);
+    resume_tx.send(()).expect("resume handler");
+    assert!(
+        rejected_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("nested wait completes")
+    );
+    let _ = block_on(bus.shutdown(ShutdownMode::Immediate)).expect("shutdown");
+    runner.join().expect("runner thread").expect("runner");
+    assert_eq!(
+        block_on(bus.wait_for_received_deliveries(&topic, Some(Duration::from_secs(3)))).expect("idle wait"),
+        WaitOutcome::Idle
+    );
 }
 
 #[test]

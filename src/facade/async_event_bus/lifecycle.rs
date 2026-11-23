@@ -107,8 +107,19 @@ impl AsyncEventBus {
                 operation: "wait_for_received_deliveries",
             });
         }
-        wait_until(&self.inner.tracker.signal, self.inner.timer.as_ref(), timeout, || {
-            self.inner.tracker.is_idle(topic.name())
+        let mut wait = Box::pin(wait_until(
+            &self.inner.tracker.signal,
+            self.inner.timer.as_ref(),
+            timeout,
+            || self.inner.tracker.is_idle(topic.name()),
+        ));
+        poll_fn(|cx| {
+            if is_current_bus_poll(bus_key) {
+                return Poll::Ready(Err(LifecycleError::WouldDeadlock {
+                    operation: "wait_for_received_deliveries",
+                }));
+            }
+            with_bus_scope(bus_key, || wait.as_mut().poll(cx))
         })
         .await
     }
