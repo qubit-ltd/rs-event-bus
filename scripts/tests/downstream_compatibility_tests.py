@@ -263,6 +263,38 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                                      (root / "Cargo.lock").stat().st_mtime_ns)
                               for root in (redis, task)}, original)
 
+    def test_worktree_mode_uses_direct_roots_without_copying_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            core = self.make_input_repository(Path(directory) / "core", "core")
+            redis = self.make_input_repository(Path(directory) / "redis", "redis")
+            task = self.make_input_repository(Path(directory) / "rs-task", "rs-task")
+            argv = ["check_downstream_compatibility.py", "--use-worktrees",
+                    "--core-root", str(core), "--redis-root", str(redis),
+                    "--task-root", str(task)]
+            metadata_roots = []
+
+            def capture_metadata(root, _features, requested_core, redis_patch, _target):
+                metadata_roots.append(root)
+                self.assertEqual(requested_core, core.resolve())
+                if root == task:
+                    self.assertEqual(redis_patch, redis.resolve())
+                return {}
+
+            stdout = io.StringIO()
+            with patch("sys.argv", argv), \
+                    patch("scripts.check_downstream_compatibility.metadata",
+                          side_effect=capture_metadata), \
+                    patch("scripts.check_downstream_compatibility.verify_test") as verify, \
+                    patch("scripts.check_downstream_compatibility.copy_tracked_source") as copy, \
+                    contextlib.redirect_stdout(stdout):
+                main()
+
+            self.assertEqual(metadata_roots, [redis.resolve(), task.resolve()])
+            self.assertEqual(verify.call_count, 3)
+            self.assertEqual(copy.call_count, 0)
+            self.assertIn(f"core: revision=", stdout.getvalue())
+            self.assertIn("downstream compatibility checks passed", stdout.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate downstream projects from isolated copies of their tracked state."""
+"""Validate downstream projects from snapshots or registered worktrees."""
 
 import argparse
 import json
@@ -170,8 +170,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--redis-root", type=Path, required=True)
     parser.add_argument("--task-root", type=Path, required=True)
+    parser.add_argument("--core-root", type=Path)
+    parser.add_argument("--use-worktrees", action="store_true",
+                        help="use the supplied downstream worktrees directly")
     args = parser.parse_args()
-    core = Path(__file__).resolve().parents[1]
+    core = (args.core_root or Path(__file__).resolve().parents[1]).resolve()
     inputs = (("redis", args.redis_root.resolve()), ("rs-task", args.task_root.resolve()))
     for label, root in (("core", core), *inputs):
         if not (root / "Cargo.toml").is_file():
@@ -183,18 +186,20 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="event-bus-downstream-") as temp:
         temp_root = Path(temp)
-        snapshots = {}
-        for label, source in inputs:
-            snapshot = temp_root / "sources" / label
-            snapshot.parent.mkdir(parents=True, exist_ok=True)
-            copy_tracked_source(source, snapshot)
-            if not (snapshot / "Cargo.toml").is_file():
-                raise ValueError(f"tracked source snapshot is missing Cargo.toml: {label}")
-            snapshots[label] = snapshot
-
         target_root = temp_root / "target"
-        redis = snapshots["redis"]
-        task = snapshots["rs-task"]
+        if args.use_worktrees:
+            redis, task = (root for _label, root in inputs)
+        else:
+            snapshots = {}
+            for label, source in inputs:
+                snapshot = temp_root / "sources" / label
+                snapshot.parent.mkdir(parents=True, exist_ok=True)
+                copy_tracked_source(source, snapshot)
+                if not (snapshot / "Cargo.toml").is_file():
+                    raise ValueError(f"tracked source snapshot is missing Cargo.toml: {label}")
+                snapshots[label] = snapshot
+            redis = snapshots["redis"]
+            task = snapshots["rs-task"]
         metadata(redis, None, core, None, target_root / "redis")
         metadata(task, "sqlite,event-bus", core, redis, target_root / "rs-task")
         for label, manifest, test_name, command in TESTS:
