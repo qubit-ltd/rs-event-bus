@@ -157,7 +157,7 @@ def run_downstream_checks(roots, core, target_root, *, include_execution_service
         elif config.root == "rs-task":
             allowed_local_roots = (root, roots["redis"])
         else:
-            allowed_local_roots = (root.parents[1],)
+            allowed_local_roots = (root.parent,)
         key = (manifest, config.features, config.all_features)
         if key not in checked_manifests:
             metadata(root, config.features, core, package, target,

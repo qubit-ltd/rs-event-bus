@@ -17,6 +17,7 @@ from scripts.check_downstream_compatibility import discover_local_repositories
 from scripts.check_downstream_compatibility import main
 from scripts.check_downstream_compatibility import metadata
 from scripts.check_downstream_compatibility import run
+from scripts.check_downstream_compatibility import run_downstream_checks
 from scripts.check_downstream_compatibility import validate_graph_for_downstream
 from scripts.check_downstream_compatibility import verify_test
 from scripts.tests.process_test_support import wait_for_process_exit
@@ -251,6 +252,65 @@ class DownstreamCompatibilityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "nested/local/Cargo.toml"):
             validate_graph_for_downstream(graph, expected_core=Path("/external-core"),
                                           allowed_local_roots=(Path("/snapshot"),))
+
+    def test_ioc_suite_allows_only_sibling_snapshot_for_other_local_packages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sources = Path(directory) / "sources"
+            roots = {
+                "redis": sources / "redis",
+                "rs-task": sources / "task",
+                "execution-services": sources / "siblings/rs-execution-services",
+            }
+            for root in roots.values():
+                root.mkdir(parents=True)
+            metadata_calls = []
+
+            def capture_metadata(root, *_args, **kwargs):
+                metadata_calls.append((root, kwargs))
+
+            with patch("scripts.check_downstream_compatibility.metadata",
+                       side_effect=capture_metadata), \
+                    patch("scripts.check_downstream_compatibility.verify_test"):
+                run_downstream_checks(roots, Path("/external/core"), Path(directory) / "target",
+                                      include_execution_services=True)
+
+            execution_root, kwargs = next(
+                (root, kwargs) for root, kwargs in metadata_calls
+                if root == roots["execution-services"])
+            self.assertEqual(kwargs["allowed_local_roots"],
+                             (roots["execution-services"].parent,))
+
+            def local_package_graph(local_manifest):
+                return {
+                    "workspace_members": ["consumer"],
+                    "resolve": {"nodes": [
+                        {"id": "consumer", "dependencies": ["core", "local"]},
+                        {"id": "core", "dependencies": []},
+                        {"id": "local", "dependencies": []},
+                    ]},
+                    "packages": [
+                        {"id": "consumer", "name": "consumer", "source": None,
+                         "manifest_path": str(execution_root / "fixture/Cargo.toml")},
+                        {"id": "core", "name": "qubit-event-bus", "version": "0.21.0",
+                         "source": None, "manifest_path": "/external/core/Cargo.toml"},
+                        {"id": "local", "name": "local", "source": None,
+                         "manifest_path": str(local_manifest)},
+                    ],
+                }
+
+            for suite_snapshot in (roots["redis"], roots["rs-task"]):
+                with self.subTest(rejected=suite_snapshot):
+                    with self.assertRaisesRegex(ValueError, "outside allowed snapshot roots"):
+                        validate_graph_for_downstream(
+                            local_package_graph(suite_snapshot / "local/Cargo.toml"),
+                            expected_core=Path("/external/core"),
+                            allowed_local_roots=kwargs["allowed_local_roots"])
+
+            validate_graph_for_downstream(
+                local_package_graph((roots["execution-services"].parent /
+                                     "rs-local/Cargo.toml")),
+                expected_core=Path("/external/core"),
+                allowed_local_roots=kwargs["allowed_local_roots"])
 
     def test_test_listing_and_execution_both_use_locked_resolution(self):
         commands = []
