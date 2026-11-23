@@ -367,7 +367,8 @@ impl PublisherPipeline {
         })))
     }
 
-    /// Builds a successful receipt without discarding earlier possible-admission evidence.
+    /// Builds a successful receipt without discarding earlier
+    /// possible-admission evidence.
     ///
     /// # Type Parameters
     /// - `T`: Thread-safe event payload retained in the prepared publication.

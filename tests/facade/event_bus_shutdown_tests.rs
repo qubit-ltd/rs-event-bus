@@ -91,7 +91,8 @@ fn coordinator_probe_waker(
         on_drop: Mutex::new(on_drop),
     });
     let pointer = Arc::into_raw(probe.clone()).cast();
-    // SAFETY: The vtable owns and releases the Arc reference represented by pointer.
+    // SAFETY: The vtable owns and releases the Arc reference represented by
+    // pointer.
     let waker = unsafe { Waker::from_raw(RawWaker::new(pointer, &COORDINATOR_PROBE_VTABLE)) };
     (waker, probe)
 }

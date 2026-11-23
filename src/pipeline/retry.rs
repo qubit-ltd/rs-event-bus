@@ -60,7 +60,8 @@ use crate::spi::panic_boundary::provider_panic;
 /// - `rule`: Optional user retry decision rule.
 /// - `cancellation`: Optional signal that cancels retry delays.
 /// - `duplicate_policy`: Admission uncertainty safety policy.
-/// - `possible_admission_seen`: Monotonic evidence that a completed provider attempt may have been accepted.
+/// - `possible_admission_seen`: Monotonic evidence that a completed provider
+///   attempt may have been accepted.
 /// - `seen_admission`: Confirmed admission retained for post-ACK retry failure.
 ///
 /// # Returns
@@ -133,7 +134,8 @@ where
 /// - `cancellation`: Optional signal that cancels retry delays.
 /// - `timer`: Clock used for retry delays.
 /// - `duplicate_policy`: Admission uncertainty safety policy.
-/// - `possible_admission_seen`: Monotonic evidence that a completed provider attempt may have been accepted.
+/// - `possible_admission_seen`: Monotonic evidence that a completed provider
+///   attempt may have been accepted.
 /// - `seen_admission`: Confirmed admission retained for post-ACK retry failure.
 ///
 /// # Returns
@@ -317,7 +319,8 @@ pub(crate) fn possible_admission_allows_retry(effect: PublishEffect, policy: Dup
 ///
 /// # Parameters
 /// - `attempt`: Lazy provider call polled inside the evidence boundary.
-/// - `possible_admission_seen`: Monotonic evidence that this publication may have been accepted.
+/// - `possible_admission_seen`: Monotonic evidence that this publication may
+///   have been accepted.
 /// - `seen_admission`: Confirmed admission retained independently of
 ///   duplicates.
 ///
