@@ -2198,6 +2198,10 @@ python3 -B scripts/check_downstream_compatibility.py \
   --redis-root ../rs-event-bus-redis --task-root ../rs-task
 ```
 
-命令会报告各输入 HEAD 和已跟踪改动，然后将 Redis 与 rs-task 当前已跟踪的工作树内容复制到临时源码快照中。快照包含未提交的已跟踪源码和锁文件，保留已跟踪删除，但不包含构建产物和未跟踪文件；需要参与检查的源码必须进入 Git 跟踪清单。快照和 Cargo 锁文件均与输入 checkout 隔离；遇到 submodule、缺失 manifest 或越出快照范围的已跟踪链接时，会报告具体路径并失败。Cargo 首先在快照中解析 metadata，再以相同 feature 和 patch 参数通过 `--locked` 核对依赖图。rs-task 对 `qubit-event-bus-redis` 的 patch 指向 Redis 快照。精确测试枚举和执行都使用 `--locked`；Cargo 构建产物留在临时根目录中，Redis 的 metadata 与测试共用一个 target 目录。
+旧参数 `--use-worktrees` 作为兼容别名保留，不再切换到另一条执行路径。无论是否传入该参数，检查器都会报告输入 HEAD 和已跟踪改动，再把 Redis 与 rs-task 当前已跟踪的工作树内容复制到临时源码快照。快照包含未提交的已跟踪源码和锁文件，保留已跟踪删除，但不包含构建产物和未跟踪文件。需要参与检查的源码必须进入 Git 跟踪清单；如果自有验证依赖未跟踪文件，请先将其加入 Git 跟踪，或在专用工作副本自行运行 Cargo 检查。
+
+快照及其 Cargo lockfile 与输入 checkout 隔离。Cargo 只会解析或更新快照中的 lockfile；无论成功、失败或命令执行期间，都不会备份、恢复、写入或删除输入 lockfile。遇到 submodule、缺失 manifest 或越出快照范围的已跟踪链接时，会报告具体路径并失败。Cargo 从快照解析 metadata，再用 `--locked` 校验依赖图。metadata 与测试均通过显式 Cargo 参数 `--config patch.crates-io.qubit-event-bus.path=<core-root>` 将 `qubit-event-bus` patch 到 core checkout；task 检查还会把 `qubit-event-bus-redis` patch 到 Redis 快照。精确测试枚举和执行使用相同源码输入并添加 `--locked`；Cargo 构建产物位于临时根目录，Redis 的 metadata 与测试共用一个 target 目录。
+
+以下 fixture 于 2026-11-23 核对。Redis 源码 revision `17c453d28e75d2b7bd0bfb95073abb1391f09804` 的 manifest 包版本为 0.7.4、core 约束为 `^0.21`；其 lock 解析到 registry core 0.21.4。rs-task revision `66925a73ae76a565ec66e84d89d7b81f59e44625` 声明 core `^0.21`、Redis `^0.7`；其 lock 解析到 registry core 0.21.4 和 Redis 0.7.4。rs-ioc fixture revision `c02e75325f7118fb7d356593b05a7c5a83edd7ea` 锁定 registry core 0.21.4。execution-services revision `8b3f89e7c06036b34943ee91a83aa51c9e28086b` 中，IoC consumer manifest 使用 core `^0.21`；标准 fixture lock 解析到 registry 0.21.4，`_current` fixture lock 则解析到 registry 0.21.3。lock 条目只标识 registry 版本，并非检查器实际使用的源码：显式 Cargo patch 会在 metadata、locked 依赖图检查和测试期间把 core 指向 core checkout；task 检查也会把 Redis 指向 Redis 快照。迁移章节保留了带标签的 Redis 0.7.0 与 task 0.10.0 manifest/lock 历史证据；它们以及当前本地 fixture 都不能声明其他已发行版本的支持状态。
 
 每条 Cargo 命令均有 900 秒期限。在 POSIX 上，命令运行于新进程组；超时或 Python 能处理的键盘中断会终止整个进程组并回收直接子进程。其他平台会终止并等待直接子进程，后代进程仍可能存活。两路输出写入临时文件，避免后代继续持有管道而阻塞结果读取。Redis conformance 优先使用 Docker fixture；Docker 不可用时可回退到本地 Redis 6.2 或更新版本。该检查用于发版验证；常规 PR CI 不依赖下游活动分支或 Redis 服务。

@@ -2177,6 +2177,16 @@ provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过
 - 没有 `retry_policy` 的 `retry_rule` 或 `retry_cancellation_token` 会在请求构造及 facade 执行时被拒绝。请添加显式策略或删除未使用的 rule/token。
 - local 发布前拒绝改用 `SpiError::Publish`；匹配旧 `SpiError::Operation` 的调用方应检查 `kind()`、`retryable()` 和 `publish_effect()`。
 - **Registry 发行版与本地 checkout。** 已发布的 [Redis 0.7 manifest 和 lock](https://github.com/qubit-ltd/rs-event-bus-redis/tree/v0.7.0) 及 [task 0.10 manifest 和 lock](https://github.com/qubit-ltd/rs-task/tree/v0.10.0) 记录了面向 core 0.20 的发行依赖图；这是 registry 发行版证据，不能证明工作树 checkout 支持 core 0.21。本指南核对的 Redis 0.7 是另一个本地源码版本：其 manifest 使用 core 0.21 路径依赖，只能说明本地清单对齐。同样，[rs-ioc fixture](https://github.com/qubit-ltd/rs-ioc/tree/main) 和 [execution-services IoC fixture](https://github.com/qubit-ltd/rs-execution-services/blob/main/tests/fixtures/ioc_application_consumer/src/managed_event_bus.rs) 是源码示例，不是已发布的兼容声明。使用 sibling 时，请更新相关本地 core 约束、确保公共类型边界使用相同 core minor，并运行各项目自身的 locked 检查。本地 path 图不能证明 registry 发行版兼容；发布支持需要消费者发行版依赖 registry core 0.21 并经过测试。
+- **指定源码与 lockfile 证据（2026-11-23）。** Redis 源码 fixture 为 `rs-event-bus-redis` revision `17c453d28e75d2b7bd0bfb95073abb1391f09804`（manifest 包版本 `qubit-event-bus-redis` 0.7.4，core 约束 `^0.21`；lock 解析到 registry core 0.21.4）。task fixture 为 `rs-task` revision `66925a73ae76a565ec66e84d89d7b81f59e44625`（manifest 约束 `^0.21` 和 `^0.7`；lock 解析到 registry core 0.21.4 与 Redis 0.7.4）。[rs-ioc fixtures](https://github.com/qubit-ltd/rs-ioc/tree/main/tests/fixtures) 位于 revision `c02e75325f7118fb7d356593b05a7c5a83edd7ea`，其 lock 锁定 registry core 0.21.4。[execution-services IoC fixture](https://github.com/qubit-ltd/rs-execution-services/tree/8b3f89e7c06036b34943ee91a83aa51c9e28086b/tests/fixtures/ioc_application_consumer) 的 manifest 约束为 `^0.21`；标准 lock 解析到 registry core 0.21.4，`_current` lock 则解析到 registry core 0.21.3。这些 manifest 和 lockfile 只说明源码约束或 registry 解析结果，不是发行版支持声明，也不能证明验证时使用了开发中的 core 源码。下游检查器通过 Cargo 显式参数 `--config patch.crates-io.qubit-event-bus.path=<core snapshot>` 在 metadata 与测试期间选择 core 源码；task 检查还会把 Redis patch 指向它的跟踪文件快照。因此 registry core 0.21.4 的 lock 条目并不是这次 patch 验证实际使用的 core 来源。
+
+需要本地核验兼容性时，请在本 crate 的完整 Git checkout 根目录运行：
+
+```sh
+python3 -B scripts/check_downstream_compatibility.py \
+  --redis-root ../rs-event-bus-redis --task-root ../rs-task
+```
+
+旧参数 `--use-worktrees` 仍可使用，但两个入口现在都会采用相同的 tracked-source 快照。参数仍指向输入 checkout；检查器把已跟踪文件（包括已跟踪但未提交的改动和 lockfile）复制到临时快照，再在那里解析并运行 Cargo。未跟踪输入不会复制，解析产生的新 lockfile 也不会写回输入 checkout。需要参与检查的文件应先纳入 Git 跟踪；若验证依赖未跟踪文件，请在专用工作副本自行运行 Cargo 检查。metadata 解析、locked 依赖图校验、精确测试枚举和执行都使用所选输入快照，并显式 patch 到 core checkout。具体机制见[设计说明](design.zh_CN.md#使用下游消费者验证当前-core)。
 - 后续源码变更使投递指标快照只用于观察；该变更晚于 `v0.21.4`，尚无对应发行标签。升级到包含它的发行版后，应把 `oldest_owned_age == None` 视为样本不可用，并通过 `terminal_failure()` 或异步 `run()` 判断订阅是否停止。详见[迁移指南](migration.zh_CN.md#core-0214-之后的投递指标快照)。
 
 ## 边界与实践清单
