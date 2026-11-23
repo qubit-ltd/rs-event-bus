@@ -1354,10 +1354,12 @@ shutdown 返回缓存的 report 或保留的规范化 close errors，不会抹�
 `Ok(ShutdownOutcome::TimedOut)` 是 provider 返回的终态：facade 会处置剩余 control，
 记录已知放弃量和 provider 不确定性，缓存 `ShutdownReport`，并将生命周期设为
 `Closed`。如果调用方在清理完成前达到自己的 deadline，则返回
-`Err(ShutdownError::TimedOut)`；这不会生成报告，也不会取消清理，后续调用可以继续
-观察或接手。两种结果都不能说明 handler 是否已产生业务副作用。检查
-`known_abandoned_deliveries` 和 `provider_may_have_abandoned_deliveries`：它们描述投递
-证据，不代表业务回滚或持久化结果。
+`Err(ShutdownError::TimedOut)`，且不会生成报告。超时的 future 会停止驱动清理；异步停机
+没有后台协调器。若总线仍处于 `Closing`，应用必须再次调用 `shutdown` 并持续 poll 该
+future，才能重试或继续清理；已经在等待 leadership 的其他调用方也可以接手。总线进入
+`Closed` 后，后续调用复用缓存报告或保留的关闭错误。provider 结果和调用方超时都不能说明
+handler 是否已产生业务副作用。检查 `known_abandoned_deliveries` 和
+`provider_may_have_abandoned_deliveries`：它们描述投递证据，不代表业务回滚或持久化结果。
 
 ### 9.8 `BusContextFuture`：poll 级死锁检测
 

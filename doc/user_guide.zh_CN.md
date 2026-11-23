@@ -1861,7 +1861,7 @@ println!(
 );
 ```
 
-`enqueued` 是进入队列的条数；`published` 是成功取得回执的次数，其中也包括拦截器丢弃，不代表处理函数完成。没有并发更新且计数未饱和时，`queue_full()` 等于三个拒绝原因计数之和。各计数独立读取，运行中的快照不是同一时刻的一致视图；计数在 `u64::MAX` 饱和，达到饱和后求和将不再精确。`admission_accepted()`、`admission_partially_accepted()`、`admission_none_accepted()`、`admission_no_destinations()`、`admission_opaque_accepted()` 和 `admission_dropped()` 分类发布回执；opaque 接纳不表示已知目标数。
+`enqueued` 是进入队列的条数；`published` 是成功取得回执的次数，其中也包括拦截器丢弃，不代表处理函数完成。没有并发更新且计数未饱和时，`queue_full()` 等于三个拒绝原因计数之和。各计数独立读取，运行中的快照不是同一时刻的一致视图；计数在 `u64::MAX` 饱和，达到饱和后求和将不再精确。`admission_accepted()`、`admission_partially_accepted()`、`admission_none_accepted()`、`admission_no_destinations()`、`admission_opaque_accepted()`、`admission_sent_unconfirmed()` 和 `admission_dropped()` 分类发布回执；未确认发送计数独立于 opaque 接纳，opaque 接纳也不表示已知目标数。`admission_sent_unconfirmed()` 是 `v0.21.4` 之后加入的源码 API（提交 `be543af3eb7dccee9b78dbae1b325e6f6de68284`），尚未分配给后续发行版。
 
 ### 停机时排空队列
 
@@ -2012,9 +2012,9 @@ pub async fn observe_shutdown_ticket(
 
 ### 非阻塞地请求停机
 
-`EventBus::request_shutdown(mode)` 会关闭新接纳并返回 `EventBusShutdown` ticket，由后台协调器继续清理。可以在 handler 中请求停机；应等退出总线拥有的回调后再等待 ticket。`ticket.wait(Some(timeout))` 只限制当前调用方的等待，不会取消停机；`ticket.wait_async().await` 可观察完成，不阻塞线程，也不要求特定运行时。在同一 bus 拥有的 callback 或 worker 中首次轮询 `wait_async` 会返回 `WouldDeadlock`（operation 为 `shutdown`），缓存 ticket 也一样；在其中创建 future 是允许的。这只拒绝此次观察，不会取消停机；回调返回后可由外部生命周期任务等待。丢弃 ticket 只释放该观察者，停机仍继续。后续请求会加入当前停机尝试，`Immediate` 请求可以把 graceful 尝试加强为立即取消。`Immediate` 仍不能中断正在运行的 handler 或 provider 调用；调用方超时后，后台协调器可能继续等待。
+`EventBus::request_shutdown(mode)` 会关闭新接纳并返回 `EventBusShutdown` ticket，由后台协调器继续清理。可以在 handler 中请求停机；应等退出总线拥有的回调后再等待 ticket。`ticket.wait(Some(timeout))` 只限制当前调用方的等待，不会取消停机；`ticket.wait_async().await` 可观察完成，不阻塞线程，也不要求特定运行时。`wait_async` 在入口检查同一 bus 的 callback 或 worker（缓存 ticket 也检查），并在活动等待的每次 poll 检查；命中时返回 `WouldDeadlock`（operation 为 `shutdown`）。在其中创建 future 是允许的。这只拒绝此次观察，不会取消停机；回调返回后可由外部生命周期任务重新等待同一 ticket。丢弃 ticket 只释放该观察者，停机仍继续。后续请求会加入当前停机尝试，`Immediate` 请求可以把 graceful 尝试加强为立即取消。`Immediate` 仍不能中断正在运行的 handler 或 provider 调用；调用方超时后，后台协调器可能继续等待。
 
-这项保护会在每次 poll 时执行，而不只检查 future 创建时的上下文。如果外部任务先 poll `ticket.wait_async()` 得到 `Pending`，之后同一个 future 被移到该总线拥有的 callback 或 worker 中再次 poll，该次 poll 会返回 `WouldDeadlock`。被拒绝的观察随即释放这次 poll 登记的 waker；保留同一个 ticket，等 callback 返回后再由外部生命周期任务等待即可。`AsyncEventBus::wait_for_received_deliveries` 也会在每次 poll 检查当前总线；挂起中的等待若在同一 async bus 拥有的工作中再次 poll，会返回 `LifecycleError::WouldDeadlock`。
+这项保护会在每次 poll 时执行，而不只检查 future 创建时的上下文。如果外部任务先 poll `ticket.wait_async()` 得到 `Pending`，之后同一个 future 被移到该总线拥有的 callback 或 worker 中再次 poll，该次 poll 会返回 `WouldDeadlock`。若此前的 poll 已登记 waker，future 返回错误时会立即退出并释放该登记，不需要调用方再显式 drop；保留同一个 ticket，等 callback 返回后再由外部生命周期任务等待即可。`AsyncEventBus::wait_for_received_deliveries` 也会在每次 poll 检查当前总线；挂起中的等待若在同一 async bus 拥有的工作中再次 poll，会返回 `LifecycleError::WouldDeadlock`。
 
 下面示例在 receiver 关闭错误后读取 `shutdown_report()`；这要求源码或包含 `v0.21.4` tag 之后加入此 API 的发行版。使用 `v0.21.4` 时，应保留并传播原始 `SubscriptionClose` 错误，并省略缓存报告分支。
 
@@ -2135,8 +2135,6 @@ if !cleanup_errors.is_empty() {
 
 异步总线没有 `wait_for_idle`；`wait_for_received_deliveries` 只统计 facade 已接收的工作。async local 关闭会丢弃仍在 provider 中的积压，durable provider 依其恢复协议保留尚未终结的工作。
 
-旧 Redis/task 命令支持 Python 3.10；选择带 `--execution-services-root` 的完整 IoC 检查需要 Python 3.11 或更新版本提供的 `tomllib`，缺少时会在创建快照或运行 Cargo 前失败。Cargo 的 metadata 更新、locked metadata 校验、精确测试枚举和测试执行都以所选 manifest 的父目录作为工作目录。保留相对布局时可以使用指向同级仓库的相对路径；绝对 `path` 依赖会被拒绝，因为复制后的 manifest 仍会指向原 checkout。请把这类声明改为相对于引用 manifest 的路径，并保持仓库处于支持的同级布局。
-
 在完整 Git checkout 根目录（即同时包含仓库 `Cargo.toml` 和 `scripts/run_conformance_watchdog.py` 的目录）运行：构建可运行的生命周期示例（`async_shutdown` 展示异步总线的有界停机，`notification_close` 展示 observer 仍在运行时关闭通知发布器），再分别通过有界进程 watchdog 运行：
 
 ```sh
@@ -2194,6 +2192,8 @@ provider 报告投递缺口后，订阅默认停止接收。同步 API 可通过
 - local 发布前拒绝改用 `SpiError::Publish`；匹配旧 `SpiError::Operation` 的调用方应检查 `kind()`、`retryable()` 和 `publish_effect()`。
 - **Registry 发行版与本地 checkout。** 已发布的 [Redis 0.7 manifest 和 lock](https://github.com/qubit-ltd/rs-event-bus-redis/tree/v0.7.0) 及 [task 0.10 manifest 和 lock](https://github.com/qubit-ltd/rs-task/tree/v0.10.0) 记录了面向 core 0.20 的发行依赖图；这是 registry 发行版证据，不能证明工作树 checkout 支持 core 0.21。本指南核对的 Redis 0.7 是另一个本地源码版本：其 manifest 使用 core 0.21 路径依赖，只能说明本地清单对齐。同样，[rs-ioc fixture](https://github.com/qubit-ltd/rs-ioc/tree/main) 和 [execution-services IoC fixture](https://github.com/qubit-ltd/rs-execution-services/blob/main/tests/fixtures/ioc_application_consumer/src/managed_event_bus.rs) 是源码示例，不是已发布的兼容声明。使用 sibling 时，请更新相关本地 core 约束、确保公共类型边界使用相同 core minor，并运行各项目自身的 locked 检查。本地 path 图不能证明 registry 发行版兼容；发布支持需要消费者发行版依赖 registry core 0.21 并经过测试。
 - **指定源码与 lockfile 证据（2026-11-23）。** Redis 源码 fixture 为 `rs-event-bus-redis` revision `17c453d28e75d2b7bd0bfb95073abb1391f09804`（manifest 包版本 `qubit-event-bus-redis` 0.7.4，core 约束 `^0.21`；lock 解析到 registry core 0.21.4）。task fixture 为 `rs-task` revision `66925a73ae76a565ec66e84d89d7b81f59e44625`（manifest 约束 `^0.21` 和 `^0.7`；lock 解析到 registry core 0.21.4 与 Redis 0.7.4）。[rs-ioc fixtures](https://github.com/qubit-ltd/rs-ioc/tree/main/tests/fixtures) 位于 revision `c02e75325f7118fb7d356593b05a7c5a83edd7ea`，其 lock 锁定 registry core 0.21.4。[execution-services IoC fixture](https://github.com/qubit-ltd/rs-execution-services/tree/8b3f89e7c06036b34943ee91a83aa51c9e28086b/tests/fixtures/ioc_application_consumer) 的 manifest 约束为 `^0.21`；标准 lock 解析到 registry core 0.21.4，`_current` lock 则解析到 registry core 0.21.3。这些 manifest 和 lockfile 只说明源码约束或 registry 解析结果，不是发行版支持声明，也不能证明验证时使用了开发中的 core 源码。下游检查器通过 Cargo 显式参数 `--config patch.crates-io.qubit-event-bus.path=<core snapshot>` 在 metadata 与测试期间选择 core 源码；task 检查还会把 Redis patch 指向它的跟踪文件快照。因此 registry core 0.21.4 的 lock 条目并不是这次 patch 验证实际使用的 core 来源。
+
+旧 Redis/task 命令支持 Python 3.10；选择带 `--execution-services-root` 的完整 IoC 检查需要 Python 3.11 或更新版本提供的 `tomllib`，缺少时会在创建快照或运行 Cargo 前失败。Cargo 的 metadata 更新、locked metadata 校验、精确测试枚举和测试执行都以所选 manifest 的父目录作为工作目录。保留相对布局时可以使用指向同级仓库的相对路径；绝对 `path` 依赖会被拒绝，因为复制后的 manifest 仍会指向原 checkout。请把这类声明改为相对于引用 manifest 的路径，并保持仓库处于支持的同级布局。
 
 需要本地核验兼容性时，请在本 crate 的完整 Git checkout 根目录运行：
 

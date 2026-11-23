@@ -91,9 +91,9 @@ impl EventBusShutdown {
     /// deliveries.
     ///
     /// # Errors
-    /// Returns `WouldDeadlock` when first polled from a callback or worker
-    /// owned by this bus, or a coordinator-start, provider, or
-    /// subscription-close failure.
+    /// Returns `WouldDeadlock` when polled from a callback or worker owned by
+    /// this bus, including later polls of an active wait, or a coordinator-
+    /// start, provider, or subscription-close failure.
     pub async fn wait_async(&self) -> Result<ShutdownReport, ShutdownError> {
         if is_current_bus_context(Arc::as_ptr(&self.inner) as usize) {
             return Err(LifecycleError::WouldDeadlock { operation: "shutdown" }.into());

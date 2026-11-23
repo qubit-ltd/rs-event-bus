@@ -1460,10 +1460,14 @@ wait deadline are separate. `Ok(ShutdownOutcome::TimedOut)` is a provider
 terminal outcome: the facade disposes remaining controls, records known
 abandonment and provider uncertainty, caches the resulting `ShutdownReport`,
 and transitions to `Closed`. A caller deadline expiring while awaiting cleanup
-returns `Err(ShutdownError::TimedOut)` instead; it does not create a report or
-cancel cleanup, and a later call can observe or continue the attempt. Neither
-result determines whether an application handler performed its business side
-effect. Check `known_abandoned_deliveries` and
+returns `Err(ShutdownError::TimedOut)` instead and creates no report. The timed-
+out future stops driving cleanup; async shutdown has no background coordinator.
+If the bus is still `Closing`, the application must call `shutdown` again and
+keep polling that future to retry or continue cleanup. Another caller already
+waiting for leadership can also take over. Once the bus is `Closed`, later calls
+reuse the cached report or retained close errors. Neither shutdown outcome nor
+caller timeout determines whether an application handler performed its business
+side effect. Check `known_abandoned_deliveries` and
 `provider_may_have_abandoned_deliveries`; these describe delivery evidence,
 not business rollback or persistence.
 
