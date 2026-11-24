@@ -714,6 +714,10 @@ def _cargo_config_sources(config_path, source_root, *, stack=(), view=None):
         declared = Path(include)
         if declared.is_absolute():
             raise ValueError(f"absolute Cargo config include in {config_path}: {include}")
+        if declared.suffix != ".toml":
+            raise ValueError(
+                f"invalid Cargo config include extension in {config_path} "
+                f"include[{index}]: {include!r}; expected a .toml file")
         included = config_path.parent / declared
         try:
             included.relative_to(source_root)
