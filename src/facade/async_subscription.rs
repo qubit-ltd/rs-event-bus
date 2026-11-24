@@ -246,14 +246,19 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// Synchronous waiter wakes caused by returning this runner's session lease
     /// are also covered by the same-bus shutdown reentrancy check.
     /// A failed dead-letter forward returns
-    /// [`ReceiveError::DeadLetterForwardFailed`]. The original delivery remains
-    /// unsettled, and the error chain contains the forwarding failure for
-    /// diagnosis. After the runner stops, subscribe again and let the provider
-    /// recover the unsettled delivery according to its recovery contract. See
-    /// the dead-letter guidance in the [English user
-    /// guide](https://github.com/qubit-ltd/rs-event-bus/blob/071e296c92379f0a9721e4946207a516b77d99fa/doc/user_guide.md#keep-an-event-that-fails-for-good)
+    /// [`ReceiveError::DeadLetterForwardFailed`] with the forwarding failure
+    /// retained in its source chain. This runtime error takes precedence if
+    /// receiver close fails at the same time. The original delivery remains
+    /// unsettled. When recovering, retain the forwarding error and handle the
+    /// old receiver's close result before resuming consumption. While the bus
+    /// is running, call or retry the old handle's `close()` within an
+    /// application-bounded deadline and check its result. If bus shutdown has
+    /// begun, continue driving shutdown and check its result, then resume
+    /// consumption according to the provider's recovery contract. See the
+    /// dead-letter guidance in the [English user
+    /// guide](https://github.com/qubit-ltd/rs-event-bus/blob/e11fbd452f3cd9847f0b7e98c3d659bfeff96b27/doc/user_guide.md#keep-an-event-that-fails-for-good)
     /// and [Chinese user
-    /// guide](https://github.com/qubit-ltd/rs-event-bus/blob/071e296c92379f0a9721e4946207a516b77d99fa/doc/user_guide.zh_CN.md#%E4%BF%9D%E5%AD%98%E6%9C%80%E7%BB%88%E5%A4%84%E7%90%86%E5%A4%B1%E8%B4%A5%E7%9A%84%E4%BA%8B%E4%BB%B6).
+    /// guide](https://github.com/qubit-ltd/rs-event-bus/blob/e11fbd452f3cd9847f0b7e98c3d659bfeff96b27/doc/user_guide.zh_CN.md#%E4%BF%9D%E5%AD%98%E6%9C%80%E7%BB%88%E5%A4%84%E7%90%86%E5%A4%B1%E8%B4%A5%E7%9A%84%E4%BA%8B%E4%BB%B6).
     ///
     /// # Panics
     /// Panics if the session lease invariant is violated internally. If SPI
