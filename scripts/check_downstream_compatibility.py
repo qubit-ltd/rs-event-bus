@@ -183,36 +183,69 @@ def run_downstream_checks(roots, core, target_root, *, include_execution_service
 
 
 def _path_entries(value):
-    if isinstance(value, dict):
-        if isinstance(value.get("path"), str):
-            yield value["path"]
-        else:
-            for nested in value.values():
-                yield from _path_entries(nested)
-    elif isinstance(value, list):
-        for nested in value:
-            yield from _path_entries(nested)
+    """Extract only path fields from dependency declarations, never table keys."""
+    if isinstance(value, dict) and isinstance(value.get("path"), str):
+        yield value["path"]
 
 
 def _manifest_paths(data, *, include_dev=True):
-    sections = ("dependencies", "dev-dependencies", "build-dependencies") if include_dev else (
-        "dependencies", "build-dependencies")
-    for section in sections:
-        yield from _path_entries(data.get(section, {}))
-    for target in data.get("target", {}).values():
-        for section in sections:
-            yield from _path_entries(target.get(section, {}))
+    for dependencies in _dependency_sections(data, include_dev=include_dev):
+        if isinstance(dependencies, dict):
+            for dependency in dependencies.values():
+                yield from _path_entries(dependency)
 
 
 def _dependency_sections(data, *, include_dev=True):
     """Yield dependency tables from normal, target-specific, and workspace scope."""
     sections = ("dependencies", "dev-dependencies", "build-dependencies") if include_dev else (
         "dependencies", "build-dependencies")
-    for section in sections:
+    names = set(sections) | ({"dev_dependencies", "build_dependencies"} if include_dev else set())
+    for section in names:
         yield data.get(section, {})
     for target in data.get("target", {}).values():
-        for section in sections:
+        for section in names:
             yield target.get(section, {})
+
+
+_TRACKED_FILES = {}
+_WORKSPACE_MEMBER_CACHE = {}
+
+
+def _repo_for(path):
+    path = Path(path).resolve()
+    for candidate in (path, *path.parents):
+        if (candidate / ".git").exists():
+            result = subprocess.run(
+                ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, check=False)
+            if result.returncode == 0 and Path(result.stdout.strip()).resolve() == candidate:
+                return candidate
+    return None
+
+
+def _tracked_files(root):
+    root = Path(root).resolve()
+    if root not in _TRACKED_FILES:
+        _TRACKED_FILES[root] = set(tracked_source_files(root))
+    return _TRACKED_FILES[root]
+
+
+def _tracked_file(path):
+    path = Path(path).resolve()
+    root = _repo_for(path)
+    if root is None:
+        return path.is_file()
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return False
+    return relative in _tracked_files(root) and path.is_file()
+
+
+def _read_manifest(path):
+    if not _tracked_file(path):
+        raise FileNotFoundError(f"manifest is not present in tracked source view: {path}")
+    return Path(path).read_text()
 
 
 def _workspace_root(manifest, data):
@@ -225,14 +258,16 @@ def _workspace_root(manifest, data):
     tomllib = __import__("tomllib")
     for parent in manifest.parent.parents:
         root_manifest = parent / "Cargo.toml"
-        if not root_manifest.is_file():
+        if not _tracked_file(root_manifest):
             continue
         try:
-            root_data = tomllib.loads(root_manifest.read_text())
+            root_data = tomllib.loads(_read_manifest(root_manifest))
         except (OSError, tomllib.TOMLDecodeError):
             continue
         if "workspace" in root_data:
-            return parent if _is_workspace_member(manifest.parent, parent, root_data) else None
+            members = _workspace_member_manifests(parent, root_data)
+            return parent if manifest.parent.resolve() in {item.parent.resolve()
+                                                           for item in members} else None
     return None
 
 
@@ -259,14 +294,44 @@ def _glob_matches(path, pattern):
     return re.fullmatch("".join(parts), path) is not None
 
 
-def _is_workspace_member(package_dir, root, root_data):
+def _literal_workspace_path(pattern):
+    return Path(pattern).as_posix().removeprefix("./").rstrip("/")
+
+
+def _workspace_glob_manifests(root, pattern):
+    """Expand member globs over Cargo manifests visible in the tracked snapshot."""
+    root = Path(root).resolve()
+    repository = _repo_for(root)
+    if repository is None:
+        return []
+    result = []
+    for relative in _tracked_files(repository):
+        if relative.name != "Cargo.toml":
+            continue
+        manifest = repository / relative
+        try:
+            package_dir = manifest.parent.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        if package_dir == ".":
+            package_dir = ""
+        if (_glob_matches(package_dir, pattern) or
+                _glob_matches((package_dir + "/Cargo.toml").lstrip("/"), pattern)):
+            result.append(manifest)
+    return result
+
+
+def _is_workspace_member(package_dir, root, root_data, *, tracked=None):
     workspace = root_data["workspace"]
-    relative = package_dir.relative_to(root).as_posix()
+    try:
+        relative = package_dir.relative_to(root).as_posix()
+    except ValueError:
+        return False
     nested_manifest = package_dir / "Cargo.toml"
-    if package_dir != root and nested_manifest.is_file():
+    if package_dir != root and _tracked_file(nested_manifest):
         tomllib = __import__("tomllib")
         try:
-            nested_data = tomllib.loads(nested_manifest.read_text())
+            nested_data = tomllib.loads(_read_manifest(nested_manifest))
         except (OSError, tomllib.TOMLDecodeError):
             nested_data = {}
         if "workspace" in nested_data:
@@ -276,7 +341,10 @@ def _is_workspace_member(package_dir, root, root_data):
                 (package_dir / package_workspace).resolve() != root.resolve():
             return False
     excludes = workspace.get("exclude", [])
-    if any(_glob_matches(relative, pattern) for pattern in excludes):
+    normalized = Path(relative).as_posix().lstrip("./")
+    if any(normalized == _literal_workspace_path(pattern) or
+           normalized.startswith(_literal_workspace_path(pattern).rstrip("/") + "/")
+           for pattern in excludes):
         return False
     explicit = False
     for member in workspace.get("members", []):
@@ -284,9 +352,8 @@ def _is_workspace_member(package_dir, root, root_data):
             explicit = True
             break
         try:
-            for candidate in root.glob(member):
-                candidate_manifest = candidate / "Cargo.toml" if candidate.is_dir() else candidate
-                if candidate_manifest.is_file() and candidate_manifest.parent.resolve() == package_dir:
+            for candidate_manifest in _workspace_glob_manifests(root, member):
+                if candidate_manifest.parent.resolve() == package_dir:
                     explicit = True
                     break
         except (OSError, ValueError):
@@ -302,14 +369,8 @@ def _is_workspace_member(package_dir, root, root_data):
     tomllib = __import__("tomllib")
     members = {root.resolve()} if "package" in root_data else set()
     for member in workspace.get("members", []):
-        try:
-            candidates = root.glob(member)
-        except (OSError, ValueError):
-            continue
-        for candidate in candidates:
-            candidate_manifest = candidate / "Cargo.toml" if candidate.is_dir() else candidate
-            if candidate_manifest.is_file():
-                members.add(candidate_manifest.parent.resolve())
+        for candidate_manifest in _workspace_glob_manifests(root, member):
+            members.add(candidate_manifest.parent.resolve())
     pending = list(members)
     visited = set()
     while pending:
@@ -319,7 +380,7 @@ def _is_workspace_member(package_dir, root, root_data):
         visited.add(current)
         current_manifest = current / "Cargo.toml"
         try:
-            current_data = tomllib.loads(current_manifest.read_text())
+            current_data = tomllib.loads(_read_manifest(current_manifest))
         except (OSError, tomllib.TOMLDecodeError):
             continue
         paths = [(relative, current) for relative in _manifest_paths(current_data)]
@@ -338,15 +399,17 @@ def _is_workspace_member(package_dir, root, root_data):
             except ValueError:
                 continue
             dependency_manifest = dependency / "Cargo.toml"
-            if not dependency_manifest.is_file():
+            if not _tracked_file(dependency_manifest):
                 continue
             try:
-                dependency_data = tomllib.loads(dependency_manifest.read_text())
+                dependency_data = tomllib.loads(_read_manifest(dependency_manifest))
             except (OSError, tomllib.TOMLDecodeError):
                 continue
             if "workspace" in dependency_data:
                 continue
-            if any(_glob_matches(dependency.relative_to(root).as_posix(), pattern)
+            dep_rel = dependency.relative_to(root).as_posix()
+            if any(dep_rel == _literal_workspace_path(pattern) or
+                   dep_rel.startswith(_literal_workspace_path(pattern).rstrip("/") + "/")
                    for pattern in excludes):
                 continue
             if dependency == package_dir:
@@ -374,7 +437,7 @@ def _cargo_config_paths(manifest, source_root):
     source_root = source_root.resolve()
     if not (source_root / ".git").exists():
         return []
-    tracked_files = set(tracked_source_files(source_root))
+    tracked_files = _tracked_files(source_root)
     current = manifest.parent.resolve()
     configs = []
     while True:
@@ -395,31 +458,116 @@ def _config_patch_declarations(config_path, data):
     for registry, packages in data.get("patch", {}).items():
         if isinstance(packages, dict):
             for name, package in packages.items():
-                if isinstance(package, dict) and isinstance(package.get("path"), str):
-                    yield (registry, name), package["path"]
+                if isinstance(package, dict):
+                    yield (registry, name), package.get("path")
 
 
 def _manifest_patch_declarations(manifest, data):
     for registry, packages in data.get("patch", {}).items():
         if isinstance(packages, dict):
             for name, package in packages.items():
-                if isinstance(package, dict) and isinstance(package.get("path"), str):
-                    yield (registry, name), package["path"]
+                if isinstance(package, dict):
+                    yield (registry, name), package.get("path")
 
 
 def _workspace_member_manifests(root, root_data):
     """Find package manifests Cargo includes in the selected workspace."""
+    root = Path(root).resolve()
+    cached = _WORKSPACE_MEMBER_CACHE.get(root)
+    if cached is not None:
+        return list(cached)
     if "workspace" not in root_data:
-        return [root / "Cargo.toml"] if "package" in root_data else []
-    manifests = []
-    for current, directories, files in os.walk(root):
-        directories[:] = [name for name in directories if name not in {".git", "target"}]
-        if "Cargo.toml" not in files:
+        result = [root / "Cargo.toml"] if "package" in root_data else []
+        _WORKSPACE_MEMBER_CACHE[root] = result
+        return list(result)
+    repository = _repo_for(root)
+    if repository is None:
+        result = []
+        for current, directories, files in os.walk(root):
+            directories[:] = [name for name in directories if name not in {".git", "target"}]
+            if "Cargo.toml" in files and _is_workspace_member(Path(current), root, root_data):
+                result.append(Path(current) / "Cargo.toml")
+        _WORKSPACE_MEMBER_CACHE[root] = result
+        return list(result)
+    root_manifest = root / "Cargo.toml"
+    excludes = [_literal_workspace_path(pattern)
+                for pattern in root_data["workspace"].get("exclude", [])]
+    for member in root_data["workspace"].get("members", []):
+        if any(marker in member for marker in "*?"):
             continue
-        manifest = Path(current) / "Cargo.toml"
-        if manifest.parent == root or _is_workspace_member(manifest.parent, root, root_data):
-            manifests.append(manifest)
-    return manifests
+        relative = _literal_workspace_path(member)
+        if not relative or any(relative == excluded or
+                               relative.startswith(excluded.rstrip("/") + "/")
+                               for excluded in excludes):
+            continue
+        candidate = root / relative
+        member_manifest = candidate if candidate.name == "Cargo.toml" else candidate / "Cargo.toml"
+        if not _tracked_file(member_manifest):
+            raise ValueError(
+                f"workspace member declared in {root_manifest} is not present in tracked source: "
+                f"{member_manifest}")
+    tracked_manifests = [repository / relative for relative in _tracked_files(repository)
+                         if relative.name == "Cargo.toml" and
+                         (repository / relative).parent.is_relative_to(root)]
+    by_directory = {manifest.parent.resolve(): manifest for manifest in tracked_manifests}
+    workspace = root_data["workspace"]
+    excludes = [_literal_workspace_path(pattern) for pattern in workspace.get("exclude", [])]
+
+    def eligible(directory):
+        try:
+            relative = directory.relative_to(root).as_posix()
+        except ValueError:
+            return False
+        if any(relative == excluded or relative.startswith(excluded.rstrip("/") + "/")
+               for excluded in excludes):
+            return False
+        manifest = by_directory.get(directory.resolve())
+        if manifest is None:
+            return False
+        try:
+            package_data = __import__("tomllib").loads(_read_manifest(manifest))
+        except (OSError, __import__("tomllib").TOMLDecodeError):
+            return False
+        if "workspace" in package_data:
+            return False
+        package_workspace = package_data.get("package", {}).get("workspace")
+        return not isinstance(package_workspace, str) or \
+            (directory / package_workspace).resolve() == root.resolve()
+
+    members = {root.resolve()} if "package" in root_data else set()
+    for member in workspace.get("members", []):
+        for manifest in _workspace_glob_manifests(root, member):
+            if eligible(manifest.parent.resolve()):
+                members.add(manifest.parent.resolve())
+
+    tomllib = __import__("tomllib")
+    pending = list(members)
+    while pending:
+        current = pending.pop()
+        manifest = by_directory.get(current)
+        if manifest is None:
+            continue
+        try:
+            data = tomllib.loads(_read_manifest(manifest))
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        paths = [(relative, current) for relative in _manifest_paths(data)]
+        if "workspace" in data:
+            paths.extend((relative, current)
+                         for relative in _inherited_workspace_paths(data, data))
+        else:
+            paths.extend((relative, root)
+                         for relative in _inherited_workspace_paths(data, root_data))
+        for relative, base in paths:
+            if Path(relative).is_absolute():
+                continue
+            dependency = (base / relative).resolve()
+            if dependency not in members and eligible(dependency):
+                members.add(dependency)
+                pending.append(dependency)
+    result = [by_directory[member] for member in sorted(members) if member in by_directory]
+    _WORKSPACE_MEMBER_CACHE[root] = result
+    return list(result)
 
 
 def _repository_root(path, boundary):
@@ -438,6 +586,8 @@ def discover_local_repositories(manifest, sibling_root, source_root=None, *,
     manifest = Path(manifest).resolve()
     boundary = Path(sibling_root).resolve()
     source_root = Path(source_root).resolve() if source_root else manifest.parents[3]
+    _TRACKED_FILES.clear()
+    _WORKSPACE_MEMBER_CACHE.clear()
     if not manifest.is_file():
         raise ValueError(f"manifest does not exist: {manifest}")
     repositories = {source_root}
@@ -447,18 +597,25 @@ def discover_local_repositories(manifest, sibling_root, source_root=None, *,
     import tomllib
 
     try:
-        initial_data = tomllib.loads(manifest.read_text())
+        initial_data = tomllib.loads(_read_manifest(manifest))
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise ValueError(f"cannot read local dependency manifest {manifest}: {error}") from error
     initial_workspace = _workspace_root(manifest, initial_data)
     initial_root = initial_workspace / "Cargo.toml" if initial_workspace else manifest
     try:
+        initial_root.parent.resolve().relative_to(boundary)
+    except ValueError as error:
+        raise ValueError(
+            f"initial workspace root escapes sibling boundary: {manifest}: {initial_root.parent}") from error
+    if initial_workspace is not None:
+        repositories.add(_repository_root(initial_root.parent, boundary))
+    try:
         initial_root_data = (initial_data if initial_root == manifest else
-                             tomllib.loads(initial_root.read_text()))
+                             tomllib.loads(_read_manifest(initial_root)))
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise ValueError(f"cannot read workspace manifest {initial_root}: {error}") from error
     effective_patches = {
-        key: (initial_root, relative, initial_root.parent)
+        key: (initial_root, relative, initial_root.parent, relative is not None)
         for key, relative in _manifest_patch_declarations(initial_root, initial_root_data)
     }
 
@@ -466,26 +623,32 @@ def discover_local_repositories(manifest, sibling_root, source_root=None, *,
     effective_config_patches = {}
     for config_path in config_paths:
         try:
-            config_data = tomllib.loads(config_path.read_text())
+            config_data = tomllib.loads(_read_manifest(config_path))
         except (OSError, tomllib.TOMLDecodeError) as error:
             raise ValueError(f"cannot read Cargo config {config_path}: {error}") from error
         # Config files closer to the selected manifest override farther files.
         for key, relative in _config_patch_declarations(config_path, config_data):
             effective_config_patches.setdefault(
-                key, (config_path, relative, config_path.parent.parent))
+                key, (config_path, relative, config_path.parent.parent, relative is not None))
     effective_patches.update(effective_config_patches)
     for registry_name, relative in (cli_patches or {}).items():
-        effective_patches[registry_name] = (manifest, str(relative), Path(relative).parent)
-    for key, (declaration, relative, base) in effective_patches.items():
+        effective_patches[registry_name] = (manifest, str(relative), Path(relative).parent, True)
+    for key, (declaration, relative, base, is_local_path) in effective_patches.items():
         # The core path is selected on the command line and validated by the
         # caller as the requested source checkout, outside sibling discovery.
         if key == ("crates-io", "qubit-event-bus") and key in (cli_patches or {}):
             continue
+        if not is_local_path:
+            continue
         pending_paths.append((declaration, relative, base))
-    for member_manifest in _workspace_member_manifests(initial_root.parent, initial_root_data):
+    workspace_members = {
+        member_manifest.resolve()
+        for member_manifest in _workspace_member_manifests(initial_root.parent, initial_root_data)
+    }
+    for member_manifest in workspace_members:
         pending_manifests.append((member_manifest, True))
     if not pending_manifests:
-        pending_manifests.append((manifest, False))
+        pending_manifests.append((manifest, True))
     scanned = set()
     while pending_paths or pending_manifests:
         if pending_paths:
@@ -496,13 +659,12 @@ def discover_local_repositories(manifest, sibling_root, source_root=None, *,
                 raise ValueError(f"missing local path in {declaration}: {relative} -> {dependency}")
             repositories.add(_repository_root(dependency, boundary))
             try:
-                dependency_data = tomllib.loads(dependency_manifest.read_text())
+                dependency_data = tomllib.loads(_read_manifest(dependency_manifest))
             except (OSError, tomllib.TOMLDecodeError) as error:
                 raise ValueError(
                     f"cannot read local dependency manifest {dependency_manifest} "
                     f"(declared in {declaration}): {error}") from error
-            selected_member = (initial_workspace is not None and
-                               _workspace_root(dependency_manifest, dependency_data) == initial_workspace)
+            selected_member = dependency_manifest.resolve() in workspace_members
             pending_manifests.append((dependency_manifest, selected_member))
             continue
         entry, selected_member = pending_manifests.pop()
@@ -511,20 +673,26 @@ def discover_local_repositories(manifest, sibling_root, source_root=None, *,
             continue
         scanned.add(current)
         try:
-            data = tomllib.loads(current.read_text())
+            data = tomllib.loads(_read_manifest(current))
         except (OSError, tomllib.TOMLDecodeError) as error:
             raise ValueError(f"cannot read local dependency manifest {current}: {error}") from error
         workspace_root = _workspace_root(current, data)
         workspace_data = None
         if workspace_root is not None:
             root_manifest = workspace_root / "Cargo.toml"
+            try:
+                workspace_root.relative_to(boundary)
+            except ValueError as error:
+                raise ValueError(
+                    f"workspace root escapes sibling boundary: {current}: {workspace_root}") from error
             if root_manifest == current:
                 workspace_data = data
             else:
                 try:
-                    workspace_data = tomllib.loads(root_manifest.read_text())
+                    workspace_data = tomllib.loads(_read_manifest(root_manifest))
                 except (OSError, tomllib.TOMLDecodeError) as error:
                     raise ValueError(f"cannot read workspace manifest {root_manifest}: {error}") from error
+            repositories.add(_repository_root(workspace_root, boundary))
         paths = [(relative, current.parent, current)
                  for relative in _manifest_paths(data, include_dev=selected_member)]
         for relative, base, declaration in paths:
