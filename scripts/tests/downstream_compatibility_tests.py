@@ -2054,6 +2054,82 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                 with self.subTest(include=include), self.assertRaisesRegex(ValueError, message):
                     discover_local_repositories(execution / "Cargo.toml", parent, execution)
 
+    def test_optional_untracked_cargo_config_include_is_omitted_from_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            patched = self.make_input_repository(parent / "rs-only-source", "only-source")
+            (execution / "Cargo.lock").write_text("")
+            cargo_dir = execution / ".cargo"
+            cargo_dir.mkdir()
+            (cargo_dir / "config.toml").write_text(
+                'include=[{path="local.toml", optional=true}]\n')
+            (cargo_dir / "local.toml").write_text(
+                '[patch.crates-io]\nonly-source={path="../rs-only-source"}\n')
+            subprocess.run(["git", "-C", str(execution), "add", ".cargo/config.toml"],
+                           check=True)
+
+            self._cargo_metadata_offline(execution / "Cargo.toml")
+            source_graph = json.loads(self._cargo_metadata_offline(
+                execution / "Cargo.toml", locked=True).stdout)
+            input_lock = (execution / "Cargo.lock").read_bytes()
+            discovered = set(discover_local_repositories(
+                execution / "Cargo.toml", parent, execution))
+            self.assertEqual(discovered, {execution.resolve()})
+            self.assertNotIn(patched.resolve(), discovered)
+
+            snapshot_root = base / "snapshot/siblings"
+            copy_tracked_source(execution, snapshot_root / execution.name)
+            snapshot_manifest = snapshot_root / execution.name / "Cargo.toml"
+            self.assertFalse((snapshot_manifest.parent / ".cargo/local.toml").exists())
+            snapshot_graph = json.loads(self._cargo_metadata_offline(
+                snapshot_manifest, locked=True).stdout)
+            self.assertEqual(
+                [(item["name"], item["version"]) for item in source_graph["packages"]],
+                [(item["name"], item["version"]) for item in snapshot_graph["packages"]])
+            self.assertEqual((execution / "Cargo.lock").read_bytes(), input_lock)
+
+            (cargo_dir / "config.toml").write_text(
+                'include=[{path="local.toml", optional=false}]\n')
+            subprocess.run(["git", "-C", str(execution), "add", ".cargo/config.toml"],
+                           check=True)
+            with self.assertRaisesRegex(
+                    ValueError, r"Cargo config include local\.toml in .*config\.toml.*tracked"):
+                discover_local_repositories(execution / "Cargo.toml", parent, execution)
+
+    def test_cargo_config_scalar_include_is_rejected_but_single_item_list_is_supported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            (execution / "Cargo.lock").write_text("")
+            cargo_dir = execution / ".cargo"
+            cargo_dir.mkdir()
+            (cargo_dir / "common.toml").write_text("# included config\n")
+            config = cargo_dir / "config.toml"
+            config.write_text('include="common.toml"\n')
+            subprocess.run(["git", "-C", str(execution), "add", ".cargo"], check=True)
+
+            with self.assertRaisesRegex(
+                    ValueError, r"config\.toml.*include.*list"):
+                discover_local_repositories(execution / "Cargo.toml", parent, execution)
+            scalar_cargo = subprocess.run(
+                ["cargo", "+1.94.0", "metadata", "--format-version", "1", "--offline",
+                 "--manifest-path", str(execution / "Cargo.toml")],
+                cwd=execution, capture_output=True, text=True, check=False)
+            self.assertNotEqual(scalar_cargo.returncode, 0, scalar_cargo.stdout)
+
+            config.write_text('include=["common.toml"]\n')
+            subprocess.run(["git", "-C", str(execution), "add", ".cargo/config.toml"],
+                           check=True)
+            self._cargo_metadata_offline(execution / "Cargo.toml")
+            self._cargo_metadata_offline(execution / "Cargo.toml", locked=True)
+            self.assertEqual(set(discover_local_repositories(
+                execution / "Cargo.toml", parent, execution)), {execution.resolve()})
+
     def test_execution_services_rejects_missing_and_out_of_bounds_path_with_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory) / "siblings"

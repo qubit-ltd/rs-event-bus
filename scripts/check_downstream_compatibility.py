@@ -664,10 +664,10 @@ def _cargo_config_sources(config_path, source_root, *, stack=()):
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise ValueError(f"cannot read Cargo config {config_path}: {error}") from error
     includes = data.get("include", [])
-    if isinstance(includes, str):
-        includes = [includes]
     if not isinstance(includes, list):
-        raise ValueError(f"invalid Cargo config include in {config_path}: {includes!r}")
+        raise ValueError(
+            f"invalid Cargo config field 'include' in {config_path}: {includes!r}; "
+            "Cargo config include must be a list, for example include = [\"common.toml\"]")
     sources = []
     for include in includes:
         optional = False
@@ -685,6 +685,16 @@ def _cargo_config_sources(config_path, source_root, *, stack=()):
         except ValueError as error:
             raise ValueError(
                 f"Cargo config include escapes source repository in {config_path}: {include}") from error
+        relative_include = included.relative_to(source_root)
+        if relative_include not in tracked:
+            if optional:
+                continue
+            if not os.path.lexists(included):
+                raise ValueError(
+                    f"required Cargo config include missing in {config_path}: {include}")
+            raise ValueError(
+                f"Cargo config include {include} in {config_path} is not present in "
+                "tracked source view")
         if not os.path.lexists(included) and optional:
             continue
         if not os.path.lexists(included):
