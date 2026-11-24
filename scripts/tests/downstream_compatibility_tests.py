@@ -2780,6 +2780,12 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                 if root == roots["execution-services"])
             self.assertEqual(kwargs["allowed_local_roots"],
                              (roots["execution-services"].parent,))
+            self.assertEqual(kwargs["allowed_workspace_roots"],
+                             (roots["execution-services"].parent,))
+            for name in ("redis", "rs-task"):
+                _root, root_kwargs = next(
+                    (root, kwargs) for root, kwargs in metadata_calls if root == roots[name])
+                self.assertEqual(root_kwargs["allowed_workspace_roots"], (roots[name],))
 
             def local_package_graph(local_manifest):
                 return {
@@ -2870,26 +2876,260 @@ class DownstreamCompatibilityTests(unittest.TestCase):
 
     def test_metadata_updates_snapshot_then_validates_locked_graph(self):
         commands = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "arbitrary-project-name"
+            root.mkdir()
+            manifest = root / "Cargo.toml"
+            manifest.write_text('[package]\nname="fixture"\nversion="0.1.0"\n')
+            locked_graph = {"workspace_root": str(root), "packages": []}
 
-        def fake_run(command, **kwargs):
-            commands.append((command, kwargs))
-            return "{}"
+            def fake_run(command, **kwargs):
+                commands.append((command, kwargs))
+                if "locate-project" in command:
+                    return json.dumps({"root": str(manifest)})
+                if "metadata" in command and "--locked" in command:
+                    return json.dumps(locked_graph)
+                return "{}"
 
-        root = Path("/snapshot/arbitrary-project-name")
-        with patch("scripts.check_downstream_compatibility.run", side_effect=fake_run), \
-                patch("scripts.check_downstream_compatibility.validate_graph_for_downstream") as validate:
-            graph = metadata(root, "sqlite,event-bus", Path("/core"),
-                              Path("/snapshot/redis"), Path("/target"),
-                              expected_redis=Path("/snapshot/redis"))
+            with patch("scripts.check_downstream_compatibility.run", side_effect=fake_run), \
+                    patch("scripts.check_downstream_compatibility.validate_graph_for_downstream") as validate:
+                graph = metadata(root, "sqlite,event-bus", Path("/core"),
+                                  Path("/snapshot/redis"), Path("/target"),
+                                  expected_redis=Path("/snapshot/redis"), manifest=manifest,
+                                  allowed_workspace_roots=(root,))
 
-        self.assertEqual(graph, {})
-        self.assertEqual(len(commands), 2)
-        self.assertNotIn("--locked", commands[0][0])
-        self.assertIn("--locked", commands[1][0])
-        self.assertEqual(commands[0][1]["cwd"], root)
-        self.assertEqual(commands[0][1]["env"]["CARGO_TARGET_DIR"], "/target")
-        self.assertEqual(validate.call_args.kwargs["expected_core"], Path("/core"))
-        self.assertEqual(validate.call_args.kwargs["expected_redis"], Path("/snapshot/redis"))
+            self.assertEqual(graph, locked_graph)
+            self.assertEqual(len(commands), 3)
+            locate, update, locked = commands
+            self.assertIn("locate-project", locate[0])
+            self.assertNotIn("--features", locate[0])
+            self.assertEqual(locate[1]["cwd"], root)
+            self.assertEqual(locate[1]["env"]["CARGO_TARGET_DIR"], "/target")
+            self.assertNotIn("--locked", update[0])
+            self.assertIn("--locked", locked[0])
+            self.assertIn("--features", update[0])
+            self.assertIn("--features", locked[0])
+            self.assertEqual(validate.call_args.kwargs["expected_core"], Path("/core"))
+            self.assertEqual(validate.call_args.kwargs["expected_redis"],
+                             Path("/snapshot/redis"))
+
+    def test_metadata_stops_after_workspace_preflight_rejection(self):
+        commands = []
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = Path(directory) / "snapshot"
+            snapshot.mkdir()
+            (snapshot / "Cargo.toml").write_text(
+                '[package]\nname="fixture"\nversion="0.1.0"\n')
+            external_manifest = Path(directory) / "outside/Cargo.toml"
+            external_manifest.parent.mkdir()
+            external_manifest.write_text('[workspace]\n')
+
+            def fake_run(command, **_kwargs):
+                commands.append(command)
+                if "locate-project" in command:
+                    return json.dumps({"root": str(external_manifest)})
+                self.fail("metadata must not run after workspace preflight rejects")
+
+            with patch("scripts.check_downstream_compatibility.run", side_effect=fake_run):
+                with self.assertRaisesRegex(RuntimeError, "outside"):
+                    metadata(snapshot, "sqlite", Path("/core"), None,
+                             Path("/target"),
+                             allowed_workspace_roots=(snapshot,))
+
+            self.assertEqual(len(commands), 1)
+            self.assertIn("locate-project", commands[0])
+
+    def test_real_cargo_rejects_external_workspace_roots_without_touching_locks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            sources = base / "sources"
+            siblings = sources / "siblings"
+            redis = sources / "redis"
+            task = sources / "rs-task"
+            execution = siblings / "rs-execution-services"
+            ioc = execution / "tests/fixtures/ioc_application_consumer"
+            for root in (redis, task, ioc):
+                root.mkdir(parents=True)
+            (base / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["sources/redis", '
+                '"sources/siblings/rs-execution-services/tests/fixtures/'
+                'ioc_application_consumer", "sources/rs-task"]\n')
+            external_lock = base / "Cargo.lock"
+            original_lock = b"external lock must remain byte-for-byte unchanged\n"
+            external_lock.write_bytes(original_lock)
+            real_run = run
+
+            cases = (
+                ("redis ancestor workspace", redis, redis, False),
+                ("execution-services IoC ancestor workspace", ioc, siblings, False),
+                ("rs-task absolute package.workspace", task, task, False),
+                ("rs-task absent external lock", task, task, True),
+            )
+            for label, snapshot, boundary, absent_lock in cases:
+                with self.subTest(case=label):
+                    manifest = snapshot / "Cargo.toml"
+                    if snapshot == task:
+                        manifest.write_text(
+                            '[package]\nname="rs-task-fixture"\nversion="0.1.0"\n'
+                            'edition="2021"\n'
+                            f'workspace="{base}"\n')
+                    else:
+                        # Cargo inherits the ancestor workspace; the selected root and
+                        # its lock file are outside this snapshot boundary.
+                        manifest.write_text(
+                            f'[package]\nname="{snapshot.name}-fixture"\nversion="0.1.0"\n'
+                            'edition="2021"\n')
+
+                    if absent_lock:
+                        external_lock.unlink()
+                    try:
+                        cargo_commands = []
+
+                        def only_allow_locate(command, **kwargs):
+                            cargo_commands.append(command)
+                            self.assertIn("locate-project", command)
+                            return real_run(command, **kwargs)
+
+                        with patch("scripts.check_downstream_compatibility.run",
+                                   side_effect=only_allow_locate):
+                            with self.assertRaisesRegex(RuntimeError, "outside"):
+                                metadata(snapshot, None, base / "core", None,
+                                         base / "target", manifest=manifest,
+                                         allowed_workspace_roots=(boundary,))
+                        self.assertEqual(len(cargo_commands), 1)
+                        if absent_lock:
+                            self.assertFalse(external_lock.exists())
+                        else:
+                            self.assertEqual(external_lock.read_bytes(), original_lock)
+                            self.assertTrue(external_lock.exists())
+                    finally:
+                        if absent_lock and external_lock.exists():
+                            external_lock.unlink()
+                        if absent_lock:
+                            external_lock.write_bytes(original_lock)
+
+    def test_real_cargo_allows_independent_temporary_snapshot_and_creates_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "independent-snapshot"
+            nested = root / "nested/consumer"
+            (nested / "src").mkdir(parents=True)
+            manifest = nested / "Cargo.toml"
+            manifest.write_text(
+                '[package]\nname="independent-fixture"\nversion="0.1.0"\n'
+                'edition="2021"\n[dependencies]\nqubit-event-bus="0.21"\n')
+            (nested / "src/lib.rs").write_text("pub fn fixture() {}\n")
+            core = Path(directory) / "core"
+            (core / "src").mkdir(parents=True)
+            (core / "Cargo.toml").write_text(
+                '[package]\nname="qubit-event-bus"\nversion="0.21.0"\n'
+                'edition="2021"\n')
+            (core / "src/lib.rs").write_text("pub fn core_fixture() {}\n")
+
+            with patch.dict(os.environ, {"CARGO_NET_OFFLINE": "true"}):
+                metadata(root, None, core, None, Path(directory) / "target",
+                         manifest=manifest, allowed_workspace_roots=(root,),
+                         allowed_local_roots=(root,))
+
+            self.assertTrue((nested / "Cargo.lock").is_file())
+
+    def test_real_cargo_rejects_external_existing_and_dangling_lock_symlinks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            external_lock = base / "external.lock"
+            original = b"external lock symlink target\n"
+            external_lock.write_bytes(original)
+            real_run = run
+
+            for label, dangling in (("existing target", False), ("dangling target", True)):
+                with self.subTest(link=label):
+                    root = base / label.replace(" ", "-")
+                    (root / "src").mkdir(parents=True)
+                    (root / "Cargo.toml").write_text(
+                        f'[package]\nname="{root.name}"\nversion="0.1.0"\n'
+                        'edition="2021"\n')
+                    (root / "src/lib.rs").write_text("pub fn fixture() {}\n")
+                    target = base / "missing-external.lock" if dangling else external_lock
+                    if dangling and target.exists():
+                        target.unlink()
+                    (root / "Cargo.lock").symlink_to(target)
+                    cargo_commands = []
+
+                    def only_allow_locate(command, **kwargs):
+                        cargo_commands.append(command)
+                        self.assertIn("locate-project", command)
+                        return real_run(command, **kwargs)
+
+                    with patch("scripts.check_downstream_compatibility.run",
+                               side_effect=only_allow_locate):
+                        with self.assertRaisesRegex(RuntimeError, "outside"):
+                            metadata(root, None, base / "core", None, base / "target",
+                                     allowed_workspace_roots=(root,))
+
+                    self.assertEqual(len(cargo_commands), 1)
+                    self.assertTrue((root / "Cargo.lock").is_symlink())
+                    if dangling:
+                        self.assertFalse(target.exists())
+                    else:
+                        self.assertEqual(external_lock.read_bytes(), original)
+
+    def test_real_cargo_allows_ioc_workspace_inside_sibling_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            siblings = base / "sources/siblings"
+            execution = siblings / "rs-execution-services"
+            fixture = execution / "tests/fixtures/ioc_application_consumer"
+            local = execution / "rs-local"
+            (fixture / "src").mkdir(parents=True)
+            (local / "src").mkdir(parents=True)
+            (siblings / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["rs-execution-services/tests/fixtures/'
+                'ioc_application_consumer", "rs-execution-services/rs-local"]\n')
+            (fixture / "Cargo.toml").write_text(
+                '[package]\nname="ioc-consumer"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\nqubit-event-bus="0.21"\n'
+                'local = { path = "../../../rs-local" }\n')
+            (fixture / "src/lib.rs").write_text("pub fn fixture() {}\n")
+            (local / "Cargo.toml").write_text(
+                '[package]\nname="local"\nversion="0.1.0"\nedition="2021"\n')
+            (local / "src/lib.rs").write_text("pub fn sibling() {}\n")
+            core = base / "core"
+            (core / "src").mkdir(parents=True)
+            (core / "Cargo.toml").write_text(
+                '[package]\nname="qubit-event-bus"\nversion="0.21.0"\n'
+                'edition="2021"\n')
+            (core / "src/lib.rs").write_text("pub fn core_fixture() {}\n")
+
+            with patch.dict(os.environ, {"CARGO_NET_OFFLINE": "true"}):
+                metadata(execution, None, core, None, base / "target",
+                         manifest=fixture / "Cargo.toml",
+                         allowed_workspace_roots=(siblings,),
+                         allowed_local_roots=(siblings,))
+
+            self.assertTrue((siblings / "Cargo.lock").is_file())
+
+    def test_real_cargo_resolves_internal_manifest_symlink_lock_in_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "snapshot"
+            (root / "src").mkdir(parents=True)
+            real_manifest = root / "real.toml"
+            real_manifest.write_text(
+                '[package]\nname="manifest-link-fixture"\nversion="0.1.0"\n'
+                'edition="2021"\n')
+            (root / "Cargo.toml").symlink_to(real_manifest.name)
+            core = base / "core"
+            (core / "src").mkdir(parents=True)
+            (core / "Cargo.toml").write_text(
+                '[package]\nname="qubit-event-bus"\nversion="0.21.0"\n'
+                'edition="2021"\n')
+            (core / "src/lib.rs").write_text("pub fn core_fixture() {}\n")
+            (root / "src/lib.rs").write_text("pub fn fixture() {}\n")
+
+            with patch.dict(os.environ, {"CARGO_NET_OFFLINE": "true"}):
+                metadata(root, None, core, None, base / "target",
+                         allowed_workspace_roots=(root,))
+
+            self.assertTrue((root / "Cargo.lock").is_file())
 
     def test_nested_manifest_uses_its_directory_for_all_cargo_stages(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2901,7 +3141,11 @@ class DownstreamCompatibilityTests(unittest.TestCase):
 
             def fake_run(command, **kwargs):
                 commands.append((command, kwargs))
+                if "locate-project" in command:
+                    return json.dumps({"root": str(manifest)})
                 if "metadata" in command:
+                    if "--locked" in command:
+                        return json.dumps({"workspace_root": str(manifest.parent)})
                     return "{}"
                 if "--list" in command:
                     return "target: test\n"
@@ -2916,12 +3160,13 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                             ["--features", "sqlite", "--test", "smoke", "target"],
                             Path("/core"), None, env, manifest=manifest)
 
-            self.assertEqual(len(commands), 4)
+            self.assertEqual(len(commands), 5)
             self.assertTrue(all(call[1]["cwd"] == manifest.parent for call in commands))
             self.assertTrue(all(call[1]["env"]["CARGO_TARGET_DIR"] == "/target"
                                 for call in commands))
+            self.assertNotIn("--features", commands[0][0])
             self.assertTrue(all(command[command.index("--features") + 1] == "sqlite"
-                                for command, _kwargs in commands))
+                                for command, _kwargs in commands[1:]))
             cargo_configs = []
             for command, _kwargs in commands:
                 cargo_configs.append(tuple(
@@ -2929,10 +3174,7 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                     if value == "--config"))
             self.assertEqual(len(set(cargo_configs)), 1)
 
-    def test_cargo_194_offline_fixture_honors_fixture_local_config_for_all_stages(self):
-        cargo_version = subprocess.run(["cargo", "--version"], check=True, text=True,
-                                       capture_output=True).stdout.strip()
-        self.assertIn("cargo 1.94.", cargo_version)
+    def test_cargo_offline_fixture_honors_fixture_local_config_for_all_stages(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "fixture"
             (root / ".cargo").mkdir(parents=True)
@@ -2984,13 +3226,28 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                  "source": None, "manifest_path": "/redis/Cargo.toml"},
             ],
         }
-        root = Path("/snapshot/arbitrary-project-name")
-        with patch("scripts.check_downstream_compatibility.run", return_value=json.dumps(graph)) as run_command:
-            result = metadata(root, "sqlite,event-bus", Path("/core"), Path("/redis"),
-                              Path("/target"), expected_redis=Path("/redis"),
-                              allowed_local_roots=(Path("/redis"),))
-        self.assertEqual(result, graph)
-        self.assertEqual(run_command.call_count, 2)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "arbitrary-project-name"
+            root.mkdir()
+            manifest = root / "Cargo.toml"
+            manifest.write_text('[package]\nname="fixture"\nversion="0.1.0"\n')
+
+            def fake_run(command, **_kwargs):
+                if "locate-project" in command:
+                    return json.dumps({"root": str(manifest)})
+                if "--locked" in command:
+                    return json.dumps({**graph, "workspace_root": str(root)})
+                return "{}"
+
+            with patch("scripts.check_downstream_compatibility.run",
+                       side_effect=fake_run) as run_command:
+                result = metadata(root, "sqlite,event-bus", Path("/core"), Path("/redis"),
+                                  Path("/target"), expected_redis=Path("/redis"),
+                                  manifest=manifest,
+                                  allowed_workspace_roots=(root,),
+                                  allowed_local_roots=(Path("/redis"),))
+            self.assertEqual(result["packages"], graph["packages"])
+            self.assertEqual(run_command.call_count, 3)
 
     def test_runner_returns_json_stdout_and_reports_failed_command_output(self):
         with tempfile.TemporaryDirectory() as directory:
