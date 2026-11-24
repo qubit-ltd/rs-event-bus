@@ -3472,7 +3472,7 @@ class DownstreamCompatibilityTests(unittest.TestCase):
         for source_kind in ("config", "environment"):
             with self.subTest(source_kind=source_kind), tempfile.TemporaryDirectory() as directory:
                 base = Path(directory)
-                root = base / "redis"
+                root = base / "input" / "redis"
                 (root / "src").mkdir(parents=True)
                 (root / "tests").mkdir()
                 (root / "Cargo.toml").write_text(
@@ -3515,18 +3515,45 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                 subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture",
                                 "-c", "user.email=fixture@example.invalid",
                                 "commit", "-qm", "tracked fixture"], check=True)
+                snapshot = base / "snapshot" / "redis"
+                copy_tracked_source(root, snapshot)
+                self.assertNotEqual(snapshot.resolve(), root.resolve())
+                self.assertTrue((snapshot / "Cargo.toml").is_file())
                 config = TestConfig("fixture", "redis", "Cargo.toml", "fixture_tests",
                                     "test_fixture_passes")
                 target_root = base / "temporary-targets"
                 caller_env = {"CARGO_BUILD_BUILD_DIR": str(outside)} if source_kind == "environment" else {}
+                cargo_commands = []
+                original_run = module.run
+
+                def observe_run(command, **kwargs):
+                    output = original_run(command, **kwargs)
+                    cargo_commands.append((kwargs["label"], list(command), output,
+                                           dict(kwargs["env"])))
+                    return output
+
                 with patch.object(module, "TESTS", (config,)), \
                         patch.object(module, "cargo_config", return_value=[]), \
                         patch.object(module, "validate_graph_for_downstream"), \
+                        patch.object(module, "run", side_effect=observe_run), \
                         patch.dict(os.environ, {"CARGO_NET_OFFLINE": "true", **caller_env}, clear=False):
                     if source_kind == "config":
                         os.environ.pop("CARGO_BUILD_BUILD_DIR", None)
                     os.environ["RUSTUP_TOOLCHAIN"] = "1.94.0"
-                    run_downstream_checks({"redis": root}, root, target_root)
+                    run_downstream_checks({"redis": snapshot}, snapshot, target_root)
+
+                listed = next((record for record in cargo_commands
+                               if record[0] == "list:redis:test_fixture_passes"), None)
+                executed = next((record for record in cargo_commands
+                                 if record[0] == "test:redis:test_fixture_passes"), None)
+                self.assertIsNotNone(listed)
+                self.assertIsNotNone(executed)
+                self.assertIn("--exact", listed[1])
+                self.assertIn("test_fixture_passes: test", listed[2])
+                self.assertIn("--exact", executed[1])
+                self.assertIn("test test_fixture_passes ... ok", executed[2])
+                self.assertIn("test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured;",
+                              executed[2])
 
                 external_after = snapshot_external()
                 if external_after != before:
@@ -3540,7 +3567,9 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                     )
                 isolated_build = target_root / "redis" / "build"
                 self.assertTrue(isolated_build.is_dir())
-                self.assertTrue(any(path.is_dir() for path in isolated_build.iterdir()))
+                self.assertTrue(any(path.is_file() and path.name.startswith("build-script-build")
+                                    for path in isolated_build.rglob("*")),
+                                "Cargo did not leave a build script compiler artifact under target/build")
 
     def test_failed_downstream_run_does_not_restore_or_modify_input_locks(self):
         with tempfile.TemporaryDirectory() as directory:
