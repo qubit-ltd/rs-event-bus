@@ -38,7 +38,8 @@ pub enum NotificationOutcome {
     Published(
         /// The successful facade receipt, including interceptor drops and
         /// sends without admission confirmation. Use
-        /// [`PublishReceipt::admission_outcome()`] to inspect its classification.
+        /// [`PublishReceipt::admission_outcome()`] to inspect its
+        /// classification.
         PublishReceipt,
     ),
     /// Publication failed; inspect [`PublishFailure::effect()`] before deciding
