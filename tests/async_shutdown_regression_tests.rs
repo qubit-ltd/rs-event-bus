@@ -1441,6 +1441,136 @@ fn test_tracker_wake_rejects_same_bus_shutdown_when_disposing_subscription() {
 }
 
 #[test]
+fn test_topic_idle_wait_waker_cancel_drop_rejects_same_bus_shutdown() {
+    let provider = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus =
+        AsyncEventBus::from_spi(ProviderId::new("idle-waker-drop").expect("provider ID"), provider).expect("facade");
+    let topic = Topic::<u32>::new("idle-waker-drop").expect("topic");
+    let subscription =
+        block_on_shutdown(bus.subscribe(SubscribeRequest::new("idle-waker-drop", topic.clone()).expect("request")))
+            .expect("subscription");
+    let _ = block_on_shutdown(bus.publish(PublishRequest::new(topic.clone(), 1).expect("publish")))
+        .expect("publish succeeds");
+    let handler_started = Arc::new(AtomicBool::new(false));
+    let handler_started_for_handler = handler_started.clone();
+    let mut run = Box::pin(subscription.run(move |_| {
+        handler_started_for_handler.store(true, Ordering::SeqCst);
+        pending::<Result<(), qubit_event_bus::DeliveryError>>()
+    }));
+    for _ in 0..8 {
+        assert!(run.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
+        if handler_started.load(Ordering::SeqCst) {
+            break;
+        }
+    }
+    assert!(handler_started.load(Ordering::SeqCst), "handler is pending");
+
+    let (waker, probe) = reentry_probe_waker(bus.clone(), CallbackEdge::Drop);
+    let mut waiting = Box::pin(bus.wait_for_received_deliveries(&topic, None));
+    assert!(waiting.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+    assert_eq!(
+        probe.callbacks.load(Ordering::SeqCst),
+        0,
+        "signal retains the registered waker"
+    );
+    drop(waker);
+    assert_eq!(
+        probe.callbacks.load(Ordering::SeqCst),
+        0,
+        "caller waker is not armed during its drop"
+    );
+    probe.armed.store(true, Ordering::SeqCst);
+    assert_eq!(
+        probe.callbacks.load(Ordering::SeqCst),
+        0,
+        "registered waker remains in the signal"
+    );
+    drop(waiting);
+    assert!(
+        matches!(
+            probe.observation.lock().expect("waker observation").as_ref(),
+            Some(Poll::Ready(Err(ShutdownError::Lifecycle(
+                LifecycleError::WouldDeadlock { operation: "shutdown" }
+            ))))
+        ),
+        "waker destructor reentry result: {:?}",
+        probe.observation.lock().expect("waker observation").as_ref()
+    );
+    assert!(block_on_shutdown(bus.publish(PublishRequest::new(topic.clone(), 2).expect("publish"))).is_ok());
+
+    drop(run);
+    drop(subscription);
+    assert!(block_on_shutdown(bus.shutdown(ShutdownMode::Immediate)).is_ok());
+}
+
+#[test]
+fn test_topic_idle_wait_timer_cancel_drop_rejects_same_bus_shutdown() {
+    let clock = Arc::new(ManualMonotonicClock::new());
+    let bus_slot = Arc::new(Mutex::new(None));
+    let observed = Arc::new(Mutex::new(None));
+    let provider = Arc::new(FakeAsyncEventBusSpi::new());
+    let bus = AsyncEventBus::with_timer(
+        ProviderId::new("idle-timer-drop").expect("provider ID"),
+        provider,
+        Arc::new(ReenterOnDropTimer {
+            clock,
+            bus: bus_slot.clone(),
+            observed: observed.clone(),
+        }),
+    )
+    .expect("facade");
+    *bus_slot.lock().expect("bus slot") = Some(bus.clone());
+    let topic = Topic::<u32>::new("idle-timer-drop").expect("topic");
+    let subscription =
+        block_on_shutdown(bus.subscribe(SubscribeRequest::new("idle-timer-drop", topic.clone()).expect("request")))
+            .expect("subscription");
+    let _ = block_on_shutdown(bus.publish(PublishRequest::new(topic.clone(), 1).expect("publish")))
+        .expect("publish succeeds");
+    let handler_started = Arc::new(AtomicBool::new(false));
+    let handler_started_for_handler = handler_started.clone();
+    let mut run = Box::pin(subscription.run(move |_| {
+        handler_started_for_handler.store(true, Ordering::SeqCst);
+        pending::<Result<(), qubit_event_bus::DeliveryError>>()
+    }));
+    for _ in 0..8 {
+        assert!(run.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
+        if handler_started.load(Ordering::SeqCst) {
+            break;
+        }
+    }
+    assert!(handler_started.load(Ordering::SeqCst), "handler is pending");
+
+    let mut waiting = Box::pin(bus.wait_for_received_deliveries(&topic, Some(Duration::from_secs(1))));
+    assert!(
+        waiting
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    assert!(
+        observed.lock().expect("timer observation").is_none(),
+        "timer remains pending"
+    );
+    drop(waiting);
+    assert!(
+        matches!(
+            observed.lock().expect("timer observation").as_ref(),
+            Some(Poll::Ready(Err(ShutdownError::Lifecycle(
+                LifecycleError::WouldDeadlock { operation: "shutdown" }
+            ))))
+        ),
+        "timer destructor reentry result: {:?}",
+        observed.lock().expect("timer observation").as_ref()
+    );
+    assert!(block_on_shutdown(bus.publish(PublishRequest::new(topic.clone(), 2).expect("publish"))).is_ok());
+
+    drop(run);
+    drop(subscription);
+    assert!(block_on_shutdown(bus.shutdown(ShutdownMode::Immediate)).is_ok());
+    *bus_slot.lock().expect("bus slot") = None;
+}
+
+#[test]
 fn test_scheduler_wake_rejects_same_bus_shutdown_when_cancelling_runner() {
     let provider = Arc::new(FakeAsyncEventBusSpi::new());
     let config = EventBusFacadeConfig::new().with_delivery_scheduling(

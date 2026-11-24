@@ -79,6 +79,8 @@ impl AsyncEventBus {
     /// idleness on a remote broker.
     /// Dropping a pending wait only cancels this observer; it does not change
     /// delivery ownership or grant leadership over the tracked deliveries.
+    /// Cancelling a pending wait drops its registered signal waker and optional
+    /// timer while scoped to this bus, so cleanup cannot start same-bus shutdown.
     /// A callback polled for this bus cannot wait for this operation: it
     /// receives [`LifecycleError::WouldDeadlock`] even when no matching
     /// delivery is active, because the guard is scoped to the whole bus poll.
@@ -109,11 +111,11 @@ impl AsyncEventBus {
                 operation: "wait_for_received_deliveries",
             });
         }
-        let mut wait = Box::pin(wait_until(
-            &self.inner.tracker.signal,
-            self.inner.timer.as_ref(),
-            timeout,
-            || self.inner.tracker.is_idle(topic.name()),
+        let mut wait = Box::pin(BusContextFuture::new_with_drop_context(
+            bus_key,
+            wait_until(&self.inner.tracker.signal, self.inner.timer.as_ref(), timeout, || {
+                self.inner.tracker.is_idle(topic.name())
+            }),
         ));
         poll_fn(|cx| {
             if is_current_bus_poll(bus_key) {
@@ -121,7 +123,7 @@ impl AsyncEventBus {
                     operation: "wait_for_received_deliveries",
                 }));
             }
-            with_bus_scope(bus_key, || wait.as_mut().poll(cx))
+            wait.as_mut().poll(cx)
         })
         .await
     }
