@@ -1031,12 +1031,14 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                     "--task-root", str(task), "--execution-services-root", str(execution)]
             seen = []
             copies = []
+            metadata_manifests = []
+            verify_manifests = []
 
             def copy_source(source, destination):
                 copies.append((Path(source).resolve(), Path(destination).resolve()))
                 return copy_tracked_source(source, destination)
 
-            def metadata_snapshot(root, _features, _core, _redis, _target, **_kwargs):
+            def metadata_snapshot(root, _features, _core, _redis, _target, **kwargs):
                 if root.name == "rs-execution-services":
                     dependency = root.parent / "rs-local-dependency"
                     nested_dependency = root.parent / "rs-nested-dependency"
@@ -1048,7 +1050,12 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                                      input_before[sibling][Path("Cargo.lock")][0])
                     self.assertTrue((root / "tests/fixtures/ioc_application_consumer/Cargo.toml").is_file())
                     seen.append(root)
+                    metadata_manifests.append(Path(kwargs["manifest"]).resolve())
                 return {}
+
+            def verify_snapshot(root, _name, _arguments, _core, _redis, _env, **kwargs):
+                if root.name == "rs-execution-services":
+                    verify_manifests.append(Path(kwargs["manifest"]).resolve())
 
             output = io.StringIO()
             with patch("sys.argv", argv), \
@@ -1056,15 +1063,19 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                           side_effect=copy_source), \
                     patch("scripts.check_downstream_compatibility.metadata",
                           side_effect=metadata_snapshot), \
-                    patch("scripts.check_downstream_compatibility.verify_test") as verify, \
+                    patch("scripts.check_downstream_compatibility.verify_test",
+                          side_effect=verify_snapshot) as verify, \
                     contextlib.redirect_stdout(output):
                 main()
             self.assertEqual(len(seen), 1)
             self.assertEqual(verify.call_count, 7)
-            actual_manifest = seen[0] / "tests/fixtures/ioc_application_consumer/Cargo.toml"
-            execution_copy = next(destination for source, destination in copies
-                                  if source == execution.resolve())
-            self.assertEqual(actual_manifest, execution_copy / "tests/fixtures/ioc_application_consumer/Cargo.toml")
+            execution_destinations = [destination for source, destination in copies
+                                      if source == execution.resolve()]
+            self.assertEqual(len(execution_destinations), 1)
+            execution_copy = execution_destinations[0]
+            actual_manifest = execution_copy / "tests/fixtures/ioc_application_consumer/Cargo.toml"
+            self.assertEqual(metadata_manifests, [actual_manifest.resolve()])
+            self.assertEqual(verify_manifests, [actual_manifest.resolve()] * 3)
             sibling_copies = {source: destination for source, destination in copies
                               if source in {execution.resolve(), sibling.resolve(), nested.resolve()}}
             self.assertEqual(sibling_copies[execution.resolve()], execution_copy)
@@ -1074,8 +1085,13 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                              "rs-nested-dependency")
             records = output.getvalue().splitlines()
             for source, destination in sibling_copies.items():
-                record = next(line for line in records if f"root={source}" in line)
+                matching_records = [line for line in records if f"root={source}" in line]
+                self.assertEqual(len(matching_records), 1)
+                record = matching_records[0]
                 self.assertIn(f"snapshot={destination}", record)
+                if source == execution.resolve():
+                    self.assertIn("additional_snapshots=[]", record)
+                    self.assertEqual(actual_manifest.parent.parent.parent.parent, destination)
             self.assertEqual(input_before, {
                 path: {file.relative_to(path): (file.read_bytes(), file.stat().st_mtime_ns)
                        for file in path.rglob("*") if file.is_file() and ".git" not in file.parts}
