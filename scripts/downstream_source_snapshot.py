@@ -49,6 +49,64 @@ def tracked_source_files(source):
     return _tracked_entries(source)
 
 
+def _snapshot_members(source, tracked):
+    """Return copyable tracked leaves and their snapshot-created parent directories."""
+    leaves = set()
+    directories = {Path(".")}
+    for relative in tracked:
+        try:
+            info = (source / relative).lstat()
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        if not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+            continue
+        leaves.add(relative)
+        for parent in relative.parents:
+            directories.add(parent)
+    return leaves, directories
+
+
+def tracked_snapshot_directory_identity(source, declaration, tracked=None):
+    """Resolve a declaration's parent by walking only directories visible in a snapshot."""
+    source = Path(source).resolve(strict=True)
+    declaration = Path(declaration)
+    if not declaration.is_absolute():
+        declaration = source / declaration
+    try:
+        relative = declaration.parent.relative_to(source)
+    except ValueError as error:
+        raise ValueError(f"declaration is outside owning repository: {declaration}") from error
+    tracked = set(tracked_source_files(source)) if tracked is None else set(tracked)
+    _leaves, directories = _snapshot_members(source, tracked)
+    current = source
+    for part in relative.parts:
+        if part in ("", "."):
+            continue
+        if part == "..":
+            current = current.parent
+            if not _inside(current, source):
+                raise ValueError(f"link escapes owning repository at {current}")
+            continue
+        candidate = current / part
+        rel = candidate.relative_to(source)
+        if candidate.is_symlink():
+            if rel not in tracked:
+                raise ValueError(f"untracked symlink hop: {rel.as_posix()}")
+            current = candidate.resolve(strict=True)
+            if not _inside(current, source):
+                raise ValueError(f"link escapes owning repository at {rel.as_posix()}")
+        else:
+            if rel not in directories:
+                raise FileNotFoundError(f"missing path component at {rel.as_posix()}")
+            current = candidate
+        try:
+            if not stat.S_ISDIR(current.stat().st_mode):
+                raise NotADirectoryError(f"non-directory path component at {rel.as_posix()}")
+        except FileNotFoundError as error:
+            raise FileNotFoundError(f"missing path component at {rel.as_posix()}") from error
+    return current.resolve(strict=True)
+
+
 def is_tracked_snapshot_file(source, declaration, tracked=None):
     """Return whether a declared file would be available in a tracked snapshot."""
     try:
@@ -63,13 +121,15 @@ def validate_tracked_snapshot_file(source, declaration, tracked=None):
     return _validate_tracked_snapshot_file(source, declaration, tracked)
 
 
-def validate_tracked_config_snapshot_file(source, declaration, tracked=None):
+def validate_tracked_config_snapshot_file(source, declaration, tracked=None, *, require_directory=False):
     """Validate a Cargo config path, returning None when its final file is absent from a snapshot."""
     return _validate_tracked_snapshot_file(
-        source, declaration, tracked, allow_missing_final=True)
+        source, declaration, tracked, allow_missing_final=True,
+        require_directory=require_directory)
 
 
-def _validate_tracked_snapshot_file(source, declaration, tracked=None, *, allow_missing_final=False):
+def _validate_tracked_snapshot_file(source, declaration, tracked=None, *, allow_missing_final=False,
+                                    require_directory=False):
     """Validate a path component by component as it would appear in a snapshot."""
     source = Path(source).resolve(strict=True)
     declaration = Path(declaration)
@@ -80,9 +140,12 @@ def _validate_tracked_snapshot_file(source, declaration, tracked=None, *, allow_
     except ValueError:
         raise ValueError(f"declaration is outside owning repository: {declaration}")
     tracked = set(tracked_source_files(source)) if tracked is None else tracked
+    leaves, directories = _snapshot_members(source, tracked)
     if relative not in tracked and not allow_missing_final:
         raise ValueError(f"declaration is not tracked: {relative.as_posix()}")
     pending = list(relative.parts)
+    if require_directory:
+        pending.append(("require-directory",))
     current = source
     active_links = set()
     link_expansions = 0
@@ -90,6 +153,16 @@ def _validate_tracked_snapshot_file(source, declaration, tracked=None, *, allow_
     while pending:
         part = pending.pop(0)
         if isinstance(part, tuple):
+            if part[0] == "require-directory":
+                try:
+                    info = current.stat()
+                except FileNotFoundError:
+                    info = None
+                if info is None or not stat.S_ISDIR(info.st_mode):
+                    if allow_missing_final:
+                        return None
+                    raise FileNotFoundError(f"non-directory path component at {current}")
+                continue
             active_links.remove(part[1])
             continue
         if part in ("", "."):
@@ -113,15 +186,18 @@ def _validate_tracked_snapshot_file(source, declaration, tracked=None, *, allow_
             if link_expansions > max_link_expansions:
                 raise ValueError(f"symlink expansion limit exceeded ({max_link_expansions} hops) at {label}")
             active_links.add(candidate)
-            target = Path(os.readlink(candidate))
+            raw_target = os.readlink(candidate)
+            target = Path(raw_target)
             if target.is_absolute():
                 raise ValueError(f"absolute symlink target at {label}: {target}")
-            pending = list(target.parts) + [("end-link", candidate)] + pending
+            target_parts = list(target.parts)
+            if raw_target.endswith(("/", "/.")):
+                target_parts.append(("require-directory",))
+            pending = target_parts + [("end-link", candidate)] + pending
             current = candidate.parent.resolve(strict=True)
             continue
         is_final = not any(not isinstance(next_part, tuple) for next_part in pending)
-        visible = rel in tracked or any(
-            tracked_path.parts[:len(rel.parts)] == rel.parts for tracked_path in tracked)
+        visible = rel in leaves or rel in directories
         try:
             candidate_stat = candidate.stat()
         except FileNotFoundError:
@@ -172,9 +248,19 @@ def copy_tracked_source(source: Path, destination: Path) -> None:
 
     tracked_entries = tracked_source_files(source)
     tracked = set(tracked_entries)
+    copyable_leaves, _directories = _snapshot_members(source, tracked)
     for relative in tracked_entries:
-        label = relative.as_posix()
         source_path = source / relative
+        try:
+            info = source_path.lstat()
+        except (FileNotFoundError, NotADirectoryError):
+            # A tracked deletion or a path hidden behind a replaced parent is absent in the snapshot.
+            continue
+        if not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+            raise ValueError(f"unsupported tracked filesystem object: {relative.as_posix()}")
+        if relative not in copyable_leaves:
+            continue
+        label = relative.as_posix()
         try:
             source_resolved = source_path.resolve(strict=False)
             source_resolved.relative_to(source)

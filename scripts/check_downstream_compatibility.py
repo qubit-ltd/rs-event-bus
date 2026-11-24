@@ -17,6 +17,7 @@ try:
     from scripts.downstream_source_snapshot import is_tracked_snapshot_file
     from scripts.downstream_source_snapshot import validate_tracked_config_snapshot_file
     from scripts.downstream_source_snapshot import tracked_source_files
+    from scripts.downstream_source_snapshot import tracked_snapshot_directory_identity
     from scripts.downstream_source_snapshot import validate_tracked_snapshot_file
     from scripts.run_conformance_watchdog import process_group_options
     from scripts.run_conformance_watchdog import terminate_process_group
@@ -26,6 +27,7 @@ except ModuleNotFoundError:
     from downstream_source_snapshot import is_tracked_snapshot_file
     from downstream_source_snapshot import validate_tracked_config_snapshot_file
     from downstream_source_snapshot import tracked_source_files
+    from downstream_source_snapshot import tracked_snapshot_directory_identity
     from downstream_source_snapshot import validate_tracked_snapshot_file
     from run_conformance_watchdog import process_group_options
     from run_conformance_watchdog import terminate_process_group
@@ -663,8 +665,14 @@ def _cargo_config_sources(config_path, source_root, *, stack=()):
         raise
     except (OSError, ValueError) as error:
         raise ValueError(f"Cargo config is not snapshot-safe: {config_path}: {error}") from error
-    if visible_config in stack:
-        chain = " -> ".join(map(str, (*stack, visible_config)))
+    try:
+        declaration_dir = tracked_snapshot_directory_identity(source_root, config_path, tracked)
+    except (OSError, ValueError) as error:
+        raise ValueError(f"Cargo config declaration directory is not snapshot-safe: {config_path}: {error}") from error
+    stack_entry = (visible_config, config_path, declaration_dir)
+    identity = (visible_config, declaration_dir)
+    if any((entry[0], entry[2]) == identity for entry in stack):
+        chain = " -> ".join(map(lambda entry: str(entry[1]), (*stack, stack_entry)))
         raise ValueError(f"Cargo config include cycle: {chain}")
     import tomllib
     try:
@@ -699,7 +707,8 @@ def _cargo_config_sources(config_path, source_root, *, stack=()):
                 f"Cargo config include escapes source repository in {config_path}: {include}") from error
         try:
             visible_include = validate_tracked_config_snapshot_file(
-                source_root, included, tracked)
+                source_root, included, tracked,
+                require_directory=include.endswith(("/", "/.")))
         except (OSError, ValueError) as error:
             reason = str(error).replace(
                 "link escapes owning repository", "link escapes source repository")
@@ -708,7 +717,7 @@ def _cargo_config_sources(config_path, source_root, *, stack=()):
         if visible_include is None and optional:
             continue
         if visible_include is None:
-            if included.exists():
+            if included.exists() and not include.endswith(("/", "/.")):
                 raise ValueError(
                     f"Cargo config include {include} in {config_path} is not present in "
                     "tracked source view")
@@ -716,7 +725,7 @@ def _cargo_config_sources(config_path, source_root, *, stack=()):
                 f"required Cargo config include missing in {config_path}: {include}")
         try:
             sources.extend(_cargo_config_sources(
-                included, source_root, stack=(*stack, visible_config)))
+                included, source_root, stack=(*stack, stack_entry)))
         except FileNotFoundError as error:
             if optional:
                 continue
