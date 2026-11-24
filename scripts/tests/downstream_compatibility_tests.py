@@ -3525,8 +3525,9 @@ class DownstreamCompatibilityTests(unittest.TestCase):
 
             def capture_metadata(root, _features, requested_core, redis_patch, _target,
                                  *, expected_redis=None, manifest=None, all_features=False,
-                                 allowed_local_roots=None):
+                                 allowed_local_roots=None, allowed_workspace_roots=None):
                 metadata_roots.append(root)
+                self.assertEqual(allowed_workspace_roots, (root,))
                 self.assertNotIn(root, (redis, task))
                 self.assertEqual((root / "src/lib.rs").read_text(),
                                  "pub fn locally_edited() {}\n")
