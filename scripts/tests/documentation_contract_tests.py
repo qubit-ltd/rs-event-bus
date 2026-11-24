@@ -70,6 +70,51 @@ class DocumentationContractTests(unittest.TestCase):
         (self.root / "README.md").write_text("[Migration](doc/migration.md)\n```md\n[missing](scripts/missing.py)\n```\n", encoding="utf-8")
         self.assertTrue(checker.check(self.root, self.listing))
 
+    def test_container_and_indented_code_links_are_ignored_and_following_links_checked(self):
+        examples = (
+            "- example:\n\n    ```md\n    [hidden](scripts/not-packaged.py)\n    ```\n\n",
+            "> ```md\n> [hidden](scripts/not-packaged.py)\n> ```\n",
+            "\n    [hidden](scripts/not-packaged.py)\n",
+        )
+        for code in examples:
+            with self.subTest(code=code):
+                text = "[Migration](doc/migration.md)\n" + code + "\n[tool](scripts/tool.py)\n"
+                (self.root / "README.md").write_text(text, encoding="utf-8")
+                self.assertEqual(list(checker.markdown_links(text)), [
+                    "doc/migration.md", "scripts/tool.py",
+                ])
+                self.assertTrue(checker.check(self.root, self.listing))
+
+    def test_empty_link_destinations_are_skipped_without_hiding_real_links(self):
+        links = "[empty]() [spaces]( ) [tab]( \t ) [section](#keep) [tool](scripts/tool.py)\n"
+        self.assertEqual(list(checker.markdown_links(links)), ["#keep", "scripts/tool.py"])
+        text = "[Migration](doc/migration.md)\n" + links
+        (self.root / "README.md").write_text(text, encoding="utf-8")
+        self.assertTrue(checker.check(self.root, self.listing))
+
+    def test_real_links_in_list_continuations_and_quote_bodies_are_checked(self):
+        text = "- paragraph\n    [missing](scripts/not-packaged.py)\n> [also missing](scripts/also-not-packaged.py)\n"
+        self.assertEqual(list(checker.markdown_links(text)), [
+            "scripts/not-packaged.py", "scripts/also-not-packaged.py",
+        ])
+
+    def test_indented_code_does_not_interrupt_a_paragraph(self):
+        text = "Paragraph\n    [continued](scripts/continued.py)\n\n    [code](scripts/not-packaged.py)\n[tool](scripts/tool.py)\n"
+        self.assertEqual(list(checker.markdown_links(text)), [
+            "scripts/continued.py", "scripts/tool.py",
+        ])
+
+    def test_backtick_in_fence_info_does_not_hide_later_real_heading(self):
+        text = "````example with `backticks`\n## Visible heading\n"
+        self.assertIn("Visible heading", list(checker.heading_titles(text)))
+
+    def test_fence_ends_when_its_list_or_quote_container_ends(self):
+        list_text = "- example:\n\n    ```md\n    [hidden](scripts/not-packaged.py)\n[visible](scripts/tool.py)\n"
+        quote_text = "> ```md\n> - ```\n> [hidden](scripts/not-packaged.py)\n[visible](scripts/tool.py)\n"
+        for text in (list_text, quote_text):
+            with self.subTest(text=text):
+                self.assertEqual(list(checker.markdown_links(text)), ["scripts/tool.py"])
+
     def test_missing_document_is_rejected(self):
         (self.root / "README.md").unlink()
         self.assertFalse(checker.check(self.root, self.listing))

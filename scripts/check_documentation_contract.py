@@ -49,8 +49,11 @@ LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 def markdown_links(text):
     """Yield link destinations outside fenced code blocks."""
     for _line_number, line in lines_outside_fences(text):
-        yield from (match.group(1).strip().split(maxsplit=1)[0].strip("<>")
-                    for match in LINK.finditer(line))
+        for match in LINK.finditer(line):
+            destination = match.group(1).strip()
+            if not destination:
+                continue
+            yield destination.split(maxsplit=1)[0].strip("<>")
 
 
 def normalized_local_path(document, destination):

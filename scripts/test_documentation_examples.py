@@ -419,6 +419,24 @@ for document, heading, marker, label in (
     assert result.returncode != 0 and f"{label}: anchor" in result.stdout + result.stderr, result.stdout + result.stderr
     assert "content drift" not in result.stdout + result.stderr, result.stdout + result.stderr
 
+def add_invalid_backtick_fence_info_before_real_headings(root):
+    for document, heading in (
+        ("doc/user_guide.md", "Keep an event that fails for good"),
+        ("doc/user_guide.zh_CN.md", "保存最终处理失败的事件"),
+    ):
+        path = root / document
+        text = path.read_text(encoding="utf-8")
+        assert f"## {heading}\n" in text
+        path.write_text(text.replace(
+            f"## {heading}\n", f"````explanation containing `backticks`\n## {heading}\n", 1
+        ), encoding="utf-8")
+
+
+result = run_case(lambda _root: None, args=SNAPSHOT_ARGS, snapshot=True,
+                  snapshot_content_mutator=add_invalid_backtick_fence_info_before_real_headings)
+assert result.returncode == 0, result.stdout + result.stderr
+
+
 def change_user_guide(root):
     path = root / "doc/user_guide.md"
     path.write_text(path.read_text(encoding="utf-8") + "\nchanged after snapshot\n", encoding="utf-8")
