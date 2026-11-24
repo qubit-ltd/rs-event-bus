@@ -131,8 +131,10 @@ def check_method_links(snapshot_documents=None, document_shas=None):
         return [f"{ASYNC_SUBSCRIPTION}: unable to locate AsyncSubscription::run() Rustdoc"]
     docs = "\n".join(re.sub(r"^\s*/// ?", "", line) for line in match.group("docs").splitlines())
     docs = re.sub(r"\s+", " ", docs)
-    for label, path, home_label in (("English user guide", "doc/user_guide.md", "User guide"),
-                                    ("Chinese user guide", "doc/user_guide.zh_CN.md", "用户指南")):
+    for label, path, home_label, expected_anchor in (
+        ("English user guide", "doc/user_guide.md", "User guide", "keep-an-event-that-fails-for-good"),
+        ("Chinese user guide", "doc/user_guide.zh_CN.md", "用户指南", "保存最终处理失败的事件"),
+    ):
         found = re.findall(rf"\[{re.escape(label)}\]\(([^)]+)\)", docs)
         prefix = f"{ASYNC_SUBSCRIPTION}: AsyncSubscription::run(): {label}"
         if len(found) != 1:
@@ -149,6 +151,9 @@ def check_method_links(snapshot_documents=None, document_shas=None):
         if expected_sha is None or sha != expected_sha:
             errors.append(f"{prefix}: SHA {sha} does not match the crate home guide link")
         decoded = unquote(html.unescape(fragment))
+        if decoded != expected_anchor:
+            errors.append(f"{prefix}: expected anchor {expected_anchor!r}, found {decoded!r}")
+            continue
         headings = read_headings(snapshot_documents[path] if snapshot_documents else read_document_text(ROOT / path))
         if decoded not in headings:
             errors.append(f"{prefix}: anchor {decoded!r} does not identify a heading in {path}")

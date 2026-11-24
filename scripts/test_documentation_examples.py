@@ -86,10 +86,15 @@ def run_case(mutator, args=(), snapshot=False, git_env=None, snapshot_missing=No
                 code = (root / source).read_text(encoding="utf-8").removeprefix(FILE_HEADER).strip()
                 blocks.append(f"<!-- event-bus-source: {source} -->\n```rust\n{code}\n```")
             path.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
-        for document, heading in (("doc/user_guide.md", "Keep an event that fails for good"),
-                                  ("doc/user_guide.zh_CN.md", "保存最终处理失败的事件")):
+        for document, heading, unrelated_heading in (
+            ("doc/user_guide.md", "Keep an event that fails for good", "The problem it solves"),
+            ("doc/user_guide.zh_CN.md", "保存最终处理失败的事件", "它解决什么问题"),
+        ):
             path = root / document
-            path.write_text(f"# Guide\n\n## {heading}\n\n" + path.read_text(encoding="utf-8"), encoding="utf-8")
+            path.write_text(
+                f"# Guide\n\n## {unrelated_heading}\n\n## {heading}\n\n" + path.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
         lib_path = root / LIB
         lib_path.parent.mkdir(parents=True, exist_ok=True)
         source_code = (root / LOCAL).read_text(encoding="utf-8").removeprefix(FILE_HEADER).strip()
@@ -308,6 +313,14 @@ def wrong_chinese_method_anchor(root):
     mutate_method_link(root, "Chinese user guide", f"https://github.com/qubit-ltd/rs-event-bus/blob/{DOC_SHA}/doc/user_guide.zh_CN.md#不存在的标题")
 
 
+def unrelated_english_method_anchor(root):
+    mutate_method_link(root, "English user guide", f"https://github.com/qubit-ltd/rs-event-bus/blob/{DOC_SHA}/doc/user_guide.md#the-problem-it-solves")
+
+
+def unrelated_chinese_method_anchor(root):
+    mutate_method_link(root, "Chinese user guide", f"https://github.com/qubit-ltd/rs-event-bus/blob/{DOC_SHA}/doc/user_guide.zh_CN.md#%E5%AE%83%E8%A7%A3%E5%86%B3%E4%BB%80%E4%B9%88%E9%97%AE%E9%A2%98")
+
+
 def missing_method_source(root):
     (root / ASYNC_SUBSCRIPTION).unlink()
 
@@ -363,8 +376,10 @@ for mutator, expected in (
     (missing_method_link, "Chinese user guide: expected exactly one guide link"),
     (wrong_method_language, "Chinese user guide: invalid SHA, path, or anchor"),
     (wrong_method_sha, "English user guide: SHA"),
-    (wrong_method_anchor, "English user guide: anchor"),
-    (wrong_chinese_method_anchor, "Chinese user guide: anchor"),
+    (wrong_method_anchor, "English user guide: expected anchor 'keep-an-event-that-fails-for-good'"),
+    (wrong_chinese_method_anchor, "Chinese user guide: expected anchor '保存最终处理失败的事件'"),
+    (unrelated_english_method_anchor, "English user guide: expected anchor 'keep-an-event-that-fails-for-good'"),
+    (unrelated_chinese_method_anchor, "Chinese user guide: expected anchor '保存最终处理失败的事件'"),
     (missing_method_source, f"{ASYNC_SUBSCRIPTION}: unable to read AsyncSubscription::run() Rustdoc"),
 ):
     result = run_case(mutator)
