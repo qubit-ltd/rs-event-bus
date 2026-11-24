@@ -12,6 +12,9 @@ import unittest
 from unittest.mock import patch
 
 from scripts.check_downstream_compatibility import _cargo_config_patch_declarations
+from scripts.check_downstream_compatibility import _config_patch_declarations
+from scripts.check_downstream_compatibility import _manifest_patch_declarations
+from scripts.check_downstream_compatibility import _workspace_member_manifests
 from scripts.check_downstream_compatibility import cargo_config
 from scripts.downstream_source_snapshot import copy_tracked_source
 from scripts.check_downstream_compatibility import TESTS
@@ -48,7 +51,7 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                 f'workspace="{execution}"\n')
             subprocess.run(["git", "-C", str(execution), "add", "-A"], check=True)
             with patch("scripts.check_downstream_compatibility._workspace_root",
-                       side_effect=lambda path, data:
+                       side_effect=lambda path, data, _boundary=None:
                        (Path(path).parent / data.get("package", {}).get("workspace")).resolve()
                        if isinstance(data.get("package", {}).get("workspace"), str) else None):
                 self.assertEqual(set(discover_local_repositories(manifest, parent, execution)),
@@ -302,6 +305,253 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                 self.assertEqual({item["name"] for item in snapshot["packages"]},
                                  {"execution", *(f"member-{i}" for i in range(len(member_paths))),
                                   *dependencies.keys()})
+
+    def test_absolute_workspace_members_are_rejected_before_snapshot_discovery(self):
+        for member_pattern in ("ABSOLUTE_MEMBER", "ABSOLUTE_GLOB"):
+            with self.subTest(member_pattern=member_pattern), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                parent = base / "siblings"
+                parent.mkdir()
+                execution = self.make_input_repository(parent / "rs-execution", "execution")
+                member = execution / "members" / "kept"
+                member.mkdir(parents=True)
+                (member / "Cargo.toml").write_text(
+                    '[package]\nname="kept"\nversion="0.1.0"\nedition="2021"\n')
+                (member / "src").mkdir()
+                (member / "src/lib.rs").write_text("")
+                other_member = execution / "members" / "other"
+                other_member.mkdir()
+                (other_member / "Cargo.toml").write_text(
+                    '[package]\nname="other"\nversion="0.1.0"\nedition="2021"\n')
+                (other_member / "src").mkdir()
+                (other_member / "src/lib.rs").write_text("")
+                (execution / "Cargo.lock").write_text("")
+                declaration = str(member if member_pattern == "ABSOLUTE_MEMBER"
+                                  else member.parent / "*")
+                (execution / "Cargo.toml").write_text(
+                    '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                    f'[workspace]\nmembers=["members/other", "{declaration}"]\n')
+                subprocess.run(["git", "-C", str(execution), "add", "-A"], check=True)
+                source = json.loads(self._cargo_metadata_offline(execution / "Cargo.toml").stdout)
+                self.assertIn("kept", {package["name"] for package in source["packages"]})
+                with patch("scripts.check_downstream_compatibility._workspace_glob_manifests") as scan:
+                    with self.assertRaisesRegex(
+                            ValueError,
+                            rf"absolute workspace member.*{execution / 'Cargo.toml'}.*{declaration}.*relative"):
+                        discover_local_repositories(execution / "Cargo.toml", parent, execution)
+                    scan.assert_not_called()
+
+    def test_cargo_1_94_workspace_glob_collects_tracked_sibling_members_and_dev_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            external = self.make_input_repository(parent / "rs-external", "external")
+            member_dev = self.make_input_repository(parent / "rs-member-dev", "member-dev")
+            (execution / "Cargo.toml").write_text(
+                '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                '[workspace]\nmembers=["fixture", "../rs-external/leaf-*"]\n')
+            fixture = execution / "fixture"
+            fixture.mkdir()
+            (fixture / "Cargo.toml").write_text(
+                '[package]\nname="fixture"\nversion="0.1.0"\nedition="2021"\n')
+            (fixture / "src").mkdir()
+            (fixture / "src/lib.rs").write_text("")
+            leaf = external / "leaf-one"
+            leaf.mkdir()
+            (leaf / "Cargo.toml").write_text(
+                '[package]\nname="leaf-one"\nversion="0.1.0"\nedition="2021"\n'
+                'workspace="../../rs-execution"\n'
+                f'[dev-dependencies]\nmember-dev={{path="{os.path.relpath(member_dev, leaf)}"}}\n')
+            (leaf / "src").mkdir()
+            (leaf / "src/lib.rs").write_text("")
+            unrelated = external / "other"
+            unrelated.mkdir()
+            (unrelated / "Cargo.toml").write_text(
+                '[package]\nname="other"\nversion="0.1.0"\nedition="2021"\n')
+            untracked = external / "untracked" / "leaf"
+            untracked.mkdir(parents=True)
+            (untracked / "Cargo.toml").write_text(
+                '[package]\nname="leaf-untracked"\nversion="0.1.0"\nedition="2021"\n')
+            (execution / "Cargo.lock").write_text("")
+            subprocess.run(["git", "-C", str(execution), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(external), "add", "leaf-one/Cargo.toml",
+                            "leaf-one/src/lib.rs", "other/Cargo.toml"], check=True)
+
+            source = json.loads(self._cargo_metadata_offline(execution / "Cargo.toml").stdout)
+            self._cargo_metadata_offline(execution / "Cargo.toml", locked=True)
+            source_workspace_members = {package["name"] for package in source["packages"]
+                                        if package["id"] in source["workspace_members"]}
+            self.assertEqual(source_workspace_members, {"execution", "fixture", "leaf-one"})
+            discovered = set(discover_local_repositories(execution / "Cargo.toml", parent, execution))
+            self.assertEqual(discovered, {execution.resolve(), external.resolve(), member_dev.resolve()})
+            snapshot_root = base / "snapshot/siblings"
+            for repository in discovered:
+                copy_tracked_source(repository, snapshot_root / repository.relative_to(parent))
+            snapshot_manifest = snapshot_root / execution.name / "Cargo.toml"
+            snapshot = json.loads(self._cargo_metadata_offline(snapshot_manifest, locked=True).stdout)
+            snapshot_members = {package["name"] for package in snapshot["packages"]
+                                if package["id"] in snapshot["workspace_members"]}
+            self.assertEqual(snapshot_members, source_workspace_members)
+            self.assertEqual({package["name"] for package in snapshot["packages"]},
+                             {"execution", "fixture", "leaf-one", "member-dev"})
+            self.assertFalse((snapshot_root / "rs-external/untracked/leaf/Cargo.toml").exists())
+
+    def test_workspace_glob_fixed_prefix_outside_sibling_boundary_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            (base / "outside").mkdir()
+            (execution / "Cargo.toml").write_text(
+                '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                '[workspace]\nmembers=["../../outside/*"]\n')
+            subprocess.run(["git", "-C", str(execution), "add", "Cargo.toml"], check=True)
+            with self.assertRaisesRegex(ValueError,
+                                        r"workspace member glob.*Cargo.toml.*escapes sibling boundary"):
+                discover_local_repositories(execution / "Cargo.toml", parent, execution)
+
+    def test_workspace_glob_rejects_tracked_manifest_symlink_outside_sibling_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            external = self.make_input_repository(parent / "rs-external", "external")
+            (execution / "Cargo.toml").write_text(
+                '[workspace]\nmembers=["../rs-external/leaf-*"]\n')
+            escaped_manifest = base / "outside-Cargo.toml"
+            escaped_manifest.write_text(
+                '[package]\nname="escaped"\nversion="0.1.0"\nedition="2021"\n')
+            linked = external / "leaf-escape"
+            linked.mkdir()
+            (linked / "Cargo.toml").symlink_to(escaped_manifest)
+            subprocess.run(["git", "-C", str(execution), "add", "Cargo.toml"], check=True)
+            subprocess.run(["git", "-C", str(external), "add", "leaf-escape/Cargo.toml"],
+                           check=True)
+            with self.assertRaisesRegex(
+                    ValueError,
+                    r"workspace member glob.*resolves outside sibling boundary"):
+                discover_local_repositories(execution / "Cargo.toml", parent, execution)
+
+    def test_workspace_glob_respects_literal_exclude_for_sibling_members(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            external = self.make_input_repository(parent / "rs-external", "external")
+            (execution / "Cargo.toml").write_text(
+                '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                '[workspace]\nmembers=["../rs-external/leaf-*"]\n'
+                'exclude=["../rs-external/leaf-excluded"]\n')
+            for name in ("leaf-kept", "leaf-excluded"):
+                member = external / name
+                member.mkdir()
+                (member / "Cargo.toml").write_text(
+                    f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2021"\n'
+                    'workspace="../../rs-execution"\n')
+                (member / "src").mkdir()
+                (member / "src/lib.rs").write_text("")
+            (execution / "Cargo.lock").write_text("")
+            subprocess.run(["git", "-C", str(execution), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(external), "add", "leaf-kept/Cargo.toml",
+                            "leaf-kept/src/lib.rs", "leaf-excluded/Cargo.toml",
+                            "leaf-excluded/src/lib.rs"], check=True)
+
+            root_data = __import__("tomllib").loads((execution / "Cargo.toml").read_text())
+            members = _workspace_member_manifests(execution, root_data, parent)
+            member_paths = {manifest.parent.resolve() for manifest in members}
+            self.assertIn((execution / "Cargo.toml").parent.resolve(), member_paths)
+            self.assertIn((external / "leaf-kept").resolve(), member_paths)
+            self.assertNotIn((external / "leaf-excluded").resolve(), member_paths)
+
+    def test_cargo_1_94_crates_io_registry_spellings_share_patch_identity(self):
+        index = "https://github.com/rust-lang/crates.io-index"
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            dependency = self.make_input_repository(parent / "rs-config-dependency", "patched")
+            manifest = execution / "Cargo.toml"
+            manifest.write_text(
+                '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\npatched="0.1.0"\n'
+                f'[patch."{index}"]\npatched={{path="../missing-old-patch"}}\n')
+            cargo_dir = execution / ".cargo"
+            cargo_dir.mkdir()
+            (cargo_dir / "config.toml").write_text(
+                '[patch.crates-io]\npatched={path="../rs-config-dependency"}\n')
+            (execution / "Cargo.lock").write_text("")
+            subprocess.run(["git", "-C", str(execution), "add", "-A"], check=True)
+
+            cargo = subprocess.run(
+                ["cargo", "+1.94.0", "metadata", "--format-version", "1", "--offline",
+                 "--manifest-path", str(manifest)], cwd=execution, capture_output=True,
+                text=True, check=False)
+            self.assertEqual(cargo.returncode, 0, cargo.stderr)
+            cargo_graph = json.loads(cargo.stdout)
+            patched = next(package for package in cargo_graph["packages"]
+                           if package["name"] == "patched")
+            self.assertEqual(Path(patched["manifest_path"]).resolve(), dependency / "Cargo.toml")
+            discovered = set(discover_local_repositories(manifest, parent, execution))
+            self.assertEqual(discovered, {execution.resolve(), dependency.resolve()})
+            snapshot_root = base / "snapshot/siblings"
+            for repository in discovered:
+                copy_tracked_source(repository, snapshot_root / repository.relative_to(parent))
+            snapshot = json.loads(self._cargo_metadata_offline(
+                snapshot_root / execution.name / "Cargo.toml", locked=True).stdout)
+            snapshot_patch = next(package for package in snapshot["packages"]
+                                  if package["name"] == "patched")
+            self.assertEqual(Path(snapshot_patch["manifest_path"]).resolve(),
+                             snapshot_root / dependency.name / "Cargo.toml")
+
+            for registry in ("crates-io", index):
+                data = {"patch": {registry: {"patched": {"path": "../patch"}}}}
+                declarations = list(_manifest_patch_declarations(manifest, data))
+                self.assertEqual(declarations, [(('crates-io', 'patched'), '../patch')])
+                self.assertEqual(list(_config_patch_declarations(manifest, data)),
+                                 [(('crates-io', 'patched'), {"path": "../patch"})])
+            other = {"patch": {"https://example.invalid/index": {"patched": {"path": "x"}},
+                               "https://example.invalid/other": {"patched": {"path": "y"}}}}
+            self.assertEqual([key for key, _ in _manifest_patch_declarations(manifest, other)],
+                             [("https://example.invalid/index", "patched"),
+                              ("https://example.invalid/other", "patched")])
+
+    def test_core_cli_patch_exception_uses_normalized_registry_identity(self):
+        index = "https://github.com/rust-lang/crates.io-index"
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            core = self.make_input_repository(parent / "rs-core", "qubit-event-bus")
+            manifest = execution / "Cargo.toml"
+            manifest.write_text(
+                '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\nqubit-event-bus="0.1.0"\n'
+                f'[patch."{index}"]\nqubit-event-bus={{path="../missing-old-core"}}\n')
+            (execution / "Cargo.lock").write_text("")
+            subprocess.run(["git", "-C", str(execution), "add", "-A"], check=True)
+            self.assertEqual(cargo_config(core)[1],
+                             f'patch.crates-io.qubit-event-bus.path="{core}"')
+            cargo = subprocess.run(
+                ["cargo", "+1.94.0", "metadata", "--format-version", "1", "--offline",
+                 "--manifest-path", str(manifest), *cargo_config(core)], cwd=execution,
+                capture_output=True, text=True, check=False)
+            self.assertEqual(cargo.returncode, 0, cargo.stderr)
+            graph = json.loads(cargo.stdout)
+            core_package = next(package for package in graph["packages"]
+                                if package["name"] == "qubit-event-bus")
+            self.assertEqual(Path(core_package["manifest_path"]).resolve(), core / "Cargo.toml")
+            cli_patches = {(registry, name): str(path)
+                           for registry, name, path in _cargo_config_patch_declarations(core)}
+            discovered = discover_local_repositories(
+                manifest, parent, execution, cli_patches=cli_patches)
+            self.assertEqual(discovered, [execution.resolve()])
 
     def test_cargo_1_94_explicit_cross_sibling_member_contributes_dev_inputs(self):
         with tempfile.TemporaryDirectory() as directory:
