@@ -194,6 +194,9 @@ def _manifest_paths(data):
     for target in data.get("target", {}).values():
         for section in ("dependencies", "dev-dependencies", "build-dependencies"):
             yield from _path_entries(target.get(section, {}))
+
+
+def _manifest_patch_paths(data):
     yield from _path_entries(data.get("patch", {}))
 
 
@@ -361,6 +364,7 @@ def _cargo_config_paths(manifest, source_root):
                 candidate = current / ".cargo" / name
                 if candidate.is_file() and candidate.relative_to(source_root) in tracked_files:
                     configs.append(candidate)
+                    break
         if current == source_root or current.parent == current:
             break
         current = current.parent
@@ -397,6 +401,20 @@ def discover_local_repositories(manifest, sibling_root, source_root=None):
     pending = [manifest]
     scanned = set()
     import tomllib
+
+    try:
+        initial_data = tomllib.loads(manifest.read_text())
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise ValueError(f"cannot read local dependency manifest {manifest}: {error}") from error
+    initial_workspace = _workspace_root(manifest, initial_data)
+    initial_root = initial_workspace / "Cargo.toml" if initial_workspace else manifest
+    try:
+        initial_root_data = (initial_data if initial_root == manifest else
+                             tomllib.loads(initial_root.read_text()))
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise ValueError(f"cannot read workspace manifest {initial_root}: {error}") from error
+    pending.extend((initial_root, relative, initial_root.parent)
+                   for relative in _manifest_patch_paths(initial_root_data))
 
     config_paths = _cargo_config_paths(manifest, source_root)
     effective_config_patches = {}
@@ -442,11 +460,6 @@ def discover_local_repositories(manifest, sibling_root, source_root=None):
                     workspace_data = tomllib.loads(root_manifest.read_text())
                 except (OSError, tomllib.TOMLDecodeError) as error:
                     raise ValueError(f"cannot read workspace manifest {root_manifest}: {error}") from error
-                # Root dependencies and patch declarations can themselves
-                # contribute paths. Only the member's inherited dependencies
-                # are selected from workspace.dependencies below.
-                for relative in _manifest_paths({"patch": workspace_data.get("patch", {})}):
-                    pending.append((root_manifest, relative, workspace_root))
         paths = [(relative, current.parent, current) for relative in _manifest_paths(data)]
         for relative, base, declaration in paths:
             pending.append((declaration, relative, base))
@@ -556,6 +569,8 @@ def main():
         snapshots = {}
         copied_sources = {core: []}
         for label, source in inputs:
+            if label == "execution-services":
+                continue
             snapshot = temp_root / "sources" / label
             snapshot.parent.mkdir(parents=True, exist_ok=True)
             copy_tracked_source(source, snapshot)
