@@ -67,6 +67,47 @@ class DownstreamSourceSnapshotTests(unittest.TestCase):
             self.assertEqual(validate_tracked_config_snapshot_file(
                 root, root / "valid.toml", tracked), root / "valid.toml")
 
+    def test_config_snapshot_preserves_trailing_directory_requirement(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.make_repository(Path(temp) / "source")
+            (root / "valid.toml").write_text("[patch]\n")
+            (root / "alias.toml").symlink_to("valid.toml/")
+            subprocess.run(["git", "-C", str(root), "add", "valid.toml", "alias.toml"], check=True)
+            tracked = set(tracked_source_files(root))
+
+            self.assertEqual(validate_tracked_config_snapshot_file(
+                root, root / "valid.toml", tracked), root / "valid.toml")
+            self.assertIsNone(validate_tracked_config_snapshot_file(
+                root, root / "valid.toml", tracked, require_directory=True))
+            self.assertIsNone(validate_tracked_config_snapshot_file(
+                root, root / "alias.toml", tracked))
+
+    def test_copy_and_discovery_members_skip_children_beneath_replaced_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.make_repository(Path(temp) / "source")
+            (root / "replaced").mkdir()
+            (root / "replaced/child.toml").write_text("tracked child\n")
+            subprocess.run(["git", "-C", str(root), "add", "replaced"], check=True)
+            import shutil
+            shutil.rmtree(root / "replaced")
+            (root / "replaced").write_text("now a regular file\n")
+            destination = Path(temp) / "snapshot"
+            self.assertIsNone(validate_tracked_config_snapshot_file(
+                root, root / "replaced/child.toml", set(tracked_source_files(root))))
+
+            copy_tracked_source(root, destination)
+
+            self.assertFalse((destination / "replaced").exists())
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "named pipes are unavailable")
+    def test_copy_still_rejects_tracked_path_replaced_by_fifo(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.make_repository(Path(temp) / "source")
+            os.mkfifo(root / "deleted.rs")
+
+            with self.assertRaisesRegex(ValueError, "unsupported tracked filesystem object: deleted.rs"):
+                copy_tracked_source(root, Path(temp) / "snapshot")
+
     @unittest.skipUnless(hasattr(os, "symlink"), "symbolic links are unavailable")
     def test_config_snapshot_resolves_a_tracked_directory_alias_before_dotdot(self):
         with tempfile.TemporaryDirectory() as temp:
