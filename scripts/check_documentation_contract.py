@@ -110,13 +110,25 @@ def check(root, package_list):
         except (OSError, UnicodeError) as error:
             errors.append((document, f"cannot read document: {error}"))
             continue
-        for line_number, _kind, destination in markdown_resource_lines(text):
+        for line_number, kind, destination in markdown_resource_lines(text):
             parts = _url_parts(document, line_number, destination, errors)
             if parts is None:
                 continue
             local = normalized_local_path(document, destination, parts)
-            if local is not None and local not in packaged:
-                errors.append((document, f"local link target {local} is not included in the Cargo package list"))
+            if local is not None:
+                target = root.joinpath(*PurePosixPath(local).parts)
+                is_examples_directory = (
+                    kind == "link"
+                    and (local == "examples" or local.startswith("examples/"))
+                    and target.is_dir()
+                )
+                included = (
+                    any(path.startswith(local.rstrip("/") + "/") for path in packaged)
+                    if is_examples_directory else local in packaged
+                )
+                if not included:
+                    errors.append((document,
+                                   f"local link target {local} is not included in the Cargo package list"))
     _print_errors(errors)
     ok = not errors
     ok = check_explicit_source_links(root) and ok
@@ -182,7 +194,7 @@ def check_explicit_source_links(root):
         except (OSError, UnicodeError) as error:
             errors.append((document, f"cannot read document for source links: {error}"))
             continue
-        for line_number, _kind, destination in markdown_resource_lines(text):
+        for line_number, kind, destination in markdown_resource_lines(text):
             parts = _url_parts(document, line_number, destination, errors)
             if parts is None:
                 continue
@@ -203,7 +215,12 @@ def check_explicit_source_links(root):
             except (OSError, RuntimeError, ValueError):
                 errors.append((document, f"source link target {raw} escapes the repository"))
                 continue
-            if not candidate.is_file():
+            is_examples_directory = (
+                kind == "link"
+                and (relative == "examples" or relative.startswith("examples/"))
+                and candidate.is_dir()
+            )
+            if not candidate.is_file() and not is_examples_directory:
                 errors.append((document, f"source link target {relative} does not exist as a file"))
     _print_errors(errors)
     return not errors

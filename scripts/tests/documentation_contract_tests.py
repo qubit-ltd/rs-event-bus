@@ -268,6 +268,71 @@ class DocumentationContractTests(unittest.TestCase):
             "[example](../examples/local_minimal.rs#main)\n", encoding="utf-8")
         self.assertTrue(checker.check(self.root, self.listing))
 
+    def test_example_directory_links_require_packaged_descendant_files(self):
+        examples = self.root / "examples"
+        (examples / "nested").mkdir(parents=True)
+        (examples / "nested" / "demo.rs").write_text("// example\n", encoding="utf-8")
+        self._migration_pages()
+        self.listing.write_text(
+            "scripts/tool.py\ndoc/migration.md\ndoc/migration.zh_CN.md\n"
+            "examples/nested/demo.rs\n", encoding="utf-8")
+        (self.root / "README.md").write_text(
+            "[Migration](doc/migration.md) [Examples](examples/) "
+            "[Nested](examples/nested)\n", encoding="utf-8")
+        (self.root / "README.zh_CN.md").write_text(
+            "[迁移](doc/migration.zh_CN.md) [示例](examples) "
+            "[嵌套示例](examples/nested/)\n", encoding="utf-8")
+        (self.root / "doc/design.md").write_text(
+            "[Nested examples](../examples/nested)\n", encoding="utf-8")
+        self.assertTrue(checker.check(self.root, self.listing))
+
+    def test_example_directory_links_reject_missing_unpacked_and_prefix_matches(self):
+        examples = self.root / "examples"
+        (examples / "nested").mkdir(parents=True)
+        (examples / "nested" / "demo.rs").write_text("// example\n", encoding="utf-8")
+        (examples / "nested_extra").mkdir()
+        (examples / "nested_extra" / "demo.rs").write_text("// example\n", encoding="utf-8")
+        self._migration_pages()
+        self.listing.write_text(
+            "scripts/tool.py\ndoc/migration.md\ndoc/migration.zh_CN.md\n"
+            "examples/nested_extra/demo.rs\n", encoding="utf-8")
+        (self.root / "README.md").write_text(
+            "[Migration](doc/migration.md) [Unpacked](examples/nested) "
+            "[Missing](examples/missing)\n",
+            encoding="utf-8")
+        output = StringIO()
+        with redirect_stderr(output):
+            self.assertFalse(checker.check(self.root, self.listing))
+        diagnostics = output.getvalue()
+        self.assertIn("examples/nested is not included in the Cargo package list", diagnostics)
+        self.assertIn("examples/missing is not included in the Cargo package list", diagnostics)
+        output = StringIO()
+        with redirect_stderr(output):
+            self.assertFalse(checker.check_explicit_source_links(self.root))
+        self.assertIn("examples/missing does not exist", output.getvalue())
+
+    def test_example_directory_images_and_escaping_links_are_rejected(self):
+        (self.root / "examples" / "nested").mkdir(parents=True)
+        (self.root / "examples" / "nested" / "demo.rs").write_text(
+            "// example\n", encoding="utf-8")
+        self._migration_pages()
+        (self.root / "README.md").write_text(
+            "[Migration](doc/migration.md) ![directory](examples/nested)\n",
+            encoding="utf-8")
+        (self.root / "doc/design.md").write_text(
+            "[outside](../../examples/nested)\n", encoding="utf-8")
+        self.listing.write_text(
+            "scripts/tool.py\ndoc/migration.md\ndoc/migration.zh_CN.md\n"
+            "examples/nested/demo.rs\n", encoding="utf-8")
+        output = StringIO()
+        with redirect_stderr(output):
+            self.assertFalse(checker.check(self.root, self.listing))
+        self.assertIn("examples/nested", output.getvalue())
+        output = StringIO()
+        with redirect_stderr(output):
+            self.assertFalse(checker.check_explicit_source_links(self.root))
+        self.assertIn("escapes the repository", output.getvalue())
+
     def test_explicit_source_link_that_escapes_repository_is_rejected(self):
         (self.root / "doc/design.md").write_text(
             "[outside](../../outside.rs)\n", encoding="utf-8")
