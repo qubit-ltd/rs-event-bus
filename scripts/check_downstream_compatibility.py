@@ -646,25 +646,29 @@ def _cargo_config_paths(manifest, source_root):
 
 def _cargo_config_sources(config_path, source_root, *, stack=()):
     """Expand tracked, repository-local Cargo config includes before their parent."""
-    config_path = Path(os.path.abspath(config_path))
+    config_path = Path(config_path)
     source_root = Path(source_root).resolve()
+    if not config_path.is_absolute():
+        config_path = source_root / config_path
     try:
         config_path.relative_to(source_root)
     except ValueError as error:
         raise ValueError(f"Cargo config is outside its source repository: {config_path}") from error
-    if config_path in stack:
-        chain = " -> ".join(map(str, (*stack, config_path)))
-        raise ValueError(f"Cargo config include cycle: {chain}")
     tracked = _tracked_files(source_root)
     try:
-        validate_tracked_snapshot_file(source_root, config_path, tracked)
+        visible_config = validate_tracked_config_snapshot_file(source_root, config_path, tracked)
+        if visible_config is None:
+            raise FileNotFoundError(f"Cargo config is not present in tracked source view: {config_path}")
     except FileNotFoundError:
         raise
     except (OSError, ValueError) as error:
         raise ValueError(f"Cargo config is not snapshot-safe: {config_path}: {error}") from error
+    if visible_config in stack:
+        chain = " -> ".join(map(str, (*stack, visible_config)))
+        raise ValueError(f"Cargo config include cycle: {chain}")
     import tomllib
     try:
-        data = tomllib.loads(_read_manifest(config_path))
+        data = tomllib.loads(_read_manifest(visible_config))
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise ValueError(f"cannot read Cargo config {config_path}: {error}") from error
     includes = data.get("include", [])
@@ -687,7 +691,7 @@ def _cargo_config_sources(config_path, source_root, *, stack=()):
         declared = Path(include)
         if declared.is_absolute():
             raise ValueError(f"absolute Cargo config include in {config_path}: {include}")
-        included = Path(os.path.abspath(config_path.parent / declared))
+        included = config_path.parent / declared
         try:
             included.relative_to(source_root)
         except ValueError as error:
@@ -697,8 +701,10 @@ def _cargo_config_sources(config_path, source_root, *, stack=()):
             visible_include = validate_tracked_config_snapshot_file(
                 source_root, included, tracked)
         except (OSError, ValueError) as error:
+            reason = str(error).replace(
+                "link escapes owning repository", "link escapes source repository")
             raise ValueError(
-                f"Cargo config include is not snapshot-safe in {config_path}: {include}: {error}") from error
+                f"Cargo config include is not snapshot-safe in {config_path}: {include}: {reason}") from error
         if visible_include is None and optional:
             continue
         if visible_include is None:
@@ -710,13 +716,13 @@ def _cargo_config_sources(config_path, source_root, *, stack=()):
                 f"required Cargo config include missing in {config_path}: {include}")
         try:
             sources.extend(_cargo_config_sources(
-                included, source_root, stack=(*stack, config_path)))
+                included, source_root, stack=(*stack, visible_config)))
         except FileNotFoundError as error:
             if optional:
                 continue
             raise ValueError(
                 f"required Cargo config include missing in {config_path}: {include}") from error
-    sources.append(config_path)
+    sources.append((config_path, visible_config))
     return sources
 
 
@@ -918,9 +924,18 @@ def discover_local_repositories(manifest, sibling_root, source_root=None, *,
     expanded_config_paths = []
     for config_path in reversed(config_paths):
         expanded_config_paths.extend(_cargo_config_sources(config_path, source_root))
-    for config_path in expanded_config_paths:
+    for config_source in expanded_config_paths:
+        if isinstance(config_source, tuple):
+            config_path, physical_config_path = config_source
+        else:
+            # Compatibility with callers that replace the expansion helper.
+            config_path = Path(config_source)
+            physical_config_path = validate_tracked_config_snapshot_file(
+                source_root, config_path)
+            if physical_config_path is None:
+                continue
         try:
-            config_data = tomllib.loads(_read_manifest(config_path))
+            config_data = tomllib.loads(_read_manifest(physical_config_path))
         except (OSError, tomllib.TOMLDecodeError) as error:
             raise ValueError(f"cannot read Cargo config {config_path}: {error}") from error
         # Cargo merges patch package tables by key and field. A closer config

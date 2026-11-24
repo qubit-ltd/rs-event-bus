@@ -2054,7 +2054,177 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                 with self.subTest(include=include), self.assertRaisesRegex(ValueError, message):
                     discover_local_repositories(execution / "Cargo.toml", parent, execution)
 
-    def test_optional_untracked_cargo_config_include_is_omitted_from_snapshot(self):
+    def test_cargo_config_missing_component_before_dotdot_is_not_collapsed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            cargo_dir = execution / ".cargo"
+            cargo_dir.mkdir()
+            (cargo_dir / "config.toml").write_text('include=["missing/../valid.toml"]\n')
+            (cargo_dir / "valid.toml").write_text("# Cargo should not reach this path\n")
+            subprocess.run(["git", "-C", str(execution), "add", ".cargo"], check=True)
+
+            cargo = subprocess.run(
+                ["cargo", "+1.94.0", "metadata", "--format-version", "1", "--offline",
+                 "--manifest-path", str(execution / "Cargo.toml")],
+                cwd=execution, capture_output=True, text=True, check=False)
+            self.assertNotEqual(cargo.returncode, 0, cargo.stdout)
+            with self.assertRaisesRegex(ValueError, "required Cargo config include missing"):
+                discover_local_repositories(execution / "Cargo.toml", parent, execution)
+            snapshot = Path(directory) / "snapshot" / execution.name
+            copy_tracked_source(execution, snapshot)
+            snapshot_cargo = subprocess.run(
+                ["cargo", "+1.94.0", "metadata", "--format-version", "1", "--offline",
+                 "--manifest-path", str(snapshot / "Cargo.toml")],
+                cwd=snapshot, capture_output=True, text=True, check=False)
+            self.assertNotEqual(snapshot_cargo.returncode, 0, snapshot_cargo.stdout)
+
+    def test_cargo_config_include_cycle_uses_physical_file_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory) / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            cargo_dir = execution / ".cargo"
+            (cargo_dir / "dir").mkdir(parents=True)
+            (cargo_dir / "dir/marker").write_text("tracked directory\n")
+            (cargo_dir / "config.toml").write_text('include=["dir/../config.toml"]\n')
+            subprocess.run(["git", "-C", str(execution), "add", ".cargo"], check=True)
+
+            cargo = subprocess.run(
+                ["cargo", "+1.94.0", "metadata", "--format-version", "1", "--offline",
+                 "--manifest-path", str(execution / "Cargo.toml")],
+                cwd=execution, capture_output=True, text=True, check=False)
+            self.assertNotEqual(cargo.returncode, 0, cargo.stdout)
+            with self.assertRaisesRegex(ValueError, "Cargo config include cycle"):
+                discover_local_repositories(execution / "Cargo.toml", parent, execution)
+
+    def test_cargo_config_snapshot_matches_cargo_path_component_semantics(self):
+        def run_fixture(case, configure, expected_patch, *, cargo_succeeds=True,
+                        expected_sources=None):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                parent = base / "siblings"
+                parent.mkdir()
+                execution = self.make_input_repository(parent / "rs-execution", "execution")
+                first = self.make_input_repository(parent / "rs-first", "patched")
+                second = self.make_input_repository(parent / "rs-second", "patched")
+                for repository in (first, second):
+                    (repository / "Cargo.toml").write_text(
+                        '[package]\nname="patched"\nversion="0.1.0"\nedition="2021"\n')
+                    subprocess.run(["git", "-C", str(repository), "add", "Cargo.toml"], check=True)
+                (execution / "Cargo.toml").write_text(
+                    '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                    '[dependencies]\npatched="=0.1.0"\n')
+                (execution / "Cargo.lock").write_text("")
+                cargo_dir = execution / ".cargo"
+                cargo_dir.mkdir()
+                configure(execution, cargo_dir, first, second)
+                subprocess.run(["git", "-C", str(execution), "add", "-A"], check=True)
+
+                cargo = subprocess.run(
+                    ["cargo", "+1.94.0", "metadata", "--format-version", "1", "--offline",
+                     "--manifest-path", str(execution / "Cargo.toml")],
+                    cwd=execution, capture_output=True, text=True, check=False)
+                if not cargo_succeeds:
+                    self.assertNotEqual(cargo.returncode, 0, cargo.stdout)
+                    with self.assertRaisesRegex(ValueError, "Cargo config include"):
+                        discover_local_repositories(execution / "Cargo.toml", parent, execution)
+                    snapshot = base / "snapshot" / execution.name
+                    copy_tracked_source(execution, snapshot)
+                    snapshot_cargo = subprocess.run(
+                        ["cargo", "+1.94.0", "metadata", "--format-version", "1", "--offline",
+                         "--manifest-path", str(snapshot / "Cargo.toml")],
+                        cwd=snapshot, capture_output=True, text=True, check=False)
+                    self.assertNotEqual(snapshot_cargo.returncode, 0, snapshot_cargo.stdout)
+                    return
+                self.assertEqual(cargo.returncode, 0, cargo.stderr)
+                self._cargo_metadata_offline(execution / "Cargo.toml", locked=True)
+                source_graph = json.loads(cargo.stdout)
+                source_selected = Path(next(item["manifest_path"] for item in source_graph["packages"]
+                                            if item["name"] == "patched"))
+                expected_patch_root = parent / expected_patch
+                self.assertEqual(source_selected, expected_patch_root / "Cargo.toml")
+
+                discovered = set(discover_local_repositories(
+                    execution / "Cargo.toml", parent, execution))
+                expected = {execution.resolve(), expected_patch_root.resolve()}
+                self.assertEqual(discovered, expected_sources or expected)
+                snapshots = base / "snapshot" / "siblings"
+                for repository in discovered:
+                    copy_tracked_source(repository, snapshots / repository.name)
+                snapshot_manifest = snapshots / execution.name / "Cargo.toml"
+                snapshot_graph = json.loads(self._cargo_metadata_offline(
+                    snapshot_manifest, locked=True).stdout)
+                selected = Path(next(item["manifest_path"] for item in snapshot_graph["packages"]
+                                     if item["name"] == "patched"))
+                self.assertEqual(selected, snapshots / expected_patch / "Cargo.toml")
+
+        def ordinary_parent_dotdot(execution, cargo_dir, first, second):
+            (cargo_dir / "dir").mkdir()
+            (cargo_dir / "dir/marker").write_text("tracked directory\n")
+            (cargo_dir / "valid.toml").write_text(
+                '[patch.crates-io]\npatched={path="../../../rs-first"}\n')
+            (cargo_dir / "config.toml").write_text('include=["dir/../valid.toml"]\n')
+
+        def alias_parent_dotdot(execution, cargo_dir, first, second):
+            (cargo_dir / "nested/inner").mkdir(parents=True)
+            (cargo_dir / "nested/inner/marker").write_text("tracked directory\n")
+            (cargo_dir / "alias").symlink_to("nested/inner", target_is_directory=True)
+            (cargo_dir / "valid.toml").write_text(
+                '[patch.crates-io]\npatched={path="../../../rs-first"}\n')
+            (cargo_dir / "nested/valid.toml").write_text(
+                '[patch.crates-io]\npatched={path="../../../rs-second"}\n')
+            (cargo_dir / "config.toml").write_text('include=["alias/../valid.toml"]\n')
+
+        def alias_direct(execution, cargo_dir, first, second):
+            (cargo_dir / "nested/inner").mkdir(parents=True)
+            (cargo_dir / "nested/inner/marker").write_text("tracked directory\n")
+            (cargo_dir / "alias").symlink_to("nested/inner", target_is_directory=True)
+            (cargo_dir / "nested/inner/valid.toml").write_text(
+                '[patch.crates-io]\npatched={path="../../rs-second"}\n')
+            (cargo_dir / "config.toml").write_text(
+                'include=[{path="alias/valid.toml", optional=true}]\n')
+
+        def alias_direct_required(execution, cargo_dir, first, second):
+            alias_direct(execution, cargo_dir, first, second)
+            (cargo_dir / "config.toml").write_text('include=["alias/valid.toml"]\n')
+
+        def optional_non_directory(execution, cargo_dir, first, second):
+            (cargo_dir / "regular").write_text("file, not directory\n")
+            (cargo_dir / "valid.toml").write_text(
+                '[patch.crates-io]\npatched={path="../rs-second"}\n')
+            (cargo_dir / "config.toml").write_text(
+                'include=[{path="regular/valid.toml", optional=true}, '
+                '{path="regular/../valid.toml", optional=true}]\n')
+            manifest = execution / "Cargo.toml"
+            manifest.write_text(manifest.read_text() +
+                                '[patch.crates-io]\npatched={path="../rs-first"}\n')
+
+        def required_non_directory(execution, cargo_dir, first, second):
+            (cargo_dir / "regular").write_text("file, not directory\n")
+            (cargo_dir / "valid.toml").write_text(
+                '[patch.crates-io]\npatched={path="../rs-second"}\n')
+            (cargo_dir / "config.toml").write_text('include=["regular/../valid.toml"]\n')
+
+        def nested_include(execution, cargo_dir, first, second):
+            nested = cargo_dir / "nested"
+            nested.mkdir()
+            (nested / "first.toml").write_text('include=["second.toml"]\n')
+            (nested / "second.toml").write_text(
+                '[patch.crates-io]\npatched={path="../../rs-second"}\n')
+            (cargo_dir / "config.toml").write_text('include=["nested/first.toml"]\n')
+
+        run_fixture("ordinary dir/../valid.toml", ordinary_parent_dotdot, "rs-first")
+        run_fixture("directory alias/../valid.toml", alias_parent_dotdot, "rs-second")
+        run_fixture("directory alias/valid.toml optional", alias_direct, "rs-second")
+        run_fixture("directory alias/valid.toml required", alias_direct_required, "rs-second")
+        run_fixture("optional non-directory candidates", optional_non_directory, "rs-first")
+        run_fixture("required non-directory candidate", required_non_directory, None,
+                    cargo_succeeds=False)
+        run_fixture("nested relative includes", nested_include, "rs-second")
+
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             parent = base / "siblings"
