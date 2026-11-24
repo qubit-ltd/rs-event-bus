@@ -5259,6 +5259,14 @@ fn test_partial_dead_letter_admission_is_not_republished() {
 #[test]
 fn test_unconfirmed_dead_letter_send_is_not_republished_or_settled() {
     let (bus, backend) = create_bus();
+    let source_event_id = EventId::new("unconfirmed-dead-letter-source").expect("valid source event ID");
+    let observed_event_id = source_event_id.clone();
+    let (failure_tx, failure_rx) = mpsc::sync_channel(1);
+    let failure_observer = bus.observe_diagnostics(move |diagnostic| {
+        if matches!(diagnostic, Diagnostic::DeliveryFailed { event_id, .. } if event_id == &observed_event_id) {
+            let _ = failure_tx.send(());
+        }
+    });
     backend.unconfirmed_publish_call(2);
     let options = SubscribeOptions::builder()
         .retry_policy(
@@ -5282,15 +5290,19 @@ fn test_unconfirmed_dead_letter_send_is_not_republished_or_settled() {
             },
         )
         .expect("subscription starts");
-    let _ = bus
-        .publish(request("unconfirmed-dead-letter-source".into()))
-        .expect("original publish succeeds");
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while backend.publish_calls() < 2 && Instant::now() < deadline {
-        thread::yield_now();
-    }
+    let source = PublishRequest::builder()
+        .topic(topic())
+        .payload("unconfirmed-dead-letter-source".to_owned())
+        .event_id(source_event_id)
+        .build()
+        .expect("valid source publish request");
+    let _ = bus.publish(source).expect("original publish succeeds");
+    failure_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("source delivery failure follows the terminal decision");
     assert_eq!(backend.publish_calls(), 2, "uncertain DLQ send is not retried");
     assert!(backend.settlement_dispositions().is_empty(), "source remains unsettled");
+    drop(failure_observer);
     subscription.cancel().expect("cancel");
     let _ = bus.shutdown(ShutdownMode::Immediate).expect("shutdown");
 }
@@ -5298,6 +5310,14 @@ fn test_unconfirmed_dead_letter_send_is_not_republished_or_settled() {
 #[test]
 fn test_dead_letter_forward_exhaustion_leaves_the_source_token_unsettled() {
     let (bus, backend) = create_bus();
+    let source_event_id = EventId::new("dead-letter-exhaustion-source").expect("valid source event ID");
+    let observed_event_id = source_event_id.clone();
+    let (failure_tx, failure_rx) = mpsc::sync_channel(1);
+    let failure_observer = bus.observe_diagnostics(move |diagnostic| {
+        if matches!(diagnostic, Diagnostic::DeliveryFailed { event_id, .. } if event_id == &observed_event_id) {
+            let _ = failure_tx.send(());
+        }
+    });
     backend.fail_publish_call(2);
     let options = SubscribeOptions::builder()
         .retry_policy(
@@ -5321,13 +5341,16 @@ fn test_dead_letter_forward_exhaustion_leaves_the_source_token_unsettled() {
             },
         )
         .expect("subscription starts");
-    let _ = bus
-        .publish(request("dead-letter-me".into()))
-        .expect("original publish succeeds");
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while backend.publish_calls() < 2 && Instant::now() < deadline {
-        thread::yield_now();
-    }
+    let source = PublishRequest::builder()
+        .topic(topic())
+        .payload("dead-letter-me".to_owned())
+        .event_id(source_event_id)
+        .build()
+        .expect("valid source publish request");
+    let _ = bus.publish(source).expect("original publish succeeds");
+    failure_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("source delivery failure follows the terminal decision");
     assert_eq!(
         backend.publish_calls(),
         2,
@@ -5337,6 +5360,7 @@ fn test_dead_letter_forward_exhaustion_leaves_the_source_token_unsettled() {
         backend.settlement_dispositions().is_empty(),
         "no Accept, Reject, or Retry is sent for the source"
     );
+    drop(failure_observer);
     let report = bus
         .shutdown(ShutdownMode::Immediate)
         .expect("shutdown closes the stopped subscription");
