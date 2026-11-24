@@ -100,11 +100,15 @@ def validate_tracked_snapshot_file(source, declaration, tracked=None):
             continue
         if pending and not current.is_dir():
             raise FileNotFoundError(f"missing path component at {label}")
+    try:
+        target_stat = current.stat()
+    except FileNotFoundError as error:
+        raise FileNotFoundError(f"final file is missing: {current}") from error
+    if not stat.S_ISREG(target_stat.st_mode):
+        raise ValueError(f"final target is not a regular file: {current}")
     target_rel = current.relative_to(source)
     if target_rel not in tracked:
         raise ValueError(f"final file is not tracked: {target_rel.as_posix()}")
-    if not current.is_file():
-        raise FileNotFoundError(f"final file is missing: {current}")
     return current
 
 

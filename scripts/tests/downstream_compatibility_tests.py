@@ -1981,7 +1981,9 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             cargo_dir = execution / ".cargo"
             nested = cargo_dir / "nested"
             nested.mkdir(parents=True)
-            (cargo_dir / "config.toml").write_text('include=["one.toml", "nested/two.toml"]\n')
+            (cargo_dir / "dangling.toml").symlink_to("missing-target.toml")
+            (cargo_dir / "config.toml").write_text(
+                'include=[{path="dangling.toml", optional=true}, "one.toml", "nested/two.toml"]\n')
             (cargo_dir / "one.toml").write_text(
                 'include=["leaf.toml", {path="absent-optional.toml", optional=true}]\n')
             (cargo_dir / "leaf.toml").write_text(
@@ -2012,6 +2014,30 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             discovered = set(discover_local_repositories(
                 execution / "Cargo.toml", parent, execution))
             self.assertEqual(discovered, {execution.resolve(), one.resolve()})
+
+            (cargo_dir / "config.toml").write_text(
+                'include=[{path="dangling.toml", optional=false}]\n')
+            subprocess.run(["git", "-C", str(execution), "add", str(cargo_dir / "config.toml")],
+                           check=True)
+            required_dangling = subprocess.run(
+                ["cargo", "+1.94.0", "metadata", "--format-version", "1", "--offline",
+                 "--manifest-path", str(execution / "Cargo.toml")],
+                cwd=execution, capture_output=True, text=True, check=False)
+            self.assertNotEqual(required_dangling.returncode, 0, required_dangling.stdout)
+            with self.assertRaisesRegex(ValueError, "required Cargo config include missing"):
+                discover_local_repositories(execution / "Cargo.toml", parent, execution)
+
+            (cargo_dir / "cycle.toml").symlink_to("cycle.toml")
+            (cargo_dir / "config.toml").write_text(
+                'include=[{path="cycle.toml", optional=true}]\n')
+            subprocess.run(["git", "-C", str(execution), "add", "-A"], check=True)
+            cycle = subprocess.run(
+                ["cargo", "+1.94.0", "metadata", "--format-version", "1", "--offline",
+                 "--manifest-path", str(execution / "Cargo.toml")],
+                cwd=execution, capture_output=True, text=True, check=False)
+            self.assertNotEqual(cycle.returncode, 0, cycle.stdout)
+            with self.assertRaisesRegex(ValueError, "symlink cycle"):
+                discover_local_repositories(execution / "Cargo.toml", parent, execution)
 
             for include, message in (("{path=\"missing-required.toml\", optional=false}",
                                       "required Cargo config include missing"),

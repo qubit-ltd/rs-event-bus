@@ -654,6 +654,8 @@ def _cargo_config_sources(config_path, source_root, *, stack=()):
     tracked = _tracked_files(source_root)
     try:
         validate_tracked_snapshot_file(source_root, config_path, tracked)
+    except FileNotFoundError:
+        raise
     except (OSError, ValueError) as error:
         raise ValueError(f"Cargo config is not snapshot-safe: {config_path}: {error}") from error
     import tomllib
@@ -688,7 +690,14 @@ def _cargo_config_sources(config_path, source_root, *, stack=()):
         if not os.path.lexists(included):
             raise ValueError(
                 f"required Cargo config include missing in {config_path}: {include}")
-        sources.extend(_cargo_config_sources(included, source_root, stack=(*stack, config_path)))
+        try:
+            sources.extend(_cargo_config_sources(
+                included, source_root, stack=(*stack, config_path)))
+        except FileNotFoundError as error:
+            if optional:
+                continue
+            raise ValueError(
+                f"required Cargo config include missing in {config_path}: {include}") from error
     sources.append(config_path)
     return sources
 
