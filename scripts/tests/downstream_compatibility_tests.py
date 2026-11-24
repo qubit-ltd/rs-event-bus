@@ -3437,6 +3437,113 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             self.assertEqual(Path(copied_patch["manifest_path"]),
                              snapshot_root / patched.name / "Cargo.toml")
 
+    def test_tracked_cargo_directory_alias_discovers_config_patches(self):
+        for config_name in ("config", "config.toml"):
+            with self.subTest(config_name=config_name), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                parent = base / "siblings"
+                parent.mkdir()
+                execution = self.make_input_repository(parent / "rs-execution", "execution")
+                (execution / "Cargo.lock").write_text("")
+                patched = self.make_input_repository(parent / "rs-patched", "patched")
+                (patched / "Cargo.toml").write_text(
+                    '[package]\nname="patched"\nversion="0.1.0"\nedition="2021"\n')
+                subprocess.run(["git", "-C", str(patched), "add", "Cargo.toml"], check=True)
+                nested = execution / "member"
+                nested.mkdir()
+                manifest = nested / "Cargo.toml"
+                manifest.write_text(
+                    '[package]\nname="execution-member"\nversion="0.1.0"\nedition="2021"\n'
+                    '[dependencies]\npatched="=0.1.0"\n')
+                (nested / "src").mkdir()
+                (nested / "src/lib.rs").write_text("pub fn member() {}\n")
+                real_cargo_dir = execution / "cargo-config"
+                real_cargo_dir.mkdir()
+                (real_cargo_dir / config_name).write_text(
+                    '[patch.crates-io]\npatched={path="../rs-patched"}\n')
+                (execution / ".cargo").symlink_to("cargo-config", target_is_directory=True)
+                subprocess.run(["git", "-C", str(execution), "add", "Cargo.toml", ".cargo",
+                                "member/Cargo.toml", "member/src/lib.rs",
+                                f"cargo-config/{config_name}"], check=True)
+
+                source_graph = json.loads(self._cargo_metadata_offline(
+                    manifest).stdout)
+                source_patch = next(item for item in source_graph["packages"]
+                                    if item["name"] == "patched")
+                self.assertEqual(Path(source_patch["manifest_path"]), patched / "Cargo.toml")
+                discovered = set(discover_local_repositories(
+                    manifest, parent, execution))
+                self.assertEqual(discovered, {execution.resolve(), patched.resolve()})
+                snapshot_root = base / "snapshot/siblings"
+                for repository in discovered:
+                    copy_tracked_source(repository, snapshot_root / repository.name)
+                snapshot_execution = snapshot_root / execution.name
+                self.assertTrue((snapshot_execution / ".cargo").is_symlink())
+                snapshot_graph = json.loads(self._cargo_metadata_offline(
+                    snapshot_execution / "member/Cargo.toml").stdout)
+                snapshot_patch = next(item for item in snapshot_graph["packages"]
+                                      if item["name"] == "patched")
+                self.assertEqual(Path(snapshot_patch["manifest_path"]),
+                                 snapshot_root / patched.name / "Cargo.toml")
+
+    def test_tracked_cargo_directory_alias_obeys_config_precedence_and_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            (execution / "Cargo.lock").write_text("")
+            old_patch = self.make_input_repository(parent / "rs-patched-old", "patched")
+            modern_patch = self.make_input_repository(parent / "rs-patched-modern", "patched")
+            for repository in (old_patch, modern_patch):
+                (repository / "Cargo.toml").write_text(
+                    '[package]\nname="patched"\nversion="0.1.0"\nedition="2021"\n')
+                subprocess.run(["git", "-C", str(repository), "add", "Cargo.toml"], check=True)
+            (execution / "Cargo.toml").write_text(
+                '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\npatched="=0.1.0"\n')
+            real_cargo_dir = execution / "cargo-config"
+            real_cargo_dir.mkdir()
+            (real_cargo_dir / "config").write_text(
+                '[patch.crates-io]\npatched={path="../rs-patched-old"}\n')
+            (real_cargo_dir / "config.toml").write_text(
+                '[patch.crates-io]\npatched={path="../rs-patched-modern"}\n')
+            (execution / ".cargo").symlink_to("cargo-config", target_is_directory=True)
+            subprocess.run(["git", "-C", str(execution), "add", "Cargo.toml", ".cargo",
+                            "cargo-config/config", "cargo-config/config.toml"], check=True)
+
+            def selected_patch():
+                graph = json.loads(self._cargo_metadata_offline(execution / "Cargo.toml").stdout)
+                return Path(next(item for item in graph["packages"]
+                                 if item["name"] == "patched")["manifest_path"])
+
+            def assert_snapshot_patch(discovered, expected_repository, snapshot_name):
+                snapshot_root = base / snapshot_name / "siblings"
+                for repository in discovered:
+                    copy_tracked_source(repository, snapshot_root / repository.name)
+                graph = json.loads(self._cargo_metadata_offline(
+                    snapshot_root / execution.name / "Cargo.toml").stdout)
+                snapshot_patch = next(item for item in graph["packages"]
+                                      if item["name"] == "patched")
+                self.assertEqual(Path(snapshot_patch["manifest_path"]),
+                                 snapshot_root / expected_repository.name / "Cargo.toml")
+
+            self.assertEqual(selected_patch(), old_patch / "Cargo.toml")
+            discovered = set(discover_local_repositories(
+                execution / "Cargo.toml", parent, execution))
+            self.assertEqual(discovered, {execution.resolve(), old_patch.resolve()})
+            assert_snapshot_patch(discovered, old_patch, "snapshot-old-priority")
+
+            (real_cargo_dir / "config").unlink()
+            (real_cargo_dir / "config").symlink_to("missing-legacy-config")
+            subprocess.run(["git", "-C", str(execution), "add", "cargo-config/config"], check=True)
+            self.assertEqual(selected_patch(), modern_patch / "Cargo.toml")
+            discovered = set(discover_local_repositories(
+                execution / "Cargo.toml", parent, execution))
+            self.assertEqual(discovered,
+                             {execution.resolve(), modern_patch.resolve()})
+            assert_snapshot_patch(discovered, modern_patch, "snapshot-modern-fallback")
+
     def test_cargo_config_include_optional_must_be_boolean(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

@@ -647,9 +647,13 @@ def _cargo_config_paths(manifest, source_root):
     configs = []
     while True:
         if current == source_root or source_root in current.parents:
+            cargo_directory = current / ".cargo"
+            cargo_directory_tracked = (
+                cargo_directory.relative_to(source_root) in tracked_files)
             for name in ("config", "config.toml"):
-                candidate = current / ".cargo" / name
-                if candidate.relative_to(source_root) in tracked_files:
+                candidate = cargo_directory / name
+                if (candidate.relative_to(source_root) in tracked_files or
+                        cargo_directory_tracked):
                     if validate_tracked_config_snapshot_file(
                             source_root, candidate, view=view) is not None:
                         configs.append(candidate)
