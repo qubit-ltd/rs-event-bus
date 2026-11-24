@@ -9,6 +9,7 @@ from scripts.downstream_source_snapshot import copy_tracked_source
 from scripts.downstream_source_snapshot import is_tracked_snapshot_file
 from scripts.downstream_source_snapshot import tracked_source_files
 from scripts.downstream_source_snapshot import validate_tracked_snapshot_file
+from scripts.downstream_source_snapshot import validate_tracked_config_snapshot_file
 
 
 class DownstreamSourceSnapshotTests(unittest.TestCase):
@@ -43,6 +44,43 @@ class DownstreamSourceSnapshotTests(unittest.TestCase):
             self.assertFalse((destination / "deleted.rs").exists())
             self.assertFalse((destination / "untracked.rs").exists())
             self.assertFalse((destination / "target").exists())
+
+    def test_config_snapshot_classifies_missing_and_non_directory_components(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.make_repository(Path(temp) / "source")
+            (root / "valid.toml").write_text("[patch]\n")
+            (root / "regular").write_text("not a directory\n")
+            (root / "gone.toml").write_text("tracked then deleted\n")
+            subprocess.run(["git", "-C", str(root), "add", "valid.toml", "regular", "gone.toml"], check=True)
+            (root / "gone.toml").unlink()
+            (root / "empty").mkdir()
+            tracked = set(tracked_source_files(root))
+
+            self.assertIsNone(validate_tracked_config_snapshot_file(
+                root, root / "missing/../valid.toml", tracked))
+            self.assertIsNone(validate_tracked_config_snapshot_file(
+                root, root / "regular/valid.toml", tracked))
+            self.assertIsNone(validate_tracked_config_snapshot_file(
+                root, root / "gone.toml", tracked))
+            self.assertIsNone(validate_tracked_config_snapshot_file(
+                root, root / "empty/absent.toml", tracked))
+            self.assertEqual(validate_tracked_config_snapshot_file(
+                root, root / "valid.toml", tracked), root / "valid.toml")
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symbolic links are unavailable")
+    def test_config_snapshot_resolves_a_tracked_directory_alias_before_dotdot(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.make_repository(Path(temp) / "source")
+            (root / "nested/inner").mkdir(parents=True)
+            (root / "nested/inner/marker").write_text("tracked directory\n")
+            (root / "nested/valid.toml").write_text("nested config\n")
+            (root / "valid.toml").write_text("root config\n")
+            (root / "alias").symlink_to("nested/inner", target_is_directory=True)
+            subprocess.run(["git", "-C", str(root), "add", "nested", "alias", "valid.toml"], check=True)
+            tracked = set(tracked_source_files(root))
+
+            self.assertEqual(validate_tracked_config_snapshot_file(
+                root, root / "alias/../valid.toml", tracked), root / "nested/valid.toml")
 
     @unittest.skipUnless(hasattr(os, "symlink"), "symbolic links are unavailable")
     def test_copies_dangling_legacy_cargo_config_with_valid_config_toml(self):

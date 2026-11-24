@@ -70,9 +70,11 @@ def validate_tracked_config_snapshot_file(source, declaration, tracked=None):
 
 
 def _validate_tracked_snapshot_file(source, declaration, tracked=None, *, allow_missing_final=False):
-    """Validate every link hop, optionally classifying a missing final snapshot file."""
+    """Validate a path component by component as it would appear in a snapshot."""
     source = Path(source).resolve(strict=True)
-    declaration = Path(os.path.abspath(declaration))
+    declaration = Path(declaration)
+    if not declaration.is_absolute():
+        declaration = source / declaration
     try:
         relative = declaration.relative_to(source)
     except ValueError:
@@ -97,29 +99,47 @@ def _validate_tracked_snapshot_file(source, declaration, tracked=None, *, allow_
             if not _inside(current, source):
                 raise ValueError(f"link escapes owning repository at {current}")
             continue
-        current = current / part
-        rel = current.relative_to(source)
+        candidate = current / part
+        rel = candidate.relative_to(source)
         label = rel.as_posix()
-        if not _inside(current, source):
+        if not _inside(candidate, source):
             raise ValueError(f"link escapes owning repository at {label}")
-        if current.is_symlink():
+        if candidate.is_symlink():
             if rel not in tracked:
                 raise ValueError(f"untracked symlink hop: {label}")
-            if current in active_links:
+            if candidate in active_links:
                 raise ValueError(f"symlink cycle at {label}")
             link_expansions += 1
             if link_expansions > max_link_expansions:
                 raise ValueError(f"symlink expansion limit exceeded ({max_link_expansions} hops) at {label}")
-            active_links.add(current)
-            target = Path(os.readlink(current))
+            active_links.add(candidate)
+            target = Path(os.readlink(candidate))
             if target.is_absolute():
                 raise ValueError(f"absolute symlink target at {label}: {target}")
-            pending = list(target.parts) + [("end-link", current)] + pending
-            current = current.parent
+            pending = list(target.parts) + [("end-link", candidate)] + pending
+            current = candidate.parent.resolve(strict=True)
             continue
-        if any(not isinstance(next_part, tuple) for next_part in pending) and not current.is_dir():
-            if not allow_missing_final:
-                raise FileNotFoundError(f"missing path component at {label}")
+        is_final = not any(not isinstance(next_part, tuple) for next_part in pending)
+        visible = rel in tracked or any(
+            tracked_path.parts[:len(rel.parts)] == rel.parts for tracked_path in tracked)
+        try:
+            candidate_stat = candidate.stat()
+        except FileNotFoundError:
+            candidate_stat = None
+        if candidate_stat is None or not visible:
+            if allow_missing_final:
+                return None
+            raise FileNotFoundError(f"missing path component at {label}")
+        if is_final:
+            current = candidate
+        elif not stat.S_ISDIR(candidate_stat.st_mode):
+            if allow_missing_final:
+                return None
+            raise FileNotFoundError(f"non-directory path component at {label}")
+        else:
+            current = candidate.resolve(strict=True)
+            if not _inside(current, source):
+                raise ValueError(f"link escapes owning repository at {label}")
     try:
         target_stat = current.stat()
     except FileNotFoundError as error:
