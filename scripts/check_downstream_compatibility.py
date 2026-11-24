@@ -142,8 +142,68 @@ def cargo_config(core, redis=None):
     return [part for config in configs for part in ("--config", config)]
 
 
+def _path_within(path, roots):
+    """Return whether a resolved path is at or below any resolved root."""
+    for root in roots:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            pass
+    return False
+
+
+def _locate_workspace(manifest, *, root, core, redis, env, allowed_workspace_roots):
+    """Resolve Cargo's selected workspace and ensure its lockfile is snapshot-local."""
+    boundary_labels = tuple(map(str, allowed_workspace_roots))
+    label = f"workspace-locate:{root.name}"
+    command = ["cargo", "locate-project", "--workspace", "--message-format", "json",
+               "--manifest-path", str(manifest)]
+    command.extend(cargo_config(core, redis))
+    try:
+        boundary = tuple(Path(path).resolve(strict=True) for path in allowed_workspace_roots)
+        output = run(command, cwd=manifest.parent, env=env, label=label, print_stdout=False)
+        document = json.loads(output)
+        root_value = document["root"]
+        if not isinstance(root_value, str) or not root_value:
+            raise ValueError("root must be a non-empty string")
+        cargo_root_manifest = Path(root_value)
+        if not cargo_root_manifest.is_absolute():
+            cargo_root_manifest = manifest.parent / cargo_root_manifest
+        cargo_root_manifest = cargo_root_manifest.absolute()
+        resolved_root_manifest = cargo_root_manifest.resolve(strict=True)
+        if not resolved_root_manifest.is_file():
+            raise ValueError("root does not name a file")
+        # Cargo locates/writes Cargo.lock beside the root path it reported. In
+        # particular, a root Cargo.toml symlink does not relocate that lockfile.
+        workspace_root = cargo_root_manifest.parent.resolve(strict=True)
+        lockfile = workspace_root / "Cargo.lock"
+        # Resolve existing files and every symlink strictly. An ordinary missing
+        # Cargo.lock is valid, but a dangling link must fail closed.
+        if lockfile.exists() or lockfile.is_symlink():
+            resolved_lockfile = lockfile.resolve(strict=True)
+        else:
+            resolved_lockfile = lockfile.resolve(strict=False)
+    except (KeyError, TypeError, ValueError, OSError, RuntimeError, json.JSONDecodeError) as error:
+        raise RuntimeError(
+            f"cannot safely determine Cargo workspace for downstream manifest {manifest}; "
+            f"Cargo root/lock path resolution failed ({error}); allowed workspace roots: "
+            f"{', '.join(boundary_labels)}") from error
+
+    if (not _path_within(resolved_root_manifest, boundary) or
+            not _path_within(workspace_root, boundary) or
+            not _path_within(resolved_lockfile, boundary)):
+        raise RuntimeError(
+            f"downstream manifest {manifest} selects Cargo root manifest {cargo_root_manifest} "
+            f"(resolved to {resolved_root_manifest}), workspace root {workspace_root} "
+            f"with lockfile {resolved_lockfile}, outside allowed workspace roots: "
+            f"{', '.join(map(str, boundary))}")
+    return workspace_root
+
+
 def metadata(root, features, core, redis, target, *, expected_redis=None,
-             manifest=None, all_features=False, allowed_local_roots=None):
+             manifest=None, all_features=False, allowed_local_roots=None,
+             allowed_workspace_roots=None):
     manifest = Path(manifest) if manifest is not None else root / "Cargo.toml"
     command = ["cargo", "metadata", "--format-version", "1", "--manifest-path", str(manifest)]
     command.extend(cargo_config(core, redis))
@@ -154,6 +214,12 @@ def metadata(root, features, core, redis, target, *, expected_redis=None,
     env = os.environ.copy()
     env["CARGO_TARGET_DIR"] = str(target)
 
+    allowed_workspace_roots = (allowed_workspace_roots if allowed_workspace_roots is not None
+                               else (root,))
+    workspace_root = _locate_workspace(
+        manifest, root=root, core=core, redis=redis, env=env,
+        allowed_workspace_roots=allowed_workspace_roots)
+
     # The first pass writes a lockfile in the isolated snapshot if Cargo needs to
     # resolve a patched local dependency. The locked pass validates that stable graph.
     run(command, cwd=manifest.parent, env=env, label=f"metadata-update:{root.name}:{features or ('all' if all_features else 'default')}",
@@ -162,6 +228,16 @@ def metadata(root, features, core, redis, target, *, expected_redis=None,
                         label=f"metadata-locked:{root.name}:{features or ('all' if all_features else 'default')}",
                         print_stdout=False)
     graph = json.loads(locked_output)
+    try:
+        locked_workspace_root = Path(graph["workspace_root"]).resolve(strict=True)
+    except (KeyError, TypeError, OSError) as error:
+        raise RuntimeError(
+            f"locked metadata for downstream manifest {manifest} has no resolvable "
+            f"workspace_root ({error}); expected {workspace_root}") from error
+    if locked_workspace_root != workspace_root:
+        raise RuntimeError(
+            f"locked metadata for downstream manifest {manifest} selected workspace "
+            f"{locked_workspace_root}, but locate-project selected {workspace_root}")
     validate_graph_for_downstream(graph, expected_core=core, expected_redis=expected_redis,
                                   allowed_local_roots=allowed_local_roots)
     return graph
@@ -178,16 +254,20 @@ def run_downstream_checks(roots, core, target_root, *, include_execution_service
         target = target_root / config.root
         if config.root == "redis":
             allowed_local_roots = (root,)
+            allowed_workspace_roots = (root,)
         elif config.root == "rs-task":
             allowed_local_roots = (root, roots["redis"])
+            allowed_workspace_roots = (root,)
         else:
             allowed_local_roots = (root.parent,)
+            allowed_workspace_roots = (root.parent,)
         key = (manifest, config.features, config.all_features)
         if key not in checked_manifests:
             metadata(root, config.features, core, package, target,
                      expected_redis=package, manifest=manifest,
                      all_features=config.all_features,
-                     allowed_local_roots=allowed_local_roots)
+                     allowed_local_roots=allowed_local_roots,
+                     allowed_workspace_roots=allowed_workspace_roots)
             checked_manifests.add(key)
         env = os.environ.copy()
         env["CARGO_TARGET_DIR"] = str(target)
