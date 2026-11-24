@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -42,6 +43,66 @@ class DownstreamSourceSnapshotTests(unittest.TestCase):
             self.assertFalse((destination / "deleted.rs").exists())
             self.assertFalse((destination / "untracked.rs").exists())
             self.assertFalse((destination / "target").exists())
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symbolic links are unavailable")
+    def test_copies_dangling_legacy_cargo_config_with_valid_config_toml(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            source_parent = base / "source"
+            source_parent.mkdir()
+            source = self.make_repository(source_parent / "rs-execution")
+            patched = self.make_repository(source_parent / "rs-patched")
+            (source / "Cargo.toml").write_text(
+                '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\npatched="=0.1.0"\n')
+            (source / "Cargo.lock").write_text("")
+            (patched / "Cargo.toml").write_text(
+                '[package]\nname="patched"\nversion="0.1.0"\nedition="2021"\n')
+            cargo_dir = source / ".cargo"
+            cargo_dir.mkdir()
+            (cargo_dir / "config").symlink_to("missing-old-config")
+            config_toml = cargo_dir / "config.toml"
+            config_contents = '[patch.crates-io]\npatched={path="../rs-patched"}\n'
+            config_toml.write_text(config_contents)
+            subprocess.run(["git", "-C", str(source), "add", "Cargo.toml", "Cargo.lock",
+                            ".cargo/config", ".cargo/config.toml"], check=True)
+            subprocess.run(["git", "-C", str(patched), "add", "Cargo.toml"], check=True)
+
+            def cargo_metadata(manifest, *, locked=False):
+                command = ["cargo", "+1.94.0", "metadata", "--offline", "--format-version", "1",
+                           "--manifest-path", str(manifest)]
+                if locked:
+                    command.append("--locked")
+                result = subprocess.run(command, cwd=manifest.parent, capture_output=True,
+                                        text=True, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return json.loads(result.stdout)
+
+            source_graph = cargo_metadata(source / "Cargo.toml")
+            source_patch = next(package for package in source_graph["packages"]
+                                if package["name"] == "patched")
+            self.assertEqual(Path(source_patch["manifest_path"]), patched / "Cargo.toml")
+            cargo_metadata(source / "Cargo.toml", locked=True)
+            source_lock = (source / "Cargo.lock").read_bytes()
+
+            snapshot_parent = base / "snapshot"
+            source_snapshot = snapshot_parent / source.name
+            patched_snapshot = snapshot_parent / patched.name
+            copy_tracked_source(source, source_snapshot)
+            copy_tracked_source(patched, patched_snapshot)
+
+            copied_legacy = source_snapshot / ".cargo/config"
+            self.assertTrue(copied_legacy.is_symlink())
+            self.assertEqual(os.readlink(copied_legacy), "missing-old-config")
+            self.assertFalse((source_snapshot / ".cargo/missing-old-config").exists())
+            self.assertEqual((source_snapshot / ".cargo/config.toml").read_text(), config_contents)
+
+            snapshot_graph = cargo_metadata(source_snapshot / "Cargo.toml", locked=True)
+            snapshot_patch = next(package for package in snapshot_graph["packages"]
+                                  if package["name"] == "patched")
+            self.assertEqual(Path(snapshot_patch["manifest_path"]),
+                             patched_snapshot / "Cargo.toml")
+            self.assertEqual((source / "Cargo.lock").read_bytes(), source_lock)
 
     @unittest.skipUnless(hasattr(os, "symlink"), "symbolic links are unavailable")
     def test_rejects_a_tracked_symlink_that_escapes_the_source_tree(self):
