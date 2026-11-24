@@ -113,10 +113,16 @@ def run(command, *, cwd, env, label, print_stdout=True, timeout=TIMEOUT_SECONDS)
         return stdout
 
 
-def cargo_config(core, redis=None):
-    configs = ["patch.crates-io.qubit-event-bus.path=" + json.dumps(str(core))]
+def _cargo_config_patch_declarations(core, redis=None):
+    patches = [("crates-io", "qubit-event-bus", Path(core))]
     if redis is not None:
-        configs.append("patch.crates-io.qubit-event-bus-redis.path=" + json.dumps(str(redis)))
+        patches.append(("crates-io", "qubit-event-bus-redis", Path(redis)))
+    return patches
+
+
+def cargo_config(core, redis=None):
+    configs = [f"patch.{registry}.{name}.path=" + json.dumps(str(path))
+               for registry, name, path in _cargo_config_patch_declarations(core, redis)]
     return [part for config in configs for part in ("--config", config)]
 
 
@@ -188,24 +194,24 @@ def _path_entries(value):
             yield from _path_entries(nested)
 
 
-def _manifest_paths(data):
-    for section in ("dependencies", "dev-dependencies", "build-dependencies"):
+def _manifest_paths(data, *, include_dev=True):
+    sections = ("dependencies", "dev-dependencies", "build-dependencies") if include_dev else (
+        "dependencies", "build-dependencies")
+    for section in sections:
         yield from _path_entries(data.get(section, {}))
     for target in data.get("target", {}).values():
-        for section in ("dependencies", "dev-dependencies", "build-dependencies"):
+        for section in sections:
             yield from _path_entries(target.get(section, {}))
 
 
-def _manifest_patch_paths(data):
-    yield from _path_entries(data.get("patch", {}))
-
-
-def _dependency_sections(data):
+def _dependency_sections(data, *, include_dev=True):
     """Yield dependency tables from normal, target-specific, and workspace scope."""
-    for section in ("dependencies", "dev-dependencies", "build-dependencies"):
+    sections = ("dependencies", "dev-dependencies", "build-dependencies") if include_dev else (
+        "dependencies", "build-dependencies")
+    for section in sections:
         yield data.get(section, {})
     for target in data.get("target", {}).values():
-        for section in ("dependencies", "dev-dependencies", "build-dependencies"):
+        for section in sections:
             yield target.get(section, {})
 
 
@@ -256,6 +262,19 @@ def _glob_matches(path, pattern):
 def _is_workspace_member(package_dir, root, root_data):
     workspace = root_data["workspace"]
     relative = package_dir.relative_to(root).as_posix()
+    nested_manifest = package_dir / "Cargo.toml"
+    if package_dir != root and nested_manifest.is_file():
+        tomllib = __import__("tomllib")
+        try:
+            nested_data = tomllib.loads(nested_manifest.read_text())
+        except (OSError, tomllib.TOMLDecodeError):
+            nested_data = {}
+        if "workspace" in nested_data:
+            return False
+        package_workspace = nested_data.get("package", {}).get("workspace")
+        if isinstance(package_workspace, str) and \
+                (package_dir / package_workspace).resolve() != root.resolve():
+            return False
     excludes = workspace.get("exclude", [])
     if any(_glob_matches(relative, pattern) for pattern in excludes):
         return False
@@ -336,10 +355,10 @@ def _is_workspace_member(package_dir, root, root_data):
     return False
 
 
-def _inherited_workspace_paths(data, workspace_data):
+def _inherited_workspace_paths(data, workspace_data, *, include_dev=True):
     workspace_dependencies = workspace_data.get("workspace", {}).get("dependencies", {})
     used = set()
-    for section in _dependency_sections(data):
+    for section in _dependency_sections(data, include_dev=include_dev):
         for name, dependency in section.items():
             if isinstance(dependency, dict) and dependency.get("workspace") is True:
                 used.add(name)
@@ -380,6 +399,29 @@ def _config_patch_declarations(config_path, data):
                     yield (registry, name), package["path"]
 
 
+def _manifest_patch_declarations(manifest, data):
+    for registry, packages in data.get("patch", {}).items():
+        if isinstance(packages, dict):
+            for name, package in packages.items():
+                if isinstance(package, dict) and isinstance(package.get("path"), str):
+                    yield (registry, name), package["path"]
+
+
+def _workspace_member_manifests(root, root_data):
+    """Find package manifests Cargo includes in the selected workspace."""
+    if "workspace" not in root_data:
+        return [root / "Cargo.toml"] if "package" in root_data else []
+    manifests = []
+    for current, directories, files in os.walk(root):
+        directories[:] = [name for name in directories if name not in {".git", "target"}]
+        if "Cargo.toml" not in files:
+            continue
+        manifest = Path(current) / "Cargo.toml"
+        if manifest.parent == root or _is_workspace_member(manifest.parent, root, root_data):
+            manifests.append(manifest)
+    return manifests
+
+
 def _repository_root(path, boundary):
     path = path.resolve()
     for candidate in (path, *path.parents):
@@ -390,7 +432,8 @@ def _repository_root(path, boundary):
     return path
 
 
-def discover_local_repositories(manifest, sibling_root, source_root=None):
+def discover_local_repositories(manifest, sibling_root, source_root=None, *,
+                                cli_patches=None):
     """Find sibling repositories required by an IoC fixture's local paths and patches."""
     manifest = Path(manifest).resolve()
     boundary = Path(sibling_root).resolve()
@@ -398,7 +441,8 @@ def discover_local_repositories(manifest, sibling_root, source_root=None):
     if not manifest.is_file():
         raise ValueError(f"manifest does not exist: {manifest}")
     repositories = {source_root}
-    pending = [manifest]
+    pending_manifests = []
+    pending_paths = []
     scanned = set()
     import tomllib
 
@@ -413,8 +457,10 @@ def discover_local_repositories(manifest, sibling_root, source_root=None):
                              tomllib.loads(initial_root.read_text()))
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise ValueError(f"cannot read workspace manifest {initial_root}: {error}") from error
-    pending.extend((initial_root, relative, initial_root.parent)
-                   for relative in _manifest_patch_paths(initial_root_data))
+    effective_patches = {
+        key: (initial_root, relative, initial_root.parent)
+        for key, relative in _manifest_patch_declarations(initial_root, initial_root_data)
+    }
 
     config_paths = _cargo_config_paths(manifest, source_root)
     effective_config_patches = {}
@@ -423,24 +469,43 @@ def discover_local_repositories(manifest, sibling_root, source_root=None):
             config_data = tomllib.loads(config_path.read_text())
         except (OSError, tomllib.TOMLDecodeError) as error:
             raise ValueError(f"cannot read Cargo config {config_path}: {error}") from error
-        # Cargo applies the nearest config first. More distant config files
-        # provide defaults only for patch entries that are not overridden.
+        # Config files closer to the selected manifest override farther files.
         for key, relative in _config_patch_declarations(config_path, config_data):
             effective_config_patches.setdefault(
                 key, (config_path, relative, config_path.parent.parent))
-    for declaration, relative, base in effective_config_patches.values():
-        pending.append((declaration, relative, base))
-    while pending:
-        entry = pending.pop()
-        if isinstance(entry, tuple):
-            declaration, relative, base = entry
+    effective_patches.update(effective_config_patches)
+    for registry_name, relative in (cli_patches or {}).items():
+        effective_patches[registry_name] = (manifest, str(relative), Path(relative).parent)
+    for key, (declaration, relative, base) in effective_patches.items():
+        # The core path is selected on the command line and validated by the
+        # caller as the requested source checkout, outside sibling discovery.
+        if key == ("crates-io", "qubit-event-bus") and key in (cli_patches or {}):
+            continue
+        pending_paths.append((declaration, relative, base))
+    for member_manifest in _workspace_member_manifests(initial_root.parent, initial_root_data):
+        pending_manifests.append((member_manifest, True))
+    if not pending_manifests:
+        pending_manifests.append((manifest, False))
+    scanned = set()
+    while pending_paths or pending_manifests:
+        if pending_paths:
+            declaration, relative, base = pending_paths.pop()
             dependency = _resolve_local_path(relative, base, declaration, boundary)
             dependency_manifest = dependency / "Cargo.toml"
             if not dependency.is_dir() or not dependency_manifest.is_file():
                 raise ValueError(f"missing local path in {declaration}: {relative} -> {dependency}")
             repositories.add(_repository_root(dependency, boundary))
-            pending.append(dependency_manifest)
+            try:
+                dependency_data = tomllib.loads(dependency_manifest.read_text())
+            except (OSError, tomllib.TOMLDecodeError) as error:
+                raise ValueError(
+                    f"cannot read local dependency manifest {dependency_manifest} "
+                    f"(declared in {declaration}): {error}") from error
+            selected_member = (initial_workspace is not None and
+                               _workspace_root(dependency_manifest, dependency_data) == initial_workspace)
+            pending_manifests.append((dependency_manifest, selected_member))
             continue
+        entry, selected_member = pending_manifests.pop()
         current = entry.resolve()
         if current in scanned:
             continue
@@ -460,12 +525,14 @@ def discover_local_repositories(manifest, sibling_root, source_root=None):
                     workspace_data = tomllib.loads(root_manifest.read_text())
                 except (OSError, tomllib.TOMLDecodeError) as error:
                     raise ValueError(f"cannot read workspace manifest {root_manifest}: {error}") from error
-        paths = [(relative, current.parent, current) for relative in _manifest_paths(data)]
+        paths = [(relative, current.parent, current)
+                 for relative in _manifest_paths(data, include_dev=selected_member)]
         for relative, base, declaration in paths:
-            pending.append((declaration, relative, base))
+            pending_paths.append((declaration, relative, base))
         if workspace_data is not None:
-            pending.extend((workspace_root / "Cargo.toml", relative, workspace_root)
-                           for relative in _inherited_workspace_paths(data, workspace_data))
+            pending_paths.extend((current, relative, workspace_root)
+                                 for relative in _inherited_workspace_paths(
+                                     data, workspace_data, include_dev=selected_member))
     return sorted(repositories)
 
 
@@ -561,7 +628,10 @@ def main():
         sibling_root = execution_source.parent
         fixture_manifest = execution_source / "tests/fixtures/ioc_application_consumer/Cargo.toml"
         local_repositories = discover_local_repositories(
-            fixture_manifest, sibling_root, execution_source)
+            fixture_manifest, sibling_root, execution_source,
+            cli_patches={(registry, name): str(path)
+                         for registry, name, path in
+                         _cargo_config_patch_declarations(core)})
 
     with tempfile.TemporaryDirectory(prefix="event-bus-downstream-") as temp:
         temp_root = Path(temp)
