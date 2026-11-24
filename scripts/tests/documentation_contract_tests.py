@@ -135,6 +135,47 @@ class DocumentationContractTests(unittest.TestCase):
             "### 排查结算终止并恢复消费\n", ""), encoding="utf-8")
         self.assertFalse(checker.check_guide_toc_contract(self.root))
 
+    def test_only_second_level_contents_starts_the_toc(self):
+        guide = self.root / "doc/user_guide.md"
+        guide.write_text(guide.read_text(encoding="utf-8").replace("## Contents", "### Contents", 1),
+                         encoding="utf-8")
+        self.assertFalse(checker.check_guide_toc_contract(self.root))
+
+    def _fence_heading(self, guide, anchor, marker):
+        path = self.root / guide
+        text = path.read_text(encoding="utf-8")
+        title = next(title for title in checker.heading_titles(text)
+                     if anchor in checker._heading_anchors(f"## {title}\n"))
+        heading = next(line for line in text.splitlines()
+                       if line.lstrip().startswith("#")
+                       and line.lstrip("#").strip().rstrip("#").strip() == title)
+        short_marker = marker[0] * 3
+        hidden_heading = f"{marker}md\n{heading}\n{short_marker}\n{marker}\n"
+        path.write_text(text.replace(heading + "\n", hidden_heading, 1), encoding="utf-8")
+
+    def test_guide_targets_inside_backtick_and_tilde_fences_are_rejected(self):
+        for guide, anchors in checker.GUIDE_TOC_ENTRIES.items():
+            original = (self.root / guide).read_text(encoding="utf-8")
+            for marker in ("````", "~~~~"):
+                with self.subTest(guide=guide, marker=marker):
+                    (self.root / guide).write_text(original, encoding="utf-8")
+                    self._fence_heading(guide, anchors[0], marker)
+                    self.assertFalse(checker.check_guide_toc_contract(self.root))
+
+    def test_migration_targets_inside_fences_are_rejected(self):
+        for page, (guide, anchor) in checker.MIGRATION_GUIDES.items():
+            original = (self.root / guide).read_text(encoding="utf-8")
+            for marker in ("````", "~~~~"):
+                with self.subTest(page=page, marker=marker):
+                    self._migration_pages()
+                    (self.root / guide).write_text(original, encoding="utf-8")
+                    self._fence_heading(guide, anchor, marker)
+                    self.assertFalse(checker.check_migration_contract(self.root, self.listing))
+
+    def test_real_heading_outside_fence_remains_a_valid_target(self):
+        self.assertIn("run-the-redis-order-examples",
+                      checker._heading_anchors("````md\n# fake\n`````\n## Run the Redis order examples\n"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,6 +8,10 @@ import sys
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlsplit
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from markdown_headings import heading_lines, heading_titles, lines_outside_fences
+
 
 DOCUMENTS = ("README.md", "README.zh_CN.md", "doc/user_guide.md", "doc/user_guide.zh_CN.md",
              "doc/design.md", "doc/design.zh_CN.md")
@@ -40,29 +44,13 @@ GUIDE_TOC_ENTRIES = {
     ),
 }
 LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
-FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
-HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$")
 
 
 def markdown_links(text):
     """Yield link destinations outside fenced code blocks."""
-    fence_char = None
-    fence_size = 0
-    for line in text.splitlines():
-        if fence_char is None:
-            fence = FENCE.match(line)
-            if fence:
-                marker = fence.group(1)
-                fence_char, fence_size = marker[0], len(marker)
-                continue
-            yield from (match.group(1).strip().split(maxsplit=1)[0].strip("<>")
-                        for match in LINK.finditer(line))
-            continue
-        closing = re.fullmatch(r"\s*(`{3,}|~{3,})[ \t]*", line)
-        if closing:
-            marker = closing.group(1)
-            if marker[0] == fence_char and len(marker) >= fence_size:
-                fence_char, fence_size = None, 0
+    for _line_number, line in lines_outside_fences(text):
+        yield from (match.group(1).strip().split(maxsplit=1)[0].strip("<>")
+                    for match in LINK.finditer(line))
 
 
 def normalized_local_path(document, destination):
@@ -116,13 +104,14 @@ def check_guide_toc_contract(root):
             errors.append((document, f"cannot read guide TOC: {error}"))
             continue
         lines = text.splitlines()
-        toc_start = next((i for i, line in enumerate(lines)
-                          if line.strip() in ("## Contents", "## 目录")), None)
+        headings = list(heading_lines(text))
+        toc_start = next((line_number for line_number, level, title in headings
+                          if level == 2 and title in ("Contents", "目录")), None)
         if toc_start is None:
             errors.append((document, "missing Contents/目录 section"))
             continue
-        toc_end = next((i for i in range(toc_start + 1, len(lines))
-                        if HEADING.match(lines[i])), len(lines))
+        toc_end = next((line_number for line_number, _level, _title in headings
+                        if line_number > toc_start), len(lines))
         toc = "\n".join(lines[toc_start + 1:toc_end])
         toc_links = set(markdown_links(toc))
         anchors = _heading_anchors(text)
@@ -182,13 +171,11 @@ def _packaged_paths(package_list):
 
 def _heading_anchors(text):
     anchors = set()
-    for line in text.splitlines():
-        match = HEADING.match(line)
-        if match:
-            # GitHub-style heading IDs: lowercase, remove punctuation, spaces become hyphens.
-            title = match.group(1).strip().lower()
-            title = re.sub(r"[^\w\- ]", "", title, flags=re.UNICODE)
-            anchors.add(re.sub(r"\s+", "-", title))
+    for title in heading_titles(text):
+        # GitHub-style heading IDs: lowercase, remove punctuation, spaces become hyphens.
+        title = title.lower()
+        title = re.sub(r"[^\w\- ]", "", title, flags=re.UNICODE)
+        anchors.add(re.sub(r"\s+", "-", title))
     return anchors
 
 

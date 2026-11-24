@@ -6,6 +6,11 @@ import subprocess
 from urllib.parse import unquote
 from pathlib import Path
 
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from markdown_headings import heading_titles
+
 ROOT = Path(__file__).resolve().parents[1]
 LOCAL = "examples/local_delivery.rs"
 LIB = "src/lib.rs"
@@ -162,10 +167,8 @@ def check_method_links(snapshot_documents=None, document_shas=None):
 
 def read_headings(text):
     headings = set()
-    for line in text.splitlines():
-        if not re.match(r"^#{1,6} ", line):
-            continue
-        title = re.sub(r"[`*_~]", "", line.lstrip("#").strip()).lower()
+    for title in heading_titles(text):
+        title = re.sub(r"[`*_~]", "", title).lower()
         slug = re.sub(r"[^\w -]", "", title, flags=re.UNICODE).replace(" ", "-")
         headings.add(slug)
     return headings

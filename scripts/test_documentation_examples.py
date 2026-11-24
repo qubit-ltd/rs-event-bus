@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER = ROOT / "scripts/check_documentation_examples.py"
+MARKDOWN_HEADINGS = ROOT / "scripts/markdown_headings.py"
 LOCAL = "examples/local_delivery.rs"
 LIB = "src/lib.rs"
 ASYNC = "tests/fixtures/documentation_consumer/src/bin/async_local.rs"
@@ -56,7 +57,8 @@ DOCUMENT_PATHS = tuple(path for _, path in DOC_LINKS)
 
 case_count = 0
 
-def run_case(mutator, args=(), snapshot=False, git_env=None, snapshot_missing=None):
+def run_case(mutator, args=(), snapshot=False, git_env=None, snapshot_missing=None,
+             snapshot_content_mutator=None):
     global case_count
     case_count += 1
     with tempfile.TemporaryDirectory() as directory:
@@ -65,6 +67,7 @@ def run_case(mutator, args=(), snapshot=False, git_env=None, snapshot_missing=No
         (root.parent / "outside.rs").write_text("fn nested() {}\n", encoding="utf-8")
         (root / "scripts").mkdir()
         shutil.copy(CHECKER, root / "scripts/check_documentation_examples.py")
+        shutil.copy(MARKDOWN_HEADINGS, root / "scripts/markdown_headings.py")
         for source in (LOCAL, README_ORDERS, ASYNC, SPEC, PROVIDER_CONTRACT, CODEC, DEAD_LETTER, HEADER_LIMITS, RECEIPT, SHUTDOWN, CAPACITY, REPUBLISH, RETRY, MONITOR, WEIGHTED):
             path = root / source
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -113,6 +116,8 @@ def run_case(mutator, args=(), snapshot=False, git_env=None, snapshot_missing=No
         )
         lib_path.write_text(lib_document, encoding="utf-8")
         if snapshot:
+            if snapshot_content_mutator is not None:
+                snapshot_content_mutator(root)
             subprocess.run(["git", "init", "-q"], cwd=root, check=True)
             subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
             subprocess.run(["git", "config", "user.name", "Documentation Test"], cwd=root, check=True)
@@ -395,6 +400,24 @@ assert result.returncode != 0 and "example drift from " + SHUTDOWN in result.std
 SNAPSHOT_ARGS = ("--check-snapshot-content",)
 result = run_case(lambda _root: None, args=SNAPSHOT_ARGS, snapshot=True)
 assert result.returncode == 0, result.stdout + result.stderr
+
+def fence_dead_letter_heading(root, document, heading, marker):
+    path = root / document
+    text = path.read_text(encoding="utf-8")
+    fenced = f"{marker}md\n## {heading}\n{marker[0] * 3}\n{marker}\n"
+    assert f"## {heading}\n" in text
+    path.write_text(text.replace(f"## {heading}\n", fenced, 1), encoding="utf-8")
+
+
+for document, heading, marker, label in (
+    ("doc/user_guide.md", "Keep an event that fails for good", "````", "English user guide"),
+    ("doc/user_guide.zh_CN.md", "保存最终处理失败的事件", "~~~~", "Chinese user guide"),
+):
+    result = run_case(lambda _root: None, args=SNAPSHOT_ARGS, snapshot=True,
+                      snapshot_content_mutator=lambda root, document=document, heading=heading, marker=marker:
+                      fence_dead_letter_heading(root, document, heading, marker))
+    assert result.returncode != 0 and f"{label}: anchor" in result.stdout + result.stderr, result.stdout + result.stderr
+    assert "content drift" not in result.stdout + result.stderr, result.stdout + result.stderr
 
 def change_user_guide(root):
     path = root / "doc/user_guide.md"
