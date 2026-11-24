@@ -83,6 +83,16 @@ const WAIT_TIMEOUTS: [Duration; 3] = [
 
 #[test]
 fn test_sync_cancel_causal_regression() {
+    isolated(
+        "test_sync_cancel_causal_regression",
+        "sync-cancel-causal-regression",
+        || {
+            test_sync_cancel_causal_regression_inner();
+        },
+    );
+}
+
+fn test_sync_cancel_causal_regression_inner() {
     let provider = local_spi();
     let bus = EventBus::from_spi(ProviderId::new("cancel-regression").unwrap(), Arc::clone(&provider)).unwrap();
     let topic = Topic::<u32>::new("cancel-regression.idle").unwrap();
