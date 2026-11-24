@@ -31,6 +31,21 @@ from scripts.tests.process_test_support import wait_for_process_exit
 
 
 class DownstreamCompatibilityTests(unittest.TestCase):
+    def assert_manifest_link_rejected_before_target_read(
+            self, manifest, parent, source, declaration, target):
+        original_read_text = Path.read_text
+
+        def reject_target_read(path, *args, **kwargs):
+            if Path(path).resolve() == target.resolve():
+                raise AssertionError(f"discovery opened out-of-repository target: {target}")
+            return original_read_text(path, *args, **kwargs)
+
+        with patch.object(Path, "read_text", reject_target_read):
+            with self.assertRaisesRegex(
+                    ValueError,
+                    rf"{declaration}.*{target}.*repository boundary: {source}"):
+                discover_local_repositories(manifest, parent, source)
+
     def test_workspace_glob_matching_matches_cargo_path_segments(self):
         self.assertTrue(_glob_matches("members/no-local", "members/[nk]o-local"))
         self.assertTrue(_glob_matches("members/no-local", "./members/no-local"))
@@ -583,6 +598,56 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                 copy_tracked_source(execution, base / "snapshot")
             with self.assertRaisesRegex(ValueError, "not present in tracked source view"):
                 discover_local_repositories(declaration, parent, execution)
+
+    def test_workspace_member_manifest_link_outside_owning_repository_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            external = self.make_input_repository(parent / "rs-external", "external")
+            (execution / "Cargo.toml").write_text(
+                '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                '[workspace]\nmembers=["members/linked"]\n')
+            declaration = execution / "members/linked/Cargo.toml"
+            declaration.parent.mkdir(parents=True)
+            declaration.symlink_to("../../../rs-external/Cargo.toml")
+            subprocess.run(["git", "-C", str(execution), "add", "Cargo.toml", "members/linked/Cargo.toml"], check=True)
+            self.assert_manifest_link_rejected_before_target_read(
+                execution / "Cargo.toml", parent, execution,
+                declaration, external / "Cargo.toml")
+
+    def test_entry_manifest_link_outside_owning_repository_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            external = self.make_input_repository(parent / "rs-external", "external")
+            declaration = execution / "entry/Cargo.toml"
+            declaration.parent.mkdir()
+            declaration.symlink_to("../../rs-external/Cargo.toml")
+            subprocess.run(["git", "-C", str(execution), "add", "entry/Cargo.toml"], check=True)
+            self.assert_manifest_link_rejected_before_target_read(
+                declaration, parent, execution, declaration, external / "Cargo.toml")
+
+    def test_local_dependency_manifest_link_outside_owning_repository_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            external = self.make_input_repository(parent / "rs-external", "external")
+            (execution / "Cargo.toml").write_text(
+                '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\nexternal={path="dependencies/linked"}\n')
+            declaration = execution / "dependencies/linked/Cargo.toml"
+            declaration.parent.mkdir(parents=True)
+            declaration.symlink_to("../../../rs-external/Cargo.toml")
+            subprocess.run(["git", "-C", str(execution), "add", "Cargo.toml", "dependencies/linked/Cargo.toml"], check=True)
+            self.assert_manifest_link_rejected_before_target_read(
+                execution / "Cargo.toml", parent, execution,
+                declaration, external / "Cargo.toml")
 
     def test_workspace_glob_skips_tracked_directory_removed_from_worktree(self):
         with tempfile.TemporaryDirectory() as directory:

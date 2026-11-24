@@ -259,9 +259,36 @@ def _tracked_file(path):
     return is_tracked_snapshot_file(root, path, _tracked_files(root))
 
 
+def _validate_manifest_path(path):
+    """Validate a manifest link against the repository owning its declaration."""
+    declaration = Path(os.path.abspath(path))
+    repository = _repo_for(declaration.parent)
+    if repository is None:
+        if not declaration.is_file():
+            raise FileNotFoundError(f"manifest is not present in tracked source view: {declaration}")
+        return
+    if not os.path.lexists(declaration):
+        raise FileNotFoundError(
+            f"manifest declaration is not present in tracked source view: {declaration} "
+            f"(repository boundary: {repository})")
+    try:
+        target = declaration.resolve(strict=True)
+    except OSError as error:
+        raise ValueError(f"cannot resolve manifest declaration {declaration}: {error}") from error
+    try:
+        target.relative_to(repository)
+    except ValueError as error:
+        raise ValueError(
+            f"manifest declaration escapes owning repository: {declaration} -> {target} "
+            f"(repository boundary: {repository})") from error
+    if not is_tracked_snapshot_file(repository, declaration, _tracked_files(repository)):
+        raise FileNotFoundError(
+            f"manifest declaration is not present in tracked source view: {declaration} "
+            f"-> {target} (repository boundary: {repository})")
+
+
 def _read_manifest(path):
-    if not _tracked_file(path):
-        raise FileNotFoundError(f"manifest is not present in tracked source view: {path}")
+    _validate_manifest_path(path)
     return Path(path).read_text()
 
 
@@ -640,10 +667,12 @@ def _workspace_member_manifests(root, root_data, sibling_boundary=None):
                 f"workspace member declared in {root_manifest} escapes sibling boundary: "
                 f"{member} -> {resolved_candidate}") from error
         member_manifest = candidate if candidate.name == "Cargo.toml" else candidate / "Cargo.toml"
-        if not _tracked_file(member_manifest):
+        try:
+            _validate_manifest_path(member_manifest)
+        except (OSError, ValueError) as error:
             raise ValueError(
-                f"workspace member declared in {root_manifest} is not present in tracked source: "
-                f"{member_manifest}")
+                f"workspace member declared in {root_manifest}: {member} -> {member_manifest}: "
+                f"{error}") from error
         explicit_manifests.append(member_manifest)
         glob_manifests[member] = [member_manifest]
     if repository is None:
