@@ -121,9 +121,11 @@ impl BatchPublishResult {
             })
             .count()
     }
-    /// Counts failed publications and local receipts with at least one rejected
-    /// destination. A mixed local receipt contributes to both accepted and
-    /// failure counts; neither count describes handler completion.
+    /// Counts failed publications and receipts with at least one rejected
+    /// destination in their per-destination admission results. This applies to
+    /// any implementation returning `DestinationAdmissions`. A mixed receipt
+    /// contributes to both accepted and failure counts; neither count describes
+    /// handler completion.
     ///
     /// # Returns
     /// The number of failed requests or receipts with rejected destinations.
