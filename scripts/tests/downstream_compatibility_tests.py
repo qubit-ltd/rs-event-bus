@@ -23,6 +23,7 @@ from scripts.downstream_source_snapshot import tracked_source_files
 from scripts.downstream_source_snapshot import TrackedSourceView
 from scripts.downstream_source_snapshot import tracked_snapshot_directory_identity
 from scripts.check_downstream_compatibility import TESTS
+from scripts.check_downstream_compatibility import TestConfig
 from scripts.check_downstream_compatibility import _glob_matches
 from scripts.check_downstream_compatibility import discover_local_repositories
 from scripts.check_downstream_compatibility import main
@@ -3362,6 +3363,184 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                                      (root / "Cargo.lock").stat().st_mtime_ns)
                               for root in (redis, task)}, original)
             self.assertEqual([root.name for root in snapshot_roots], ["redis", "rs-task"])
+
+    def test_metadata_cargo_commands_share_isolated_target_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            roots = {}
+            targets = {}
+            for name in ("redis", "rs-task", "execution-services"):
+                root = Path(directory) / name
+                root.mkdir()
+                manifest = root / "Cargo.toml"
+                manifest.write_text(
+                    f'[package]\nname="{name.replace("-", "_")}_fixture"\n'
+                    'version="0.1.0"\nedition="2021"\n'
+                )
+                (root / "Cargo.lock").write_text('version = 4\n')
+                roots[name] = root
+                targets[name] = Path(directory) / "isolated-targets" / name
+            recorded = []
+            original_target = os.environ.get("CARGO_TARGET_DIR")
+            original_build_dir = os.environ.get("CARGO_BUILD_BUILD_DIR")
+
+            def record(command, *, cwd, env, label, print_stdout=True, timeout=None):
+                recorded.append((label, Path(cwd), dict(env)))
+                if label.startswith("workspace-locate:"):
+                    return json.dumps({"root": str(Path(cwd) / "Cargo.toml")})
+                return json.dumps({"workspace_root": str(Path(cwd))})
+
+            with patch.dict(os.environ, {"CARGO_TARGET_DIR": "/caller/target",
+                                        "CARGO_BUILD_BUILD_DIR": "/caller/build",
+                                        "UNRELATED_FIXTURE_KEY": "preserved"}), \
+                    patch("scripts.check_downstream_compatibility.run", side_effect=record), \
+                    patch("scripts.check_downstream_compatibility.validate_graph_for_downstream"):
+                for name, root in roots.items():
+                    metadata(root, None, root, None, targets[name],
+                             allowed_local_roots=(root,), allowed_workspace_roots=(root,))
+
+            self.assertEqual(len(recorded), 9)
+            self.assertEqual({label.split(":")[0] for label, _cwd, _env in recorded},
+                             {"workspace-locate", "metadata-update", "metadata-locked"})
+            for label, _cwd, env in recorded:
+                name = label.split(":")[1]
+                target = targets[name].absolute()
+                self.assertEqual(env.get("CARGO_TARGET_DIR"), str(target))
+                self.assertEqual(env.get("CARGO_BUILD_BUILD_DIR"),
+                                 str((target.absolute() / "build")))
+                self.assertEqual(env.get("UNRELATED_FIXTURE_KEY"), "preserved")
+            self.assertEqual(os.environ.get("CARGO_TARGET_DIR"), original_target)
+            self.assertEqual(os.environ.get("CARGO_BUILD_BUILD_DIR"), original_build_dir)
+
+    def test_all_downstream_test_commands_receive_isolated_cargo_environment(self):
+        module = sys.modules["scripts.check_downstream_compatibility"]
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            roots = {}
+            configs = []
+            for key in ("redis", "rs-task", "execution-services"):
+                root = base / key
+                root.mkdir()
+                (root / "Cargo.toml").write_text(
+                    f'[package]\nname="{key.replace("-", "_")}_fixture"\n'
+                    'version="0.1.0"\nedition="2021"\n'
+                )
+                roots[key] = root
+                configs.append(TestConfig(key, key, "Cargo.toml", "fixture_tests",
+                                          f"test_{key.replace('-', '_')}"))
+            core = roots["redis"]
+            command_records = []
+
+            def fake_run(command, *, cwd, env, label, print_stdout=True, timeout=None):
+                command_records.append((label, list(command), dict(env)))
+                name = next(config.test_name for config in configs if config.test_name in label)
+                if label.startswith("list:"):
+                    return f"{name}: test\n"
+                return (f"test {name} ... ok\n"
+                        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; "
+                        "0 filtered out\n")
+
+            metadata_targets = []
+
+            def fake_metadata(root, _features, _core, _redis, target, **_kwargs):
+                metadata_targets.append((root.name, Path(target)))
+                return {}
+
+            with patch.object(module, "TESTS", tuple(configs)), \
+                    patch.object(module, "metadata", side_effect=fake_metadata), \
+                    patch.object(module, "run", side_effect=fake_run), \
+                    patch.dict(os.environ, {"CARGO_TARGET_DIR": "/caller/target",
+                                            "CARGO_BUILD_BUILD_DIR": "/caller/build",
+                                            "UNRELATED_FIXTURE_KEY": "preserved"}):
+                run_downstream_checks(roots, core, base / "targets",
+                                      include_execution_services=True)
+
+            self.assertEqual({name for name, _target in metadata_targets}, set(roots))
+            self.assertEqual(len({target for _name, target in metadata_targets}), 3)
+            self.assertEqual(len(command_records), 6)
+            for _label, command, env in command_records:
+                target = Path(env["CARGO_TARGET_DIR"])
+                key = _label.split(":")[1]
+                self.assertEqual(target, (base / "targets" / key).absolute())
+                self.assertIn("--exact", command)
+                self.assertEqual(env.get("CARGO_BUILD_BUILD_DIR"), str(target / "build"))
+                self.assertEqual(env.get("UNRELATED_FIXTURE_KEY"), "preserved")
+            self.assertEqual({label.split(":")[1] for label, _command, _env in command_records},
+                             set(roots))
+
+    def test_cargo_build_directory_config_and_environment_are_isolated(self):
+        module = sys.modules["scripts.check_downstream_compatibility"]
+        for source_kind in ("config", "environment"):
+            with self.subTest(source_kind=source_kind), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                root = base / "redis"
+                (root / "src").mkdir(parents=True)
+                (root / "tests").mkdir()
+                (root / "Cargo.toml").write_text(
+                    '[package]\nname="cargo_build_dir_fixture"\nversion="0.1.0"\n'
+                    'edition="2021"\nbuild="build.rs"\n'
+                )
+                (root / "build.rs").write_text('fn main() { println!("cargo:rerun-if-changed=build.rs"); }\n')
+                (root / "src/lib.rs").write_text("pub fn fixture() {}\n")
+                (root / "tests/fixture_tests.rs").write_text(
+                    '#[test]\nfn test_fixture_passes() { assert_eq!(2 + 2, 4); }\n'
+                )
+                (root / "Cargo.lock").write_text('version = 4\n')
+                outside = base / "external-build"
+                if source_kind == "config":
+                    cargo_dir = root / ".cargo"
+                    cargo_dir.mkdir()
+                    (cargo_dir / "config.toml").write_text(
+                        f'[build]\nbuild-dir = "{outside}"\n'
+                    )
+                    outside.mkdir()
+                    (outside / "caller-data.bin").write_bytes(b"preserve these bytes")
+
+                def snapshot_external():
+                    if not outside.exists():
+                        return None
+                    result = {}
+                    for path in outside.rglob("*"):
+                        relative = path.relative_to(outside)
+                        if path.is_symlink():
+                            result[relative] = ("symlink", os.readlink(path))
+                        elif path.is_dir():
+                            result[relative] = ("directory", None)
+                        elif path.is_file():
+                            result[relative] = ("file", path.read_bytes())
+                    return result
+
+                before = snapshot_external()
+                subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+                subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+                subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture",
+                                "-c", "user.email=fixture@example.invalid",
+                                "commit", "-qm", "tracked fixture"], check=True)
+                config = TestConfig("fixture", "redis", "Cargo.toml", "fixture_tests",
+                                    "test_fixture_passes")
+                target_root = base / "temporary-targets"
+                caller_env = {"CARGO_BUILD_BUILD_DIR": str(outside)} if source_kind == "environment" else {}
+                with patch.object(module, "TESTS", (config,)), \
+                        patch.object(module, "cargo_config", return_value=[]), \
+                        patch.object(module, "validate_graph_for_downstream"), \
+                        patch.dict(os.environ, {"CARGO_NET_OFFLINE": "true", **caller_env}, clear=False):
+                    if source_kind == "config":
+                        os.environ.pop("CARGO_BUILD_BUILD_DIR", None)
+                    os.environ["RUSTUP_TOOLCHAIN"] = "1.94.0"
+                    run_downstream_checks({"redis": root}, root, target_root)
+
+                external_after = snapshot_external()
+                if external_after != before:
+                    before_paths = set(before or {})
+                    after_paths = set(external_after or {})
+                    self.fail(
+                        f"Cargo changed external build directory {outside}: "
+                        f"added={sorted(map(str, after_paths - before_paths))[:8]}, "
+                        f"removed={sorted(map(str, before_paths - after_paths))[:8]}, "
+                        f"directory_exists={outside.exists()}"
+                    )
+                isolated_build = target_root / "redis" / "build"
+                self.assertTrue(isolated_build.is_dir())
+                self.assertTrue(any(path.is_dir() for path in isolated_build.iterdir()))
 
     def test_failed_downstream_run_does_not_restore_or_modify_input_locks(self):
         with tempfile.TemporaryDirectory() as directory:
