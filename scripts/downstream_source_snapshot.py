@@ -60,6 +60,17 @@ def is_tracked_snapshot_file(source, declaration, tracked=None):
 
 def validate_tracked_snapshot_file(source, declaration, tracked=None):
     """Validate every link traversed by a file declaration for snapshot safety."""
+    return _validate_tracked_snapshot_file(source, declaration, tracked)
+
+
+def validate_tracked_config_snapshot_file(source, declaration, tracked=None):
+    """Validate a Cargo config path, returning None when its final file is absent from a snapshot."""
+    return _validate_tracked_snapshot_file(
+        source, declaration, tracked, allow_missing_final=True)
+
+
+def _validate_tracked_snapshot_file(source, declaration, tracked=None, *, allow_missing_final=False):
+    """Validate every link hop, optionally classifying a missing final snapshot file."""
     source = Path(source).resolve(strict=True)
     declaration = Path(os.path.abspath(declaration))
     try:
@@ -67,7 +78,7 @@ def validate_tracked_snapshot_file(source, declaration, tracked=None):
     except ValueError:
         raise ValueError(f"declaration is outside owning repository: {declaration}")
     tracked = set(tracked_source_files(source)) if tracked is None else tracked
-    if relative not in tracked:
+    if relative not in tracked and not allow_missing_final:
         raise ValueError(f"declaration is not tracked: {relative.as_posix()}")
     pending = list(relative.parts)
     current = source
@@ -107,15 +118,20 @@ def validate_tracked_snapshot_file(source, declaration, tracked=None):
             current = current.parent
             continue
         if any(not isinstance(next_part, tuple) for next_part in pending) and not current.is_dir():
-            raise FileNotFoundError(f"missing path component at {label}")
+            if not allow_missing_final:
+                raise FileNotFoundError(f"missing path component at {label}")
     try:
         target_stat = current.stat()
     except FileNotFoundError as error:
+        if allow_missing_final:
+            return None
         raise FileNotFoundError(f"final file is missing: {current}") from error
     if not stat.S_ISREG(target_stat.st_mode):
         raise ValueError(f"final target is not a regular file: {current}")
     target_rel = current.relative_to(source)
     if target_rel not in tracked:
+        if allow_missing_final:
+            return None
         raise ValueError(f"final file is not tracked: {target_rel.as_posix()}")
     return current
 
@@ -161,7 +177,10 @@ def copy_tracked_source(source: Path, destination: Path) -> None:
             if stat.S_ISLNK(info.st_mode) and Path(os.readlink(source_path)).is_absolute():
                 raise ValueError(f"tracked symlink escapes snapshot: {label}")
             try:
-                validate_tracked_snapshot_file(source, source_path, tracked)
+                if relative.parts[-2:] in ((".cargo", "config"), (".cargo", "config.toml")):
+                    validate_tracked_config_snapshot_file(source, source_path, tracked)
+                else:
+                    validate_tracked_snapshot_file(source, source_path, tracked)
             except (OSError, ValueError) as error:
                 raise ValueError(f"tracked Cargo input is not snapshot-safe: {label}: {error}") from error
 
