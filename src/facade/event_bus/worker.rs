@@ -403,6 +403,8 @@ fn run_subscription_worker_body<T>(
                     if control.is_cancelled() {
                         control.record_receive_return_after_cancel();
                     }
+                    #[cfg(test)]
+                    crate::internal::test_wait_probe::announce("sync_cancel_after_receive_record");
                     inner.scheduler.set_dispatch_active(control.id, true);
                     match result {
                         Ok(ReceiveOutcome::Message(message)) => {

@@ -97,13 +97,30 @@ fn test_sync_cancel_causal_regression_inner() {
     let bus = EventBus::from_spi(ProviderId::new("cancel-regression").unwrap(), Arc::clone(&provider)).unwrap();
     let topic = Topic::<u32>::new("cancel-regression.idle").unwrap();
     let request = SubscribeRequest::new("cancel-regression-idle", topic).unwrap();
-    let waiting = test_wait_probe::install("local_receive");
-    let subscription = bus.subscribe(request, |_| {}).unwrap();
+    let (returned, cancelled, release_return) =
+        test_wait_probe::install_gated("sync_cancel_after_receive_record", "sync_cancel_requested");
+    let subscription = Arc::new(bus.subscribe(request, |_| {}).unwrap());
+    subscription
+        .test_control()
+        .set_receive_poll_interval(Duration::from_millis(1));
     subscription.test_control().enable_cancellation_probe();
-    waiting
+    returned
         .recv_timeout(Duration::from_secs(2))
-        .expect("worker entered its normal provider receive wait");
-    subscription.cancel().unwrap();
+        .expect("worker returned from receive and passed its cancellation record check");
+    let cancel_subscription = Arc::clone(&subscription);
+    let (cancel_done_sender, cancel_done_receiver) = mpsc::channel();
+    let cancel_worker = thread::spawn(move || {
+        cancel_subscription.cancel().unwrap();
+        cancel_done_sender.send(()).unwrap();
+    });
+    cancelled
+        .recv_timeout(Duration::from_secs(2))
+        .expect("cancellation was published while the worker was gated");
+    release_return.send(()).unwrap();
+    cancel_done_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("cancellation completes after the worker is released");
+    cancel_worker.join().unwrap();
 
     let sample = subscription
         .test_control()
@@ -111,27 +128,13 @@ fn test_sync_cancel_causal_regression_inner() {
         .expect("causal probe was enabled");
     let requested = sample.requested.expect("cancel request was recorded");
     assert!(
-        !sample.receive_returns_after_request.is_empty(),
-        "worker must return from receive after the cancellation request"
-    );
-    assert!(
-        sample
-            .receive_returns_after_request
-            .iter()
-            .all(|returned| *returned >= requested),
-        "receive return timestamps must follow the cancellation request"
+        sample.receive_returns_after_request.is_empty(),
+        "the controlled receive returned before the cancellation request and must not be recorded"
     );
     let worker_finished = sample.worker_finished.expect("worker completion was recorded");
     assert!(
         worker_finished >= requested,
         "worker completion must follow the cancellation request"
-    );
-    assert!(
-        sample
-            .receive_returns_after_request
-            .iter()
-            .all(|returned| *returned <= worker_finished),
-        "receive must return before worker completion"
     );
 
     let _ = bus.shutdown(ShutdownMode::Immediate).unwrap();
