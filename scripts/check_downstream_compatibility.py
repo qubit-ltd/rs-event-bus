@@ -16,6 +16,7 @@ try:
     from scripts.downstream_source_snapshot import copy_tracked_source
     from scripts.downstream_source_snapshot import is_tracked_snapshot_file
     from scripts.downstream_source_snapshot import tracked_source_files
+    from scripts.downstream_source_snapshot import validate_tracked_snapshot_file
     from scripts.run_conformance_watchdog import process_group_options
     from scripts.run_conformance_watchdog import terminate_process_group
 except ModuleNotFoundError:
@@ -23,6 +24,7 @@ except ModuleNotFoundError:
     from downstream_source_snapshot import copy_tracked_source
     from downstream_source_snapshot import is_tracked_snapshot_file
     from downstream_source_snapshot import tracked_source_files
+    from downstream_source_snapshot import validate_tracked_snapshot_file
     from run_conformance_watchdog import process_group_options
     from run_conformance_watchdog import terminate_process_group
 
@@ -256,7 +258,19 @@ def _tracked_file(path):
                 break
     if root is None:
         return path.is_file()
-    return is_tracked_snapshot_file(root, path, _tracked_files(root))
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return False
+    if relative not in _tracked_files(root):
+        return False
+    if not os.path.lexists(path):
+        return False
+    try:
+        validate_tracked_snapshot_file(root, path, _tracked_files(root))
+    except (OSError, ValueError) as error:
+        raise ValueError(f"invalid tracked file {path}: {error}") from error
+    return True
 
 
 def _validate_manifest_path(path):
@@ -272,8 +286,18 @@ def _validate_manifest_path(path):
             f"manifest declaration is not present in tracked source view: {declaration} "
             f"(repository boundary: {repository})")
     try:
+        validate_tracked_snapshot_file(repository, declaration, _tracked_files(repository))
+    except (OSError, ValueError, RuntimeError) as error:
+        try:
+            attempted_target = declaration.resolve(strict=True)
+        except (OSError, RuntimeError):
+            attempted_target = "<unresolved>"
+        raise ValueError(
+            f"manifest declaration is not present in tracked source view: {declaration} "
+            f"-> {attempted_target} (repository boundary: {repository}): {error}") from error
+    try:
         target = declaration.resolve(strict=True)
-    except OSError as error:
+    except (OSError, RuntimeError) as error:
         raise ValueError(f"cannot resolve manifest declaration {declaration}: {error}") from error
     try:
         target.relative_to(repository)
@@ -281,10 +305,6 @@ def _validate_manifest_path(path):
         raise ValueError(
             f"manifest declaration escapes owning repository: {declaration} -> {target} "
             f"(repository boundary: {repository})") from error
-    if not is_tracked_snapshot_file(repository, declaration, _tracked_files(repository)):
-        raise FileNotFoundError(
-            f"manifest declaration is not present in tracked source view: {declaration} "
-            f"-> {target} (repository boundary: {repository})")
 
 
 def _read_manifest(path):
@@ -387,7 +407,22 @@ def _workspace_glob_manifests(root, pattern, sibling_boundary=None):
         if any(marker in part for marker in "*?["):
             break
         fixed_parts.append(part)
-    fixed_prefix = root.joinpath(*fixed_parts).resolve()
+    declared_prefix = root.joinpath(*fixed_parts)
+    current = root
+    for component in fixed_parts:
+        if component in ("", "."):
+            continue
+        if component == "..":
+            current = current.parent
+        else:
+            current = current / component
+        if current.is_symlink():
+            target = current.resolve()
+            if target.is_dir() and _repo_for(target) == target:
+                raise ValueError(
+                    f"workspace member glob declared in {root / 'Cargo.toml'} uses directory alias "
+                    f"{pattern}: {current} -> {target}; use the real checkout's relative path")
+    fixed_prefix = declared_prefix.resolve()
     try:
         fixed_prefix.relative_to(boundary)
     except ValueError as error:
@@ -407,6 +442,10 @@ def _workspace_glob_manifests(root, pattern, sibling_boundary=None):
         for candidate in boundary.iterdir():
             if not _glob_matches(candidate.name, sibling_name_pattern):
                 continue
+            if candidate.is_symlink() and _repo_for(candidate) == candidate.resolve():
+                raise ValueError(
+                    f"workspace member glob declared in {root / 'Cargo.toml'} uses directory alias "
+                    f"{pattern}: {candidate} -> {candidate.resolve()}; use the real checkout's relative path")
             candidate_repository = _repo_for(candidate)
             if candidate_repository is None or candidate_repository != candidate.resolve():
                 continue
@@ -599,6 +638,59 @@ def _cargo_config_paths(manifest, source_root):
             break
         current = current.parent
     return configs
+
+
+def _cargo_config_sources(config_path, source_root, *, stack=()):
+    """Expand tracked, repository-local Cargo config includes before their parent."""
+    config_path = Path(os.path.abspath(config_path))
+    source_root = Path(source_root).resolve()
+    try:
+        config_path.relative_to(source_root)
+    except ValueError as error:
+        raise ValueError(f"Cargo config is outside its source repository: {config_path}") from error
+    if config_path in stack:
+        chain = " -> ".join(map(str, (*stack, config_path)))
+        raise ValueError(f"Cargo config include cycle: {chain}")
+    tracked = _tracked_files(source_root)
+    try:
+        validate_tracked_snapshot_file(source_root, config_path, tracked)
+    except (OSError, ValueError) as error:
+        raise ValueError(f"Cargo config is not snapshot-safe: {config_path}: {error}") from error
+    import tomllib
+    try:
+        data = tomllib.loads(_read_manifest(config_path))
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise ValueError(f"cannot read Cargo config {config_path}: {error}") from error
+    includes = data.get("include", [])
+    if isinstance(includes, str):
+        includes = [includes]
+    if not isinstance(includes, list):
+        raise ValueError(f"invalid Cargo config include in {config_path}: {includes!r}")
+    sources = []
+    for include in includes:
+        optional = False
+        if isinstance(include, dict):
+            optional = include.get("optional", False) is True
+            include = include.get("path")
+        if not isinstance(include, str):
+            raise ValueError(f"invalid Cargo config include in {config_path}: {include!r}")
+        declared = Path(include)
+        if declared.is_absolute():
+            raise ValueError(f"absolute Cargo config include in {config_path}: {include}")
+        included = Path(os.path.abspath(config_path.parent / declared))
+        try:
+            included.relative_to(source_root)
+        except ValueError as error:
+            raise ValueError(
+                f"Cargo config include escapes source repository in {config_path}: {include}") from error
+        if not os.path.lexists(included) and optional:
+            continue
+        if not os.path.lexists(included):
+            raise ValueError(
+                f"required Cargo config include missing in {config_path}: {include}")
+        sources.extend(_cargo_config_sources(included, source_root, stack=(*stack, config_path)))
+    sources.append(config_path)
+    return sources
 
 
 def _config_patch_declarations(config_path, data):
@@ -796,7 +888,10 @@ def discover_local_repositories(manifest, sibling_root, source_root=None, *,
 
     config_paths = _cargo_config_paths(manifest, source_root)
     effective_config_patches = {}
+    expanded_config_paths = []
     for config_path in reversed(config_paths):
+        expanded_config_paths.extend(_cargo_config_sources(config_path, source_root))
+    for config_path in expanded_config_paths:
         try:
             config_data = tomllib.loads(_read_manifest(config_path))
         except (OSError, tomllib.TOMLDecodeError) as error:

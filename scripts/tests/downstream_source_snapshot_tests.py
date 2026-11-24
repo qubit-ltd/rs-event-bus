@@ -5,6 +5,9 @@ import tempfile
 import unittest
 
 from scripts.downstream_source_snapshot import copy_tracked_source
+from scripts.downstream_source_snapshot import is_tracked_snapshot_file
+from scripts.downstream_source_snapshot import tracked_source_files
+from scripts.downstream_source_snapshot import validate_tracked_snapshot_file
 
 
 class DownstreamSourceSnapshotTests(unittest.TestCase):
@@ -78,6 +81,37 @@ class DownstreamSourceSnapshotTests(unittest.TestCase):
 
             self.assertTrue((destination / "src/current.rs").is_symlink())
             self.assertEqual(os.readlink(destination / "src/current.rs"), "lib.rs")
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symbolic links are unavailable")
+    def test_discovery_rejects_untracked_intermediate_manifest_link(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.make_repository(Path(temp) / "source")
+            (root / "real.toml").write_text('[package]\nname="fixture"\n')
+            (root / "middle.toml").symlink_to("real.toml")
+            (root / "Cargo.toml").symlink_to("middle.toml")
+            subprocess.run(["git", "-C", str(root), "add", "Cargo.toml", "real.toml"], check=True)
+            declaration = root / "Cargo.toml"
+            tracked = set(tracked_source_files(root))
+
+            self.assertFalse(is_tracked_snapshot_file(root, declaration, tracked))
+            with self.assertRaisesRegex(ValueError, "middle.toml"):
+                validate_tracked_snapshot_file(root, declaration, tracked)
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symbolic links are unavailable")
+    def test_rejects_manifest_link_cycles_and_missing_targets_with_hop(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.make_repository(Path(temp) / "source")
+            (root / "Cargo.toml").symlink_to("middle.toml")
+            (root / "middle.toml").symlink_to("Cargo.toml")
+            subprocess.run(["git", "-C", str(root), "add", "Cargo.toml", "middle.toml"], check=True)
+            tracked = set(tracked_source_files(root))
+            with self.assertRaisesRegex(ValueError, "cycle.*Cargo.toml|cycle.*middle.toml"):
+                validate_tracked_snapshot_file(root, root / "Cargo.toml", tracked)
+
+            (root / "middle.toml").unlink()
+            (root / "middle.toml").symlink_to("missing.toml")
+            with self.assertRaisesRegex((ValueError, FileNotFoundError), "missing.toml"):
+                validate_tracked_snapshot_file(root, root / "Cargo.toml", tracked)
 
 
 if __name__ == "__main__":

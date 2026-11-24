@@ -51,31 +51,61 @@ def tracked_source_files(source):
 
 def is_tracked_snapshot_file(source, declaration, tracked=None):
     """Return whether a declared file would be available in a tracked snapshot."""
+    try:
+        validate_tracked_snapshot_file(source, declaration, tracked)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def validate_tracked_snapshot_file(source, declaration, tracked=None):
+    """Validate every link traversed by a file declaration for snapshot safety."""
     source = Path(source).resolve(strict=True)
     declaration = Path(os.path.abspath(declaration))
     try:
         relative = declaration.relative_to(source)
     except ValueError:
-        return False
+        raise ValueError(f"declaration is outside owning repository: {declaration}")
     tracked = set(tracked_source_files(source)) if tracked is None else tracked
     if relative not in tracked:
-        return False
-    try:
-        resolved = declaration.resolve()
-        target = resolved.relative_to(source)
-    except (OSError, ValueError):
-        return False
-    if target not in tracked or not declaration.is_file():
-        return False
-    if declaration.is_symlink():
-        try:
-            # copy_tracked_source reproduces links in the destination tree;
-            # an absolute target would continue to point at the source tree.
-            if Path(os.readlink(declaration)).is_absolute():
-                return False
-        except OSError:
-            return False
-    return True
+        raise ValueError(f"declaration is not tracked: {relative.as_posix()}")
+    pending = list(relative.parts)
+    current = source
+    visited = set()
+    while pending:
+        part = pending.pop(0)
+        if part in ("", "."):
+            continue
+        if part == "..":
+            current = current.parent
+            if not _inside(current, source):
+                raise ValueError(f"link escapes owning repository at {current}")
+            continue
+        current = current / part
+        rel = current.relative_to(source)
+        label = rel.as_posix()
+        if not _inside(current, source):
+            raise ValueError(f"link escapes owning repository at {label}")
+        if current.is_symlink():
+            if rel not in tracked:
+                raise ValueError(f"untracked symlink hop: {label}")
+            if current in visited:
+                raise ValueError(f"symlink cycle at {label}")
+            visited.add(current)
+            target = Path(os.readlink(current))
+            if target.is_absolute():
+                raise ValueError(f"absolute symlink target at {label}: {target}")
+            pending = list(target.parts) + pending
+            current = current.parent
+            continue
+        if pending and not current.is_dir():
+            raise FileNotFoundError(f"missing path component at {label}")
+    target_rel = current.relative_to(source)
+    if target_rel not in tracked:
+        raise ValueError(f"final file is not tracked: {target_rel.as_posix()}")
+    if not current.is_file():
+        raise FileNotFoundError(f"final file is missing: {current}")
+    return current
 
 
 def copy_tracked_source(source: Path, destination: Path) -> None:
