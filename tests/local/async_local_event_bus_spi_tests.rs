@@ -217,7 +217,8 @@ fn test_local_state_machine_cleanup_release_seed() {
     local_state_machine_tests::run(&seed(&[[0, 0, 0], [1, 0, 28], [10, 0, 1], [1, 0, 28]]));
 }
 
-/// Checks a delayed lane head blocks its successor while another lane stays ready.
+/// Checks a delayed lane head blocks its successor while another lane stays
+/// ready.
 #[test]
 fn test_local_state_machine_delayed_lane_head_seed() {
     local_state_machine_tests::run(&seed(&[

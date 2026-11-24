@@ -56,13 +56,17 @@ use support::manual_async::block_on;
 use support::manual_async::poll_once;
 
 type ReceivedWaitFuture = Pin<Box<dyn Future<Output = Result<WaitOutcome, LifecycleError>> + Send>>;
+type ObservedWait = Arc<Mutex<Option<Poll<Result<WaitOutcome, LifecycleError>>>>>;
 
 struct WaitDropProbe {
     bus: AsyncEventBus,
     topic: Topic<u32>,
-    observed: Arc<Mutex<Option<Poll<Result<WaitOutcome, LifecycleError>>>>>,
+    observed: ObservedWait,
 }
 
+// Dropping this waker reenters the wait operation; Waker::noop() cannot test
+// that.
+#[allow(clippy::manual_noop_waker)]
 impl Wake for WaitDropProbe {
     fn wake(self: Arc<Self>) {}
 }
@@ -79,14 +83,14 @@ struct WaitDropTimer {
     clock: ManualMonotonicClock,
     bus: Arc<Mutex<Option<AsyncEventBus>>>,
     topic: Topic<u32>,
-    observed: Arc<Mutex<Option<Poll<Result<WaitOutcome, LifecycleError>>>>>,
+    observed: ObservedWait,
 }
 
 struct WaitDropTimerFuture {
     inner: TimerFuture,
     bus: Arc<Mutex<Option<AsyncEventBus>>>,
     topic: Topic<u32>,
-    observed: Arc<Mutex<Option<Poll<Result<WaitOutcome, LifecycleError>>>>>,
+    observed: ObservedWait,
 }
 
 impl Timer for WaitDropTimer {
