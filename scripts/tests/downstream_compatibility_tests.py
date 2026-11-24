@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch
 
 from scripts.check_downstream_compatibility import _cargo_config_patch_declarations
+from scripts.check_downstream_compatibility import _cargo_config_sources
 from scripts.check_downstream_compatibility import _config_patch_declarations
 from scripts.check_downstream_compatibility import _manifest_patch_declarations
 from scripts.check_downstream_compatibility import _workspace_member_manifests
@@ -2072,6 +2073,68 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                 self.assertNotEqual(cargo.returncode, 0, cargo.stdout)
                 with self.subTest(include=include), self.assertRaisesRegex(ValueError, message):
                     discover_local_repositories(execution / "Cargo.toml", parent, execution)
+
+    def test_cargo_include_extension_is_validated_before_visibility(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            (execution / "Cargo.lock").write_text("")
+            cargo_dir = execution / ".cargo"
+            cargo_dir.mkdir()
+            (cargo_dir / "file.cfg").write_text("# present but invalid extension\n")
+
+            def write_config(name, declaration):
+                config = cargo_dir / name
+                config.write_text(f"include=[{declaration}]\n")
+                subprocess.run(["git", "-C", str(execution), "add", "-A"], check=True)
+                return config
+
+            invalid_declarations = (
+                ('"file.cfg"', "present file", "file.cfg"),
+                ('{path="file.cfg", optional=true}', "optional present file", "file.cfg"),
+                ('{path="missing.cfg", optional=true}', "optional missing file", "missing.cfg"),
+                ('".toml"', "dotfile without an extension", ".toml"),
+                ('"file.TOML"', "uppercase extension", "file.TOML"),
+            )
+            for declaration, description, declared_path in invalid_declarations:
+                config = write_config("config.toml", declaration)
+                cargo = subprocess.run(
+                    ["cargo", "+1.94.0", "metadata", "--offline", "--format-version", "1",
+                     "--manifest-path", str(execution / "Cargo.toml")],
+                    cwd=execution, capture_output=True, text=True, check=False)
+                self.assertNotEqual(cargo.returncode, 0, f"Cargo accepted {description}")
+                cargo_diagnostic = cargo.stderr.lower()
+                self.assertIn("expected a config include path ending with `.toml`",
+                              cargo_diagnostic, cargo.stderr)
+                with self.subTest(declaration=declaration), self.assertRaises(ValueError) as caught:
+                    discover_local_repositories(execution / "Cargo.toml", parent, execution)
+                diagnostic = str(caught.exception)
+                self.assertRegex(diagnostic, r"config\.toml.*include\[0\]")
+                self.assertIn(repr(declared_path), diagnostic)
+                self.assertIn("expected a .toml file", diagnostic)
+
+            # Existing and absent optional includes with .toml remain valid.
+            (cargo_dir / "file.toml").write_text("# valid include\n")
+            config = write_config(
+                "config.toml", '{path="file.toml", optional=true}, '
+                '{path="missing.toml", optional=true}')
+            self._cargo_metadata_offline(execution / "Cargo.toml")
+            self.assertEqual(
+                [source[0].name for source in _cargo_config_sources(config, execution)],
+                ["file.toml", "config.toml"])
+            discover_local_repositories(execution / "Cargo.toml", parent, execution)
+
+            # Cargo's legacy top-level .cargo/config entry remains recognized.
+            config_toml = cargo_dir / "config.toml"
+            config_toml.unlink()
+            legacy = write_config("config", '"file.toml"')
+            self._cargo_metadata_offline(execution / "Cargo.toml")
+            self.assertEqual(
+                [source[0].name for source in _cargo_config_sources(legacy, execution)],
+                ["file.toml", "config"])
+            discover_local_repositories(execution / "Cargo.toml", parent, execution)
 
     def test_cargo_config_missing_component_before_dotdot_is_not_collapsed(self):
         with tempfile.TemporaryDirectory() as directory:
