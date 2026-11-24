@@ -98,6 +98,19 @@ class DownstreamSourceSnapshotTests(unittest.TestCase):
                 validate_tracked_snapshot_file(root, declaration, tracked)
 
     @unittest.skipUnless(hasattr(os, "symlink"), "symbolic links are unavailable")
+    def test_snapshot_rejects_manifest_chain_through_untracked_intermediate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.make_repository(Path(temp) / "source")
+            (root / "Cargo.toml").write_text('[package]\nname="fixture"\n')
+            (root / "Cargo.toml").rename(root / "real.toml")
+            (root / "middle.toml").symlink_to("real.toml")
+            (root / "Cargo.toml").symlink_to("middle.toml")
+            subprocess.run(["git", "-C", str(root), "add", "Cargo.toml", "real.toml"], check=True)
+
+            with self.assertRaisesRegex(ValueError, "middle.toml"):
+                copy_tracked_source(root, Path(temp) / "snapshot")
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symbolic links are unavailable")
     def test_rejects_manifest_link_cycles_and_missing_targets_with_hop(self):
         with tempfile.TemporaryDirectory() as temp:
             root = self.make_repository(Path(temp) / "source")
