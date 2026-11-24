@@ -11,6 +11,7 @@ import time
 import unittest
 from unittest.mock import patch
 
+from scripts.check_downstream_compatibility import _cargo_config_patch_declarations
 from scripts.check_downstream_compatibility import cargo_config
 from scripts.downstream_source_snapshot import copy_tracked_source
 from scripts.check_downstream_compatibility import TESTS
@@ -249,23 +250,35 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             (member / "Cargo.toml").write_text(
                 '[package]\nname="consumer"\nversion="0.1.0"\nedition="2021"\n'
                 'workspace="../.."\n[dependencies]\nnon-default={workspace=true}\n')
+            (member / "src").mkdir()
+            (member / "src/lib.rs").write_text("pub fn consumer() {}\n")
             nested = execution / "tests/fixtures/nested-consumer"
             nested.mkdir(parents=True)
             (nested / "Cargo.toml").write_text(
                 '[package]\nname="nested-consumer"\nversion="0.1.0"\nedition="2021"\n'
                 '[workspace]\n[workspace.dependencies]\nnested={path="../../../../rs-nested-dep"}\n'
                 '[dependencies]\nnested={workspace=true}\n')
+            (nested / "src").mkdir()
+            (nested / "src/lib.rs").write_text("pub fn nested() {}\n")
             (execution / "Cargo.toml").write_text(
                 '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
-                '[workspace]\nmembers=["workspace/members/consumer", "tests/fixtures/**"]\n'
+                '[workspace]\nmembers=["workspace/members/consumer", "tests/fixtures/nested-consumer"]\n'
                 '[workspace.dependencies]\nunreferenced={path="../rs-unreferenced"}\n')
+            (execution / "Cargo.lock").write_text("")
+            (execution / "src").mkdir(exist_ok=True)
+            (execution / "src/lib.rs").write_text("pub fn root() {}\n")
 
             found_member = set(discover_local_repositories(member / "Cargo.toml", parent))
             found_nested = set(discover_local_repositories(nested / "Cargo.toml", parent))
+            found_root = set(discover_local_repositories(
+                execution / "Cargo.toml", parent, execution))
             self.assertEqual(found_member, {
                 execution.resolve(), (parent / "rs-non-default-dep").resolve()})
             self.assertEqual(found_nested, {
                 execution.resolve(), (parent / "rs-nested-dep").resolve()})
+            self.assertEqual(found_root, {execution.resolve()})
+            with self.assertRaisesRegex(AssertionError, "multiple workspace roots found"):
+                self._cargo_metadata_offline(execution / "Cargo.toml")
 
     def test_cargo_1_94_discovers_implicit_path_dependency_workspace_member(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -376,6 +389,145 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             self._assert_cargo_snapshot_discovers_only_reachable_packages(
                 parent, fixture / "Cargo.toml", "config-dependency")
 
+    def test_cargo_1_94_effective_patch_overrides_missing_older_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution-services", "execution")
+            tracked = self.make_input_repository(parent / "rs-tracked-dependency", "patch-dependency")
+            core = self.make_input_repository(parent / "rs-core", "qubit-event-bus")
+            (tracked / "Cargo.toml").write_text(
+                '[package]\nname="patch-dependency"\nversion="0.1.0"\n'
+                'edition="2021"\n')
+            (tracked / "Cargo.lock").write_text("")
+            fixture = execution / "tests/fixtures/ioc_application_consumer"
+            fixture.mkdir(parents=True)
+            manifest = fixture / "Cargo.toml"
+            (core / "Cargo.toml").write_text(
+                '[package]\nname="qubit-event-bus"\nversion="0.21.0"\nedition="2021"\n')
+            (core / "Cargo.lock").write_text("")
+            manifest.write_text(
+                '[package]\nname="ioc-consumer"\nversion="0.1.0"\n'
+                'edition="2021"\n[dependencies]\npatch-dependency="0.1.0"\n'
+                'qubit-event-bus="0.21"\n'
+                '[patch.crates-io]\npatch-dependency={path="../../../../missing-manifest"}\n'
+                'qubit-event-bus={path="../../../../missing-core"}\n')
+            (fixture / "Cargo.lock").write_text("")
+            (fixture / "src").mkdir()
+            (fixture / "src/lib.rs").write_text("pub fn fixture() {}\n")
+            config = execution / ".cargo/config.toml"
+            config.parent.mkdir()
+            config.write_text(
+                '[patch.crates-io]\npatch-dependency={path="../rs-tracked-dependency"}\n')
+            for root in (execution, tracked, core):
+                subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+                subprocess.run(["git", "-C", str(root), "commit", "-qm", "cargo fixture"],
+                               check=True)
+
+            config_args = [*cargo_config(core), "--config",
+                           f'patch.crates-io.patch-dependency.path="{tracked}"']
+            result = subprocess.run(
+                ["cargo", "metadata", "--format-version", "1", "--offline",
+                 "--manifest-path", str(manifest), *config_args],
+                cwd=fixture, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            package = next(item for item in json.loads(result.stdout)["packages"]
+                           if item["name"] == "patch-dependency")
+            self.assertEqual(Path(package["manifest_path"]), tracked / "Cargo.toml")
+            self.assertEqual(set(discover_local_repositories(
+                manifest, parent, execution,
+                cli_patches={(registry, name): str(path) for registry, name, path
+                             in _cargo_config_patch_declarations(core)})),
+                             {execution.resolve(), tracked.resolve()})
+            snapshots_root = base / "snapshot/siblings"
+            copy_tracked_source(execution, snapshots_root / execution.name)
+            copy_tracked_source(tracked, snapshots_root / tracked.name)
+            snapshot_manifest = (snapshots_root / execution.name /
+                                 "tests/fixtures/ioc_application_consumer/Cargo.toml")
+            snapshot_result = subprocess.run(
+                ["cargo", "metadata", "--format-version", "1", "--offline", "--locked",
+                 "--manifest-path", str(snapshot_manifest), *cargo_config(core)],
+                cwd=snapshot_manifest.parent, capture_output=True, text=True, check=False)
+            self.assertEqual(snapshot_result.returncode, 0, snapshot_result.stderr)
+            snapshot_package = next(item for item in json.loads(snapshot_result.stdout)["packages"]
+                                    if item["name"] == "patch-dependency")
+            self.assertEqual(Path(snapshot_package["manifest_path"]),
+                             snapshots_root / tracked.name / "Cargo.toml")
+
+            cli_args = cargo_config(core)
+            cli_result = subprocess.run(
+                ["cargo", "metadata", "--format-version", "1", "--offline",
+                 "--manifest-path", str(manifest), *cli_args],
+                cwd=fixture, capture_output=True, text=True, check=False)
+            self.assertEqual(cli_result.returncode, 0, cli_result.stderr)
+            cli_package = next(item for item in json.loads(cli_result.stdout)["packages"]
+                               if item["name"] == "qubit-event-bus")
+            self.assertEqual(Path(cli_package["manifest_path"]), core / "Cargo.toml")
+            self.assertEqual(set(discover_local_repositories(
+                manifest, parent, execution,
+                cli_patches={(registry, name): str(path) for registry, name, path
+                             in _cargo_config_patch_declarations(core)})),
+                {execution.resolve(), tracked.resolve()})
+
+    def test_cargo_1_94_workspace_member_and_external_dev_dependency_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution-services", "execution")
+            external = self.make_input_repository(parent / "rs-external-dependency", "external")
+            member_dep = self.make_input_repository(parent / "rs-member-dev-dependency", "member-dev")
+            for repository, name in ((external, "external"), (member_dep, "member-dev")):
+                (repository / "Cargo.toml").write_text(
+                    f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2021"\n')
+                (repository / "Cargo.lock").write_text("")
+            (external / "Cargo.toml").write_text(
+                '[package]\nname="external"\nversion="0.1.0"\nedition="2021"\n'
+                '[dev-dependencies]\nmissing-dev={path="../missing-external-dev"}\n')
+            fixture = execution / "tests/fixtures/ioc_application_consumer"
+            fixture.mkdir(parents=True)
+            (fixture / "Cargo.toml").write_text(
+                '[package]\nname="ioc-consumer"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\nexternal={path="../../../../rs-external-dependency"}\n')
+            (fixture / "src").mkdir()
+            (fixture / "src/lib.rs").write_text("pub fn fixture() {}\n")
+            other = execution / "members/other"
+            other.mkdir(parents=True)
+            (other / "Cargo.toml").write_text(
+                '[package]\nname="other-member"\nversion="0.1.0"\nedition="2021"\n'
+                '[dev-dependencies]\nmember-dev={path="../../../rs-member-dev-dependency"}\n')
+            (other / "src").mkdir()
+            (other / "src/lib.rs").write_text("pub fn other() {}\n")
+            root_manifest = execution / "Cargo.toml"
+            root_manifest.write_text(
+                '[workspace]\nmembers=["tests/fixtures/ioc_application_consumer", "members/other"]\n')
+            (execution / "Cargo.lock").write_text("")
+            for root in (execution, external, member_dep):
+                subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+                subprocess.run(["git", "-C", str(root), "commit", "-qm", "cargo fixture"],
+                               check=True)
+
+            source = fixture / "Cargo.toml"
+            source_result = self._cargo_metadata_offline(source)
+            self._cargo_metadata_offline(source, locked=True)
+            graph = json.loads(source_result.stdout)
+            self.assertEqual(Path(next(item for item in graph["packages"]
+                                       if item["name"] == "member-dev")["manifest_path"]),
+                             member_dep / "Cargo.toml")
+            discovered = set(discover_local_repositories(source, parent, execution))
+            self.assertEqual(discovered, {execution.resolve(), external.resolve(), member_dep.resolve()})
+            snapshots_root = base / "snapshot/siblings"
+            for repository in discovered:
+                copy_tracked_source(repository, snapshots_root / repository.relative_to(parent))
+            snapshot_manifest = (snapshots_root / execution.name /
+                                "tests/fixtures/ioc_application_consumer/Cargo.toml")
+            snapshot = self._cargo_metadata_offline(snapshot_manifest, locked=True)
+            snapshot_graph = json.loads(snapshot.stdout)
+            self.assertTrue(Path(next(item for item in snapshot_graph["packages"]
+                                      if item["name"] == "member-dev")["manifest_path"])
+                            .is_relative_to(snapshots_root))
+
     def test_ignored_cargo_config_does_not_mask_tracked_config_toml(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -451,6 +603,16 @@ class DownstreamCompatibilityTests(unittest.TestCase):
 
             manifest.write_text('[dependencies]\noutside = { path = "../../../../../outside" }\n')
             with self.assertRaisesRegex(ValueError, r"Cargo.toml.*outside"):
+                discover_local_repositories(manifest, parent)
+
+            malformed = parent / "rs-malformed"
+            malformed.mkdir()
+            malformed_manifest = malformed / "Cargo.toml"
+            malformed_manifest.write_text("[package\n")
+            manifest.write_text(
+                '[dependencies]\nmalformed = { path = "../../../../rs-malformed" }\n')
+            with self.assertRaisesRegex(
+                    ValueError, rf"{malformed_manifest}.*declared in {manifest}"):
                 discover_local_repositories(manifest, parent)
 
             config = fixture / ".cargo/config.toml"
