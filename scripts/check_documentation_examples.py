@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 import argparse
+import html
 import re
 import subprocess
+from urllib.parse import unquote
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCAL = "examples/local_delivery.rs"
 LIB = "src/lib.rs"
 ASYNC = "tests/fixtures/documentation_consumer/src/bin/async_local.rs"
+ASYNC_SUBSCRIPTION = "src/facade/async_subscription.rs"
 SPEC = "tests/fixtures/documentation_consumer/src/provider_spec.rs"
 PROVIDER_CONTRACT = "tests/fixtures/documentation_consumer/src/provider_contract.rs"
 CODEC = "tests/fixtures/documentation_consumer/src/order_created_codec.rs"
@@ -71,7 +74,7 @@ DOCUMENT_LINKS = {
 }
 
 
-def check_snapshot_content(snapshot_sha, fetch_snapshot):
+def check_snapshot_content(snapshot_sha, fetch_snapshot, document_shas):
     errors = []
     try:
         if fetch_snapshot:
@@ -92,6 +95,7 @@ def check_snapshot_content(snapshot_sha, fetch_snapshot):
                     detail = fetched.stderr.decode("utf-8", errors="replace").strip()
                     errors.append(f"snapshot {snapshot_sha} fetch failed: {detail or 'git fetch failed'}")
                     return errors
+        snapshot_documents = {}
         for document_path in DOCUMENT_LINKS.values():
             result = subprocess.run(
                 ["git", "show", f"{snapshot_sha}:{document_path}"],
@@ -107,9 +111,59 @@ def check_snapshot_content(snapshot_sha, fetch_snapshot):
                 )
             elif result.stdout != (ROOT / document_path).read_bytes():
                 errors.append(f"{document_path}: snapshot {snapshot_sha} content drift")
+            else:
+                snapshot_documents[document_path] = result.stdout.decode("utf-8")
+        if len(snapshot_documents) == len(DOCUMENT_LINKS):
+            errors.extend(check_method_links(snapshot_documents, document_shas))
     except OSError as error:
         errors.append(f"snapshot {snapshot_sha}: unable to run git: {error}")
     return errors
+
+
+def check_method_links(snapshot_documents=None, document_shas=None):
+    errors = []
+    try:
+        source = (ROOT / ASYNC_SUBSCRIPTION).read_text(encoding="utf-8")
+    except OSError as error:
+        return [f"{ASYNC_SUBSCRIPTION}: unable to read AsyncSubscription::run() Rustdoc: {error}"]
+    match = re.search(r"(?P<docs>(?:\s*///.*\n)+)\s*pub async fn run\b", source)
+    if match is None:
+        return [f"{ASYNC_SUBSCRIPTION}: unable to locate AsyncSubscription::run() Rustdoc"]
+    docs = "\n".join(re.sub(r"^\s*/// ?", "", line) for line in match.group("docs").splitlines())
+    docs = re.sub(r"\s+", " ", docs)
+    for label, path, home_label in (("English user guide", "doc/user_guide.md", "User guide"),
+                                    ("Chinese user guide", "doc/user_guide.zh_CN.md", "用户指南")):
+        found = re.findall(rf"\[{re.escape(label)}\]\(([^)]+)\)", docs)
+        prefix = f"{ASYNC_SUBSCRIPTION}: AsyncSubscription::run(): {label}"
+        if len(found) != 1:
+            errors.append(f"{prefix}: expected exactly one guide link (found {len(found)})")
+            continue
+        parsed = re.fullmatch(
+            rf"https://github\.com/qubit-ltd/rs-event-bus/blob/([0-9a-f]{{40}})/{re.escape(path)}#(.+)", found[0]
+        )
+        if parsed is None:
+            errors.append(f"{prefix}: invalid SHA, path, or anchor in {found[0]!r}")
+            continue
+        sha, fragment = parsed.groups()
+        expected_sha = (document_shas or {}).get(home_label)
+        if expected_sha is None or sha != expected_sha:
+            errors.append(f"{prefix}: SHA {sha} does not match the crate home guide link")
+        decoded = unquote(html.unescape(fragment))
+        headings = read_headings(snapshot_documents[path] if snapshot_documents else read_document_text(ROOT / path))
+        if decoded not in headings:
+            errors.append(f"{prefix}: anchor {decoded!r} does not identify a heading in {path}")
+    return errors
+
+
+def read_headings(text):
+    headings = set()
+    for line in text.splitlines():
+        if not re.match(r"^#{1,6} ", line):
+            continue
+        title = re.sub(r"[`*_~]", "", line.lstrip("#").strip()).lower()
+        slug = re.sub(r"[^\w -]", "", title, flags=re.UNICODE).replace(" ", "-")
+        headings.add(slug)
+    return headings
 
 
 def main():
@@ -145,6 +199,9 @@ def main():
         for label, sha in document_shas.items():
             errors.append(f"{LIB}: [{label}] uses snapshot SHA {sha}, but all four links must use the same SHA")
 
+    if not args.check_snapshot_content:
+        errors.extend(check_method_links(document_shas=document_shas))
+
     for document, required in REQUIRED.items():
         text = read_document_text(ROOT / document)
         found = set()
@@ -168,7 +225,7 @@ def main():
             errors.append(f"{document}: missing checked example {missing}")
 
     if args.check_snapshot_content and not errors and len(set(document_shas.values())) == 1:
-        errors.extend(check_snapshot_content(next(iter(document_shas.values())), args.fetch_snapshot))
+        errors.extend(check_snapshot_content(next(iter(document_shas.values())), args.fetch_snapshot, document_shas))
     if errors:
         raise SystemExit("\n".join(errors))
     print("documentation examples match their compiled sources and snapshot links")

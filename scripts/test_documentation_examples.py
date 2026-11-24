@@ -12,6 +12,7 @@ CHECKER = ROOT / "scripts/check_documentation_examples.py"
 LOCAL = "examples/local_delivery.rs"
 LIB = "src/lib.rs"
 ASYNC = "tests/fixtures/documentation_consumer/src/bin/async_local.rs"
+ASYNC_SUBSCRIPTION = "src/facade/async_subscription.rs"
 SPEC = "tests/fixtures/documentation_consumer/src/provider_spec.rs"
 PROVIDER_CONTRACT = "tests/fixtures/documentation_consumer/src/provider_contract.rs"
 CODEC = "tests/fixtures/documentation_consumer/src/order_created_codec.rs"
@@ -69,6 +70,12 @@ def run_case(mutator, args=(), snapshot=False, git_env=None, snapshot_missing=No
             path.parent.mkdir(parents=True, exist_ok=True)
             header = FILE_HEADER if source in {LOCAL, README_ORDERS} else ""
             path.write_text(f"{header}fn example() {{ /* {source} */ }}\n", encoding="utf-8")
+        method_path = root / ASYNC_SUBSCRIPTION
+        method_path.parent.mkdir(parents=True, exist_ok=True)
+        method_path.write_text(
+            f"/// See the [English user guide](https://github.com/qubit-ltd/rs-event-bus/blob/{DOC_SHA}/doc/user_guide.md#keep-an-event-that-fails-for-good)\n"
+            f"/// and [Chinese user guide](https://github.com/qubit-ltd/rs-event-bus/blob/{DOC_SHA}/doc/user_guide.zh_CN.md#%E4%BF%9D%E5%AD%98%E6%9C%80%E7%BB%88%E5%A4%84%E7%90%86%E5%A4%B1%E8%B4%A5%E7%9A%84%E4%BA%8B%E4%BB%B6).\n"
+            "pub async fn run() {}\n", encoding="utf-8")
         for document, required in REQUIRED.items():
             if document == LIB:
                 continue
@@ -79,6 +86,10 @@ def run_case(mutator, args=(), snapshot=False, git_env=None, snapshot_missing=No
                 code = (root / source).read_text(encoding="utf-8").removeprefix(FILE_HEADER).strip()
                 blocks.append(f"<!-- event-bus-source: {source} -->\n```rust\n{code}\n```")
             path.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
+        for document, heading in (("doc/user_guide.md", "Keep an event that fails for good"),
+                                  ("doc/user_guide.zh_CN.md", "保存最终处理失败的事件")):
+            path = root / document
+            path.write_text(f"# Guide\n\n## {heading}\n\n" + path.read_text(encoding="utf-8"), encoding="utf-8")
         lib_path = root / LIB
         lib_path.parent.mkdir(parents=True, exist_ok=True)
         source_code = (root / LOCAL).read_text(encoding="utf-8").removeprefix(FILE_HEADER).strip()
@@ -107,6 +118,7 @@ def run_case(mutator, args=(), snapshot=False, git_env=None, snapshot_missing=No
                 ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True
             ).stdout.strip()
             lib_path.write_text(lib_path.read_text(encoding="utf-8").replace(DOC_SHA, snapshot_sha), encoding="utf-8")
+            method_path.write_text(method_path.read_text(encoding="utf-8").replace(DOC_SHA, snapshot_sha), encoding="utf-8")
         mutator(root)
         return subprocess.run(
             [sys.executable, "scripts/check_documentation_examples.py", *args],
@@ -267,6 +279,39 @@ def mixed_doc_snapshot(root):
     mutate_doc_link(root, "设计文档", "//! - [设计文档](https://github.com/qubit-ltd/rs-event-bus/blob/1111111111111111111111111111111111111111/doc/design.zh_CN.md)")
 
 
+def mutate_method_link(root, label, replacement):
+    path = root / ASYNC_SUBSCRIPTION
+    text = path.read_text(encoding="utf-8")
+    text = re.sub(rf"(\[{re.escape(label)}\]\()([^)]*)(\))", lambda m: m.group(1) + replacement + m.group(3), text, count=1)
+    path.write_text(text, encoding="utf-8")
+
+
+def missing_method_link(root):
+    path = root / ASYNC_SUBSCRIPTION
+    path.write_text("\n".join(line for line in path.read_text(encoding="utf-8").splitlines()
+                              if "Chinese user guide" not in line) + "\n", encoding="utf-8")
+
+
+def wrong_method_language(root):
+    mutate_method_link(root, "Chinese user guide", f"https://github.com/qubit-ltd/rs-event-bus/blob/{DOC_SHA}/doc/user_guide.md#keep-an-event-that-fails-for-good")
+
+
+def wrong_method_sha(root):
+    mutate_method_link(root, "English user guide", "https://github.com/qubit-ltd/rs-event-bus/blob/1111111111111111111111111111111111111111/doc/user_guide.md#keep-an-event-that-fails-for-good")
+
+
+def wrong_method_anchor(root):
+    mutate_method_link(root, "English user guide", f"https://github.com/qubit-ltd/rs-event-bus/blob/{DOC_SHA}/doc/user_guide.md#missing-heading")
+
+
+def wrong_chinese_method_anchor(root):
+    mutate_method_link(root, "Chinese user guide", f"https://github.com/qubit-ltd/rs-event-bus/blob/{DOC_SHA}/doc/user_guide.zh_CN.md#不存在的标题")
+
+
+def missing_method_source(root):
+    (root / ASYNC_SUBSCRIPTION).unlink()
+
+
 for source, documents in (
     *((source, ("doc/user_guide.md", "doc/user_guide.zh_CN.md")) for source in (RECEIPT, SHUTDOWN, REPUBLISH, WEIGHTED)),
     (PROVIDER_CONTRACT, ("doc/design.md", "doc/design.zh_CN.md")),
@@ -314,6 +359,16 @@ result = run_case(normalize_lib_blank_lines)
 assert result.returncode == 0, result.stdout + result.stderr
 result = run_case(lambda _root: None)
 assert result.returncode == 0, result.stdout + result.stderr
+for mutator, expected in (
+    (missing_method_link, "Chinese user guide: expected exactly one guide link"),
+    (wrong_method_language, "Chinese user guide: invalid SHA, path, or anchor"),
+    (wrong_method_sha, "English user guide: SHA"),
+    (wrong_method_anchor, "English user guide: anchor"),
+    (wrong_chinese_method_anchor, "Chinese user guide: anchor"),
+    (missing_method_source, f"{ASYNC_SUBSCRIPTION}: unable to read AsyncSubscription::run() Rustdoc"),
+):
+    result = run_case(mutator)
+    assert result.returncode != 0 and expected in result.stdout + result.stderr, result.stdout + result.stderr
 
 result = run_case(add_external_shutdown_tests)
 assert result.returncode == 0, result.stdout + result.stderr
@@ -344,6 +399,9 @@ def unknown_snapshot(root):
     path = root / LIB
     text = path.read_text(encoding="utf-8")
     path.write_text(re.sub(r"blob/[0-9a-f]{40}/", "blob/0000000000000000000000000000000000000000/", text), encoding="utf-8")
+    method_path = root / ASYNC_SUBSCRIPTION
+    method_path.write_text(re.sub(r"blob/[0-9a-f]{40}/", "blob/0000000000000000000000000000000000000000/",
+                                  method_path.read_text(encoding="utf-8")), encoding="utf-8")
 
 
 result = run_case(unknown_snapshot, args=SNAPSHOT_ARGS, snapshot=True)
