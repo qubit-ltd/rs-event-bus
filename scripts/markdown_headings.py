@@ -41,17 +41,30 @@ def link_lines(text):
     yield from link_lines_from_tokens(parse_markdown(text))
 
 
-def link_lines_from_tokens(tokens):
-    """Yield link records from an already parsed token stream."""
+def resource_lines(text):
+    """Yield located link and image destinations with their CommonMark type."""
+    yield from resource_lines_from_tokens(parse_markdown(text))
+
+
+def resource_lines_from_tokens(tokens):
+    """Yield (line, kind, destination) records for links and images."""
     for token in tokens:
         if token.type != "inline" or token.map is None or not token.children:
             continue
         for child in token.children:
             if child.type == "link_open":
-                destination = child.attrGet("href")
-                if destination is not None and destination.strip():
-                    yield token.map[0], destination
+                kind, attribute = "link", "href"
             elif child.type == "image":
-                destination = child.attrGet("src")
-                if destination is not None and destination.strip():
-                    yield token.map[0], destination
+                kind, attribute = "image", "src"
+            else:
+                continue
+            destination = child.attrGet(attribute)
+            if destination is not None and destination.strip():
+                yield token.map[0], kind, destination
+
+
+def link_lines_from_tokens(tokens):
+    """Yield link records from an already parsed token stream."""
+    for line_number, kind, destination in resource_lines_from_tokens(tokens):
+        if kind == "link":
+            yield line_number, destination

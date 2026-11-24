@@ -10,8 +10,9 @@ from urllib.parse import unquote, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from markdown_headings import (heading_lines, heading_lines_from_tokens, heading_titles,
-                               link_lines, link_lines_from_tokens, parse_markdown)
+from markdown_headings import (heading_lines_from_tokens, heading_titles, link_lines,
+                               parse_markdown,
+                               resource_lines, resource_lines_from_tokens)
 
 
 DOCUMENTS = ("README.md", "README.zh_CN.md", "doc/user_guide.md", "doc/user_guide.zh_CN.md",
@@ -58,6 +59,11 @@ def markdown_links(text):
         yield destination
 
 
+def markdown_resource_lines(text):
+    """Yield located Markdown links and images for local resource checks."""
+    yield from resource_lines(text)
+
+
 def _url_parts(document, line_number, destination, errors):
     try:
         return urlsplit(destination)
@@ -102,7 +108,7 @@ def check(root, package_list):
         except (OSError, UnicodeError) as error:
             errors.append((document, f"cannot read document: {error}"))
             continue
-        for line_number, destination in markdown_link_lines(text):
+        for line_number, _kind, destination in markdown_resource_lines(text):
             parts = _url_parts(document, line_number, destination, errors)
             if parts is None:
                 continue
@@ -146,15 +152,17 @@ def check_guide_toc_contract(root):
             continue
         toc_end = next((line_number for line_number, _level, _title in headings
                         if line_number > toc_start), len(lines))
-        toc_links = set()
-        for line_number, destination in link_lines_from_tokens(tokens):
+        toc_fragments = set()
+        for line_number, kind, destination in resource_lines_from_tokens(tokens):
+            if kind != "link":
+                continue
             if toc_start < line_number < toc_end:
                 parts = _url_parts(document, line_number, destination, errors)
-                if parts is not None:
-                    toc_links.add(destination)
+                if parts is not None and not parts.scheme and not parts.netloc and not parts.path:
+                    toc_fragments.add(unquote(parts.fragment))
         anchors = _anchors_for_titles(title for _line, _level, title in headings)
         for anchor in required_anchors:
-            if f"#{anchor}" not in toc_links:
+            if anchor not in toc_fragments:
                 errors.append((document, f"missing TOC entry for #{anchor}"))
             if anchor not in anchors:
                 errors.append((document, f"TOC target heading #{anchor} does not exist"))
@@ -172,7 +180,7 @@ def check_explicit_source_links(root):
         except (OSError, UnicodeError) as error:
             errors.append((document, f"cannot read document for source links: {error}"))
             continue
-        for line_number, destination in markdown_link_lines(text):
+        for line_number, _kind, destination in markdown_resource_lines(text):
             parts = _url_parts(document, line_number, destination, errors)
             if parts is None:
                 continue
@@ -227,7 +235,7 @@ def _is_local_link_to(destination, path, fragment=None):
     except ValueError:
         return False
     return (not parts.scheme and not parts.netloc and parts.path == path and
-            (fragment is None or parts.fragment == fragment))
+            (fragment is None or unquote(parts.fragment) == fragment))
 
 
 def check_migration_contract(root, package_list):

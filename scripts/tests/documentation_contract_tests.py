@@ -4,8 +4,10 @@ import importlib.util
 from contextlib import redirect_stderr
 from io import StringIO
 from pathlib import Path
+import re
 import tempfile
 import unittest
+from urllib.parse import quote
 
 SCRIPT = Path(__file__).parents[1] / "check_documentation_contract.py"
 spec = importlib.util.spec_from_file_location("documentation_contract", SCRIPT)
@@ -134,6 +136,55 @@ class DocumentationContractTests(unittest.TestCase):
         guide.write_text(text + "\n[orders]: #run-the-redis-order-examples\n", encoding="utf-8")
         self.assertTrue(checker.check_guide_toc_contract(self.root))
 
+    def test_images_do_not_satisfy_readme_migration_entries(self):
+        for readme, target in (("README.md", "doc/migration.md"),
+                               ("README.zh_CN.md", "doc/migration.zh_CN.md")):
+            with self.subTest(readme=readme):
+                (self.root / readme).write_text(f"![Migration]({target})\n", encoding="utf-8")
+                output = StringIO()
+                with redirect_stderr(output):
+                    self.assertFalse(checker.check_migration_contract(self.root, self.listing))
+                self.assertIn(f"{readme}: missing migration entry link to {target}", output.getvalue())
+
+    def test_images_do_not_satisfy_reciprocal_migration_links(self):
+        self._migration_pages()
+        (self.root / "doc/migration.md").write_text(
+            "![简体中文](migration.zh_CN.md) [guide](user_guide.md#migrate-from-020-to-021)\n",
+            encoding="utf-8")
+        output = StringIO()
+        with redirect_stderr(output):
+            self.assertFalse(checker.check_migration_contract(self.root, self.listing))
+        self.assertIn("missing reciprocal migration link to doc/migration.zh_CN.md", output.getvalue())
+
+    def test_images_do_not_satisfy_migration_guide_links(self):
+        self._migration_pages()
+        (self.root / "doc/migration.md").write_text(
+            "[简体中文](migration.zh_CN.md) ![guide](user_guide.md#migrate-from-020-to-021)\n",
+            encoding="utf-8")
+        output = StringIO()
+        with redirect_stderr(output):
+            self.assertFalse(checker.check_migration_contract(self.root, self.listing))
+        self.assertIn("missing link to doc/user_guide.md#migrate-from-020-to-021", output.getvalue())
+
+    def test_link_wrapped_image_satisfies_navigation(self):
+        self._migration_pages()
+        (self.root / "doc/migration.md").write_text(
+            "[![简体中文](images/flag.png)](migration.zh_CN.md) "
+            "[guide](user_guide.md#migrate-from-020-to-021)\n", encoding="utf-8")
+        (self.root / "doc/migration.zh_CN.md").write_text(
+            "[English](migration.md) [指南](user_guide.zh_CN.md#从-020-迁移到-021)\n",
+            encoding="utf-8")
+        self.listing.write_text(
+            "scripts/tool.py\ndoc/migration.md\ndoc/migration.zh_CN.md\ndoc/images/flag.png\n",
+            encoding="utf-8")
+        self.assertTrue(checker.check_migration_contract(self.root, self.listing))
+
+    def test_image_local_resource_paths_are_still_checked(self):
+        text = "![missing](scripts/not-packaged.png)\n"
+        (self.root / "README.md").write_text(text, encoding="utf-8")
+        self.assertEqual(list(checker.markdown_links(text)), [])
+        self.assertFalse(checker.check(self.root, self.listing))
+
     def test_bad_url_reports_location_and_continues_collecting(self):
         (self.root / "README.md").write_text(
             "[bad](http://[)\n[missing](scripts/missing.py)\n", encoding="utf-8")
@@ -219,6 +270,49 @@ class DocumentationContractTests(unittest.TestCase):
         guide.write_text(guide.read_text(encoding="utf-8").replace(
             "- [Run the Redis order examples](#run-the-redis-order-examples)\n", ""), encoding="utf-8")
         self.assertFalse(checker.check_guide_toc_contract(self.root))
+
+    def test_images_do_not_satisfy_operational_toc_entries(self):
+        for document, anchors in checker.GUIDE_TOC_ENTRIES.items():
+            anchor = anchors[0]
+            with self.subTest(document=document):
+                path = self.root / document
+                original = path.read_text(encoding="utf-8")
+                text, count = re.subn(r"- \[[^\]]+\]\(#" + re.escape(anchor) + r"\)",
+                                      f"- ![entry](#{anchor})", original, count=1)
+                self.assertEqual(count, 1)
+                path.write_text(text, encoding="utf-8")
+                output = StringIO()
+                with redirect_stderr(output):
+                    self.assertFalse(checker.check_guide_toc_contract(self.root))
+                self.assertIn(f"missing TOC entry for #{anchor}", output.getvalue())
+                path.write_text(original, encoding="utf-8")
+
+    def test_percent_encoded_chinese_toc_fragment_matches_utf8_heading(self):
+        guide = self.root / "doc/user_guide.zh_CN.md"
+        text = guide.read_text(encoding="utf-8")
+        anchor = checker.GUIDE_TOC_ENTRIES["doc/user_guide.zh_CN.md"][0]
+        encoded = quote(anchor, safe="-")
+        guide.write_text(text.replace(f"](#{anchor})", f"](#{encoded})", 1), encoding="utf-8")
+        self.assertTrue(checker.check_guide_toc_contract(self.root))
+
+    def test_toc_rejects_path_and_external_fragment_masquerades(self):
+        guide = self.root / "doc/user_guide.md"
+        original = guide.read_text(encoding="utf-8")
+        anchor = checker.GUIDE_TOC_ENTRIES["doc/user_guide.md"][0]
+        for destination in (f"other.md#{anchor}", f"https://example.com/#{anchor}"):
+            with self.subTest(destination=destination):
+                guide.write_text(original.replace(f"](#{anchor})", f"]({destination})", 1),
+                                 encoding="utf-8")
+                self.assertFalse(checker.check_guide_toc_contract(self.root))
+        guide.write_text(original, encoding="utf-8")
+
+    def test_percent_encoded_chinese_migration_fragment_matches_utf8_heading(self):
+        self._migration_pages()
+        page = self.root / "doc/migration.zh_CN.md"
+        text = page.read_text(encoding="utf-8")
+        anchor = checker.MIGRATION_GUIDES["doc/migration.zh_CN.md"][1]
+        page.write_text(text.replace(f"#{anchor}", f"#{quote(anchor, safe='-')}"), encoding="utf-8")
+        self.assertTrue(checker.check_migration_contract(self.root, self.listing))
 
     def test_missing_operational_toc_target_is_rejected(self):
         guide = self.root / "doc/user_guide.zh_CN.md"
