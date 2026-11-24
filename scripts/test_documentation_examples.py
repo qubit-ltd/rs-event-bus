@@ -404,7 +404,7 @@ assert result.returncode == 0, result.stdout + result.stderr
 def fence_dead_letter_heading(root, document, heading, marker):
     path = root / document
     text = path.read_text(encoding="utf-8")
-    fenced = f"{marker}md\n## {heading}\n{marker[0] * 3}\n{marker}\n"
+    fenced = f"{marker}md\n{marker[0] * 3}\n## {heading}\n{marker}\n"
     assert f"## {heading}\n" in text
     path.write_text(text.replace(f"## {heading}\n", fenced, 1), encoding="utf-8")
 

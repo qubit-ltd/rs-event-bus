@@ -150,7 +150,7 @@ class DocumentationContractTests(unittest.TestCase):
                        if line.lstrip().startswith("#")
                        and line.lstrip("#").strip().rstrip("#").strip() == title)
         short_marker = marker[0] * 3
-        hidden_heading = f"{marker}md\n{heading}\n{short_marker}\n{marker}\n"
+        hidden_heading = f"{marker}md\n{short_marker}\n{heading}\n{marker}\n"
         path.write_text(text.replace(heading + "\n", hidden_heading, 1), encoding="utf-8")
 
     def test_guide_targets_inside_backtick_and_tilde_fences_are_rejected(self):
