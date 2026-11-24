@@ -15,6 +15,7 @@ try:
     from scripts.check_event_bus_graph import validate_graph_for_downstream
     from scripts.downstream_source_snapshot import copy_tracked_source
     from scripts.downstream_source_snapshot import is_tracked_snapshot_file
+    from scripts.downstream_source_snapshot import validate_tracked_config_snapshot_file
     from scripts.downstream_source_snapshot import tracked_source_files
     from scripts.downstream_source_snapshot import validate_tracked_snapshot_file
     from scripts.run_conformance_watchdog import process_group_options
@@ -23,6 +24,7 @@ except ModuleNotFoundError:
     from check_event_bus_graph import validate_graph_for_downstream
     from downstream_source_snapshot import copy_tracked_source
     from downstream_source_snapshot import is_tracked_snapshot_file
+    from downstream_source_snapshot import validate_tracked_config_snapshot_file
     from downstream_source_snapshot import tracked_source_files
     from downstream_source_snapshot import validate_tracked_snapshot_file
     from run_conformance_watchdog import process_group_options
@@ -631,9 +633,11 @@ def _cargo_config_paths(manifest, source_root):
         if current == source_root or source_root in current.parents:
             for name in ("config", "config.toml"):
                 candidate = current / ".cargo" / name
-                if candidate.is_file() and candidate.relative_to(source_root) in tracked_files:
-                    configs.append(candidate)
-                    break
+                if candidate.relative_to(source_root) in tracked_files:
+                    if validate_tracked_config_snapshot_file(
+                            source_root, candidate, tracked_files) is not None:
+                        configs.append(candidate)
+                        break
         if current == source_root or current.parent == current:
             break
         current = current.parent
@@ -669,10 +673,14 @@ def _cargo_config_sources(config_path, source_root, *, stack=()):
             f"invalid Cargo config field 'include' in {config_path}: {includes!r}; "
             "Cargo config include must be a list, for example include = [\"common.toml\"]")
     sources = []
-    for include in includes:
+    for index, include in enumerate(includes):
         optional = False
         if isinstance(include, dict):
-            optional = include.get("optional", False) is True
+            optional = include.get("optional", False)
+            if not isinstance(optional, bool):
+                raise ValueError(
+                    f"invalid Cargo config field 'optional' in {config_path} "
+                    f"include[{index}].optional: expected a boolean, got {optional!r}")
             include = include.get("path")
         if not isinstance(include, str):
             raise ValueError(f"invalid Cargo config include in {config_path}: {include!r}")
@@ -685,19 +693,19 @@ def _cargo_config_sources(config_path, source_root, *, stack=()):
         except ValueError as error:
             raise ValueError(
                 f"Cargo config include escapes source repository in {config_path}: {include}") from error
-        relative_include = included.relative_to(source_root)
-        if relative_include not in tracked:
-            if optional:
-                continue
-            if not os.path.lexists(included):
-                raise ValueError(
-                    f"required Cargo config include missing in {config_path}: {include}")
+        try:
+            visible_include = validate_tracked_config_snapshot_file(
+                source_root, included, tracked)
+        except (OSError, ValueError) as error:
             raise ValueError(
-                f"Cargo config include {include} in {config_path} is not present in "
-                "tracked source view")
-        if not os.path.lexists(included) and optional:
+                f"Cargo config include is not snapshot-safe in {config_path}: {include}: {error}") from error
+        if visible_include is None and optional:
             continue
-        if not os.path.lexists(included):
+        if visible_include is None:
+            if included.exists():
+                raise ValueError(
+                    f"Cargo config include {include} in {config_path} is not present in "
+                    "tracked source view")
             raise ValueError(
                 f"required Cargo config include missing in {config_path}: {include}")
         try:

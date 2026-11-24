@@ -2883,6 +2883,137 @@ class DownstreamCompatibilityTests(unittest.TestCase):
         self.assertIn("tracked-source snapshots", stdout.getvalue())
         self.assertIn("--execution-services-root", stdout.getvalue())
 
+    def test_optional_config_include_through_untracked_final_symlink_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            patched = self.make_input_repository(parent / "rs-patched", "patched")
+            (patched / "Cargo.toml").write_text(
+                '[package]\nname="patched"\nversion="0.1.0"\nedition="2021"\n')
+            subprocess.run(["git", "-C", str(patched), "add", "Cargo.toml"], check=True)
+            (execution / "Cargo.toml").write_text(
+                '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n')
+            (execution / "Cargo.lock").write_text("")
+            cargo_dir = execution / ".cargo"
+            cargo_dir.mkdir()
+            (cargo_dir / "config.toml").write_text(
+                'include=[{path="local.toml", optional=true}]\n')
+            (cargo_dir / "local.toml").symlink_to("local-final.toml")
+            final = cargo_dir / "local-final.toml"
+            final.write_text('[patch.crates-io]\npatched={path="../rs-patched"}\n')
+            subprocess.run(["git", "-C", str(execution), "add", "Cargo.toml", ".cargo/config.toml",
+                            ".cargo/local.toml"], check=True)
+
+            discovered_with_untracked_target = set(discover_local_repositories(
+                execution / "Cargo.toml", parent, execution))
+            self.assertEqual(discovered_with_untracked_target, {execution.resolve()})
+
+            (cargo_dir / "config.toml").write_text(
+                'include=[{path="local.toml", optional=false}]\n')
+            subprocess.run(["git", "-C", str(execution), "add", ".cargo/config.toml"], check=True)
+            with self.assertRaisesRegex(ValueError, "not present in tracked source view"):
+                discover_local_repositories(execution / "Cargo.toml", parent, execution)
+            (cargo_dir / "config.toml").write_text(
+                'include=[{path="local.toml", optional=true}]\n')
+            subprocess.run(["git", "-C", str(execution), "add", ".cargo/config.toml"], check=True)
+
+            final.unlink()
+            graph = json.loads(self._cargo_metadata_offline(execution / "Cargo.toml").stdout)
+            self.assertFalse(any(item["name"] == "patched" for item in graph["packages"]))
+            self._cargo_metadata_offline(execution / "Cargo.toml", locked=True)
+            input_lock = (execution / "Cargo.lock").read_bytes()
+            discovered = set(discover_local_repositories(
+                execution / "Cargo.toml", parent, execution))
+            self.assertEqual(discovered, {execution.resolve()})
+            snapshot = base / "snapshot/rs-execution"
+            copy_tracked_source(execution, snapshot)
+            self.assertTrue((snapshot / ".cargo/local.toml").is_symlink())
+            snapshot_graph = json.loads(self._cargo_metadata_offline(
+                snapshot / "Cargo.toml", locked=True).stdout)
+            self.assertFalse(any(item["name"] == "patched" for item in snapshot_graph["packages"]))
+            self.assertEqual((execution / "Cargo.lock").read_bytes(), input_lock)
+
+            final.write_text('[patch.crates-io]\npatched={path="../rs-patched"}\n')
+            subprocess.run(["git", "-C", str(execution), "add", ".cargo/local-final.toml"], check=True)
+            (execution / "Cargo.toml").write_text(
+                '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\npatched="=0.1.0"\n')
+            source = json.loads(self._cargo_metadata_offline(execution / "Cargo.toml").stdout)
+            source_patch = next(item for item in source["packages"] if item["name"] == "patched")
+            self.assertEqual(Path(source_patch["manifest_path"]), patched / "Cargo.toml")
+            tracked = set(discover_local_repositories(
+                execution / "Cargo.toml", parent, execution))
+            self.assertEqual(tracked, {execution.resolve(), patched.resolve()})
+
+    def test_dangling_legacy_config_is_copied_while_config_toml_is_selected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            patched = self.make_input_repository(parent / "rs-patched", "patched")
+            (patched / "Cargo.toml").write_text(
+                '[package]\nname="patched"\nversion="0.1.0"\nedition="2021"\n')
+            subprocess.run(["git", "-C", str(patched), "add", "Cargo.toml"], check=True)
+            (execution / "Cargo.toml").write_text(
+                '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\npatched="=0.1.0"\n')
+            (execution / "Cargo.lock").write_text("")
+            cargo_dir = execution / ".cargo"
+            cargo_dir.mkdir()
+            (cargo_dir / "config").symlink_to("missing-old-config")
+            (cargo_dir / "config.toml").write_text(
+                '[patch.crates-io]\npatched={path="../rs-patched"}\n')
+            subprocess.run(["git", "-C", str(execution), "add", "Cargo.toml", ".cargo/config",
+                            ".cargo/config.toml"], check=True)
+            source = json.loads(self._cargo_metadata_offline(execution / "Cargo.toml").stdout)
+            source_patch = next(item for item in source["packages"] if item["name"] == "patched")
+            self.assertEqual(Path(source_patch["manifest_path"]), patched / "Cargo.toml")
+            discovered = set(discover_local_repositories(
+                execution / "Cargo.toml", parent, execution))
+            self.assertEqual(discovered, {execution.resolve(), patched.resolve()})
+            snapshot_root = base / "snapshot/siblings"
+            for repository in discovered:
+                copy_tracked_source(repository, snapshot_root / repository.name)
+            copied = snapshot_root / execution.name
+            self.assertTrue((copied / ".cargo/config").is_symlink())
+            graph = json.loads(self._cargo_metadata_offline(
+                copied / "Cargo.toml", locked=True).stdout)
+            copied_patch = next(item for item in graph["packages"] if item["name"] == "patched")
+            self.assertEqual(Path(copied_patch["manifest_path"]),
+                             snapshot_root / patched.name / "Cargo.toml")
+
+    def test_cargo_config_include_optional_must_be_boolean(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            cargo_dir = execution / ".cargo"
+            cargo_dir.mkdir()
+            (cargo_dir / "included.toml").write_text("# tracked include\n")
+            (cargo_dir / "config.toml").write_text(
+                'include=[{path="included.toml", optional="true"}]\n')
+            subprocess.run(["git", "-C", str(execution), "add", ".cargo"], check=True)
+            cargo = subprocess.run(
+                ["cargo", "+1.94.0", "metadata", "--format-version", "1", "--offline",
+                 "--manifest-path", str(execution / "Cargo.toml")],
+                cwd=execution, capture_output=True, text=True, check=False)
+            self.assertNotEqual(cargo.returncode, 0, cargo.stdout)
+            with self.assertRaisesRegex(ValueError, r"config\.toml.*include\[0\].*optional"):
+                discover_local_repositories(execution / "Cargo.toml", parent, execution)
+
+            for option in ("true", "false", None):
+                value = "" if option is None else f", optional={option}"
+                (cargo_dir / "config.toml").write_text(
+                    f'include=[{{path="included.toml"{value}}}]\n')
+                subprocess.run(["git", "-C", str(execution), "add", ".cargo/config.toml"],
+                               check=True)
+                self.assertEqual(set(discover_local_repositories(
+                    execution / "Cargo.toml", parent, execution)), {execution.resolve()})
+
 
 if __name__ == "__main__":
     unittest.main()
