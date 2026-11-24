@@ -686,7 +686,7 @@ def _cargo_config_sources(config_path, source_root, *, stack=()):
         if not os.path.lexists(included) and optional:
             continue
         if not os.path.lexists(included):
-            raise FileNotFoundError(
+            raise ValueError(
                 f"required Cargo config include missing in {config_path}: {include}")
         sources.extend(_cargo_config_sources(included, source_root, stack=(*stack, config_path)))
     sources.append(config_path)

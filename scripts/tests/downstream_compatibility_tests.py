@@ -1700,6 +1700,128 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                              second_snapshot_root / inner.name / "Cargo.toml")
             self.assertEqual((execution / "Cargo.lock").read_bytes(), source_lock)
 
+    def test_cargo_194_config_include_discovers_and_snapshots_patch_sibling(self):
+        for manifest_patch in (False, True):
+            with self.subTest(manifest_patch=manifest_patch), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                parent = base / "siblings"
+                parent.mkdir()
+                execution = self.make_input_repository(parent / "rs-execution", "execution")
+                patched = self.make_input_repository(parent / "rs-patched", "patched")
+                (execution / "Cargo.toml").write_text(
+                    '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                    '[dependencies]\npatched="=0.1.0"\n' +
+                    ('[patch.crates-io]\npatched={path="../missing-old-patch"}\n'
+                     if manifest_patch else ''))
+                (execution / "Cargo.lock").write_text("")
+                (patched / "Cargo.toml").write_text(
+                    '[package]\nname="patched"\nversion="0.1.0"\nedition="2021"\n')
+                cargo_dir = execution / ".cargo"
+                cargo_dir.mkdir()
+                (cargo_dir / "config.toml").write_text('include=["deps.toml"]\n')
+                (cargo_dir / "deps.toml").write_text(
+                    '[patch.crates-io]\npatched={path="../rs-patched"}\n')
+                subprocess.run(["git", "-C", str(execution), "add", "-A"], check=True)
+                subprocess.run(["git", "-C", str(patched), "add", "-A"], check=True)
+
+                source = json.loads(self._cargo_metadata_offline(execution / "Cargo.toml").stdout)
+                source_package = next(item for item in source["packages"]
+                                      if item["name"] == "patched")
+                self.assertEqual(Path(source_package["manifest_path"]), patched / "Cargo.toml")
+                self._cargo_metadata_offline(execution / "Cargo.toml", locked=True)
+                input_lock = (execution / "Cargo.lock").read_bytes()
+
+                discovered = set(discover_local_repositories(
+                    execution / "Cargo.toml", parent, execution))
+                self.assertEqual(discovered, {execution.resolve(), patched.resolve()})
+                with patch("scripts.check_downstream_compatibility._cargo_config_sources",
+                           side_effect=lambda config_path, _source_root, **_kwargs: [config_path]):
+                    if manifest_patch:
+                        with self.assertRaisesRegex(ValueError, "missing local path"):
+                            discover_local_repositories(
+                                execution / "Cargo.toml", parent, execution)
+                    else:
+                        old_discovery = set(discover_local_repositories(
+                            execution / "Cargo.toml", parent, execution))
+                        self.assertEqual(old_discovery, {execution.resolve()})
+                snapshot_root = base / "snapshot/siblings"
+                for repository in discovered:
+                    copy_tracked_source(repository, snapshot_root / repository.name)
+                snapshot_manifest = snapshot_root / execution.name / "Cargo.toml"
+                snapshot = json.loads(self._cargo_metadata_offline(
+                    snapshot_manifest, locked=True).stdout)
+                snapshot_package = next(item for item in snapshot["packages"]
+                                        if item["name"] == "patched")
+                self.assertEqual(Path(snapshot_package["manifest_path"]),
+                                 snapshot_root / patched.name / "Cargo.toml")
+                self.assertEqual((execution / "Cargo.lock").read_bytes(), input_lock)
+
+    def test_cargo_config_include_order_optional_and_unsafe_targets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            one = self.make_input_repository(parent / "rs-one", "patched")
+            two = self.make_input_repository(parent / "rs-two", "patched")
+            for repository in (one, two):
+                (repository / "Cargo.toml").write_text(
+                    '[package]\nname="patched"\nversion="0.1.0"\nedition="2021"\n')
+                subprocess.run(["git", "-C", str(repository), "add", "Cargo.toml"], check=True)
+            (execution / "Cargo.toml").write_text(
+                '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\npatched="=0.1.0"\n')
+            (execution / "Cargo.lock").write_text("")
+            cargo_dir = execution / ".cargo"
+            nested = cargo_dir / "nested"
+            nested.mkdir(parents=True)
+            (cargo_dir / "config.toml").write_text('include=["one.toml", "nested/two.toml"]\n')
+            (cargo_dir / "one.toml").write_text(
+                'include=["leaf.toml", {path="absent-optional.toml", optional=true}]\n')
+            (cargo_dir / "leaf.toml").write_text(
+                '[patch.crates-io]\npatched={path="../rs-one"}\n')
+            (nested / "two.toml").write_text(
+                '[patch.crates-io]\npatched={path="../../rs-two"}\n')
+            subprocess.run(["git", "-C", str(execution), "add", "-A"], check=True)
+
+            def selected_source():
+                result = subprocess.run(
+                    ["cargo", "+1.94.0", "metadata", "--format-version", "1", "--offline",
+                     "--manifest-path", str(execution / "Cargo.toml")],
+                    cwd=execution, capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                graph = json.loads(result.stdout)
+                return Path(next(item["manifest_path"] for item in graph["packages"]
+                                 if item["name"] == "patched"))
+
+            self.assertEqual(selected_source(), two / "Cargo.toml")
+            discovered = set(discover_local_repositories(
+                execution / "Cargo.toml", parent, execution))
+            self.assertEqual(discovered, {execution.resolve(), two.resolve()})
+
+            (cargo_dir / "config.toml").write_text('include=["nested/two.toml", "one.toml"]\n')
+            subprocess.run(["git", "-C", str(execution), "add", str(cargo_dir / "config.toml")],
+                           check=True)
+            self.assertEqual(selected_source(), one / "Cargo.toml")
+            discovered = set(discover_local_repositories(
+                execution / "Cargo.toml", parent, execution))
+            self.assertEqual(discovered, {execution.resolve(), one.resolve()})
+
+            for include, message in (("{path=\"missing-required.toml\", optional=false}",
+                                      "required Cargo config include missing"),
+                                     ('"/absolute.toml"', "absolute Cargo config include"),
+                                     ('"../../outside.toml"', "escapes source repository")):
+                (cargo_dir / "config.toml").write_text(f"include=[{include}]\n")
+                subprocess.run(["git", "-C", str(execution), "add", str(cargo_dir / "config.toml")],
+                               check=True)
+                cargo = subprocess.run(
+                    ["cargo", "+1.94.0", "metadata", "--format-version", "1", "--offline",
+                     "--manifest-path", str(execution / "Cargo.toml")],
+                    cwd=execution, capture_output=True, text=True, check=False)
+                self.assertNotEqual(cargo.returncode, 0, cargo.stdout)
+                with self.subTest(include=include), self.assertRaisesRegex(ValueError, message):
+                    discover_local_repositories(execution / "Cargo.toml", parent, execution)
+
     def test_execution_services_rejects_missing_and_out_of_bounds_path_with_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory) / "siblings"
