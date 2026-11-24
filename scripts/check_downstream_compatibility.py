@@ -14,12 +14,14 @@ from dataclasses import dataclass
 try:
     from scripts.check_event_bus_graph import validate_graph_for_downstream
     from scripts.downstream_source_snapshot import copy_tracked_source
+    from scripts.downstream_source_snapshot import is_tracked_snapshot_file
     from scripts.downstream_source_snapshot import tracked_source_files
     from scripts.run_conformance_watchdog import process_group_options
     from scripts.run_conformance_watchdog import terminate_process_group
 except ModuleNotFoundError:
     from check_event_bus_graph import validate_graph_for_downstream
     from downstream_source_snapshot import copy_tracked_source
+    from downstream_source_snapshot import is_tracked_snapshot_file
     from downstream_source_snapshot import tracked_source_files
     from run_conformance_watchdog import process_group_options
     from run_conformance_watchdog import terminate_process_group
@@ -240,15 +242,21 @@ def _tracked_files(root):
 
 
 def _tracked_file(path):
-    path = Path(path).resolve()
-    root = _repo_for(path)
+    # Establish ownership from the declaration's lexical location, then check
+    # both that declaration and its resolved target against the Git index.
+    path = Path(os.path.abspath(path))
+    root = None
+    for candidate in (path.parent, *path.parent.parents):
+        if (candidate / ".git").exists():
+            result = subprocess.run(
+                ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, check=False)
+            if result.returncode == 0 and Path(result.stdout.strip()).resolve() == candidate:
+                root = candidate
+                break
     if root is None:
         return path.is_file()
-    try:
-        relative = path.relative_to(root)
-    except ValueError:
-        return False
-    return relative in _tracked_files(root) and path.is_file()
+    return is_tracked_snapshot_file(root, path, _tracked_files(root))
 
 
 def _read_manifest(path):
@@ -279,8 +287,8 @@ def _workspace_root(manifest, data, sibling_boundary=None):
             continue
         if "workspace" in root_data:
             members = _workspace_member_manifests(parent, root_data, sibling_boundary)
-            return parent if manifest.parent.resolve() in {item.parent.resolve()
-                                                           for item in members} else None
+            return parent if Path(os.path.abspath(manifest.parent)) in {
+                Path(os.path.abspath(item.parent)) for item in members} else None
     return None
 
 
@@ -359,42 +367,72 @@ def _workspace_glob_manifests(root, pattern, sibling_boundary=None):
         raise ValueError(
             f"workspace member glob declared in {root / 'Cargo.toml'} escapes sibling boundary: "
             f"{pattern} -> {fixed_prefix}") from error
-    candidate_repository = _repo_for(fixed_prefix)
-    if candidate_repository is None:
-        candidate_repository = repository
-    candidate_repository = candidate_repository.resolve()
-    try:
-        candidate_repository.relative_to(boundary)
-    except ValueError as error:
-        raise ValueError(
-            f"workspace member glob declared in {root / 'Cargo.toml'} escapes sibling boundary: "
-            f"{pattern} -> {candidate_repository}") from error
+    # Cargo permits a wildcard in the sibling repository name itself, for
+    # example ../vendor-*/leaf-*. Enumerate only immediate Git checkouts in
+    # that sibling boundary; never recursively search outside it.
+    sibling_name_pattern = (pattern_parts[len(fixed_parts)]
+                            if fixed_prefix == boundary and
+                            len(pattern_parts) > len(fixed_parts) and
+                            any(marker in pattern_parts[len(fixed_parts)] for marker in "*?[")
+                            else None)
+    if sibling_name_pattern is not None:
+        candidate_repositories = []
+        for candidate in boundary.iterdir():
+            if not _glob_matches(candidate.name, sibling_name_pattern):
+                continue
+            candidate_repository = _repo_for(candidate)
+            if candidate_repository is None or candidate_repository != candidate.resolve():
+                continue
+            try:
+                candidate_repository.relative_to(boundary)
+            except ValueError as error:
+                raise ValueError(
+                    f"workspace member glob declared in {root / 'Cargo.toml'} resolves outside "
+                    f"sibling boundary: {pattern} -> {candidate_repository}") from error
+            candidate_repositories.append(candidate_repository)
+    else:
+        candidate_repository = _repo_for(fixed_prefix)
+        if candidate_repository is None:
+            candidate_repository = repository
+        candidate_repository = candidate_repository.resolve()
+        try:
+            candidate_repository.relative_to(boundary)
+        except ValueError as error:
+            raise ValueError(
+                f"workspace member glob declared in {root / 'Cargo.toml'} escapes sibling boundary: "
+                f"{pattern} -> {candidate_repository}") from error
+        candidate_repositories = [candidate_repository]
     result = []
-    for relative in _tracked_files(candidate_repository):
-        if relative.name != "Cargo.toml":
-            continue
-        manifest = candidate_repository / relative
-        package_dir = Path(os.path.relpath(manifest.parent, root)).as_posix()
-        if package_dir == ".":
-            package_dir = ""
-        if not (_glob_matches(package_dir, pattern) or
-                _glob_matches((package_dir + "/Cargo.toml").lstrip("/"), pattern)):
-            continue
-        resolved_manifest = manifest.resolve()
-        try:
-            resolved_manifest.relative_to(boundary)
-        except ValueError as error:
-            raise ValueError(
-                f"workspace member glob declared in {root / 'Cargo.toml'} resolves outside "
-                f"sibling boundary: {pattern} -> {resolved_manifest}") from error
-        resolved_directory = manifest.parent.resolve()
-        try:
-            resolved_directory.relative_to(boundary)
-        except ValueError as error:
-            raise ValueError(
-                f"workspace member glob declared in {root / 'Cargo.toml'} resolves outside "
-                f"sibling boundary: {pattern} -> {resolved_directory}") from error
-        result.append(manifest)
+    for candidate_repository in candidate_repositories:
+        for relative in _tracked_files(candidate_repository):
+            if relative.name != "Cargo.toml":
+                continue
+            manifest = candidate_repository / relative
+            package_dir = Path(os.path.relpath(manifest.parent, root)).as_posix()
+            if package_dir == ".":
+                package_dir = ""
+            if not (_glob_matches(package_dir, pattern) or
+                    _glob_matches((package_dir + "/Cargo.toml").lstrip("/"), pattern)):
+                continue
+            resolved_manifest = manifest.resolve()
+            try:
+                resolved_manifest.relative_to(boundary)
+            except ValueError as error:
+                raise ValueError(
+                    f"workspace member glob declared in {root / 'Cargo.toml'} resolves outside "
+                    f"sibling boundary: {pattern} -> {resolved_manifest}") from error
+            resolved_directory = manifest.parent.resolve()
+            try:
+                resolved_directory.relative_to(boundary)
+            except ValueError as error:
+                raise ValueError(
+                    f"workspace member glob declared in {root / 'Cargo.toml'} resolves outside "
+                    f"sibling boundary: {pattern} -> {resolved_directory}") from error
+            # The index still lists a manifest deleted from the worktree;
+            # Cargo's glob sees the current filesystem and omits that member.
+            if not _tracked_file(manifest):
+                continue
+            result.append(manifest)
     return result
 
 
@@ -430,7 +468,7 @@ def _is_workspace_member(package_dir, root, root_data, *, tracked=None,
             explicit = True
             break
         manifests = (glob_manifests or {}).get(member)
-        if manifests is not None and any(candidate.parent.resolve() == package_dir
+        if manifests is not None and any(Path(os.path.abspath(candidate.parent)) == package_dir
                                          for candidate in manifests):
             explicit = True
         if explicit:
@@ -555,7 +593,7 @@ def _manifest_patch_declarations(manifest, data):
 
 def _workspace_member_manifests(root, root_data, sibling_boundary=None):
     """Find package manifests Cargo includes in the selected workspace."""
-    root = Path(root).resolve()
+    root = Path(os.path.abspath(root))
     repository = _repo_for(root)
     sibling_boundary = (Path(sibling_boundary).resolve() if sibling_boundary is not None else
                         repository.parent.resolve() if repository is not None else root.parent.resolve())
@@ -569,6 +607,11 @@ def _workspace_member_manifests(root, root_data, sibling_boundary=None):
         return list(result)
     workspace = root_data["workspace"]
     root_manifest = root / "Cargo.toml"
+    for excluded in workspace.get("exclude", []):
+        if Path(excluded).is_absolute():
+            raise ValueError(
+                f"absolute workspace exclude declared in {root_manifest}: {excluded}; "
+                "use a path relative to the workspace root")
     excludes = [_literal_workspace_path(pattern)
                 for pattern in workspace.get("exclude", [])]
     explicit_manifests = []
@@ -588,13 +631,14 @@ def _workspace_member_manifests(root, root_data, sibling_boundary=None):
                                relative.startswith(excluded.rstrip("/") + "/")
                                for excluded in excludes):
             continue
-        candidate = (root / relative).resolve()
+        candidate = Path(os.path.abspath(root / relative))
+        resolved_candidate = candidate.resolve()
         try:
-            candidate.relative_to(sibling_boundary)
+            resolved_candidate.relative_to(sibling_boundary)
         except ValueError as error:
             raise ValueError(
                 f"workspace member declared in {root_manifest} escapes sibling boundary: "
-                f"{member} -> {candidate}") from error
+                f"{member} -> {resolved_candidate}") from error
         member_manifest = candidate if candidate.name == "Cargo.toml" else candidate / "Cargo.toml"
         if not _tracked_file(member_manifest):
             raise ValueError(
@@ -620,23 +664,25 @@ def _workspace_member_manifests(root, root_data, sibling_boundary=None):
     # Explicit sibling members were validated before tracked-file access.
     tracked_manifests.extend(manifest for manifest in explicit_manifests
                              if manifest not in tracked_manifests)
-    by_directory = {manifest.parent.resolve(): manifest for manifest in tracked_manifests}
+    by_directory = {Path(os.path.abspath(manifest.parent)): manifest
+                    for manifest in tracked_manifests}
 
     def eligible(directory):
-        manifest = by_directory.get(directory.resolve())
+        directory = Path(os.path.abspath(directory))
+        manifest = by_directory.get(directory)
         if manifest is None:
             return False
         return _is_workspace_member(directory, root, root_data,
                                     glob_manifests=glob_manifests)
 
-    members = {root.resolve()} if "package" in root_data else set()
+    members = {root} if "package" in root_data else set()
     for manifests in glob_manifests.values():
         for manifest in manifests:
             if eligible(manifest.parent.resolve()):
-                members.add(manifest.parent.resolve())
+                members.add(Path(os.path.abspath(manifest.parent)))
     for manifest in explicit_manifests:
-        if eligible(manifest.parent.resolve()):
-            members.add(manifest.parent.resolve())
+            if eligible(manifest.parent):
+                members.add(Path(os.path.abspath(manifest.parent)))
 
     tomllib = __import__("tomllib")
     pending = list(members)
@@ -659,7 +705,7 @@ def _workspace_member_manifests(root, root_data, sibling_boundary=None):
         for relative, base in paths:
             if Path(relative).is_absolute():
                 continue
-            dependency = (base / relative).resolve()
+            dependency = Path(os.path.abspath(base / relative))
             if dependency not in members and eligible(dependency):
                 members.add(dependency)
                 pending.append(dependency)
@@ -681,7 +727,9 @@ def _repository_root(path, boundary):
 def discover_local_repositories(manifest, sibling_root, source_root=None, *,
                                 cli_patches=None):
     """Find sibling repositories required by an IoC fixture's local paths and patches."""
-    manifest = Path(manifest).resolve()
+    # Keep the declared manifest path: Cargo resolves relative declarations
+    # from this package directory even when Cargo.toml is an internal link.
+    manifest = Path(os.path.abspath(manifest))
     boundary = Path(sibling_root).resolve()
     source_root = Path(source_root).resolve() if source_root else manifest.parents[3]
     _TRACKED_FILES.clear()
@@ -750,11 +798,10 @@ def discover_local_repositories(manifest, sibling_root, source_root=None, *,
         if not is_local_path:
             continue
         pending_paths.append((declaration, relative, base))
-    workspace_members = {
-        member_manifest.resolve()
-        for member_manifest in _workspace_member_manifests(
-            initial_root.parent, initial_root_data, boundary)
-    }
+    workspace_member_manifests = _workspace_member_manifests(
+        initial_root.parent, initial_root_data, boundary)
+    workspace_members = {Path(os.path.abspath(member_manifest))
+                         for member_manifest in workspace_member_manifests}
     for member_manifest in workspace_members:
         repositories.add(_repository_root(member_manifest.parent, boundary))
         pending_manifests.append((member_manifest, True))
@@ -775,11 +822,13 @@ def discover_local_repositories(manifest, sibling_root, source_root=None, *,
                 raise ValueError(
                     f"cannot read local dependency manifest {dependency_manifest} "
                     f"(declared in {declaration}): {error}") from error
-            selected_member = dependency_manifest.resolve() in workspace_members
+            selected_member = Path(os.path.abspath(dependency_manifest)) in workspace_members
             pending_manifests.append((dependency_manifest, selected_member))
             continue
         entry, selected_member = pending_manifests.pop()
-        current = entry.resolve()
+        # Preserve the package's declared directory when Cargo.toml is an
+        # internal link; relative path dependencies are based there.
+        current = Path(os.path.abspath(entry))
         if current in scanned:
             continue
         scanned.add(current)
@@ -821,11 +870,12 @@ def _resolve_local_path(relative, base, declaration, boundary):
             f"absolute local path in {declaration}: {relative}; use a path relative "
             "to the declaring manifest or Cargo config so it remains valid in the source snapshot"
         )
-    dependency = (base / relative).resolve()
+    dependency = Path(os.path.abspath(base / relative))
+    resolved = dependency.resolve()
     try:
-        dependency.relative_to(boundary)
+        resolved.relative_to(boundary)
     except ValueError as error:
-        raise ValueError(f"local path escapes sibling root in {declaration}: {relative} -> {dependency}") from error
+        raise ValueError(f"local path escapes sibling root in {declaration}: {relative} -> {resolved}") from error
     return dependency
 
 

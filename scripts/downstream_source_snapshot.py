@@ -49,6 +49,35 @@ def tracked_source_files(source):
     return _tracked_entries(source)
 
 
+def is_tracked_snapshot_file(source, declaration, tracked=None):
+    """Return whether a declared file would be available in a tracked snapshot."""
+    source = Path(source).resolve(strict=True)
+    declaration = Path(os.path.abspath(declaration))
+    try:
+        relative = declaration.relative_to(source)
+    except ValueError:
+        return False
+    tracked = set(tracked_source_files(source)) if tracked is None else tracked
+    if relative not in tracked:
+        return False
+    try:
+        resolved = declaration.resolve()
+        target = resolved.relative_to(source)
+    except (OSError, ValueError):
+        return False
+    if target not in tracked or not declaration.is_file():
+        return False
+    if declaration.is_symlink():
+        try:
+            # copy_tracked_source reproduces links in the destination tree;
+            # an absolute target would continue to point at the source tree.
+            if Path(os.readlink(declaration)).is_absolute():
+                return False
+        except OSError:
+            return False
+    return True
+
+
 def copy_tracked_source(source: Path, destination: Path) -> None:
     """Copy current tracked files, including edits and lockfiles, without untracked files."""
     source = Path(source).resolve(strict=True)

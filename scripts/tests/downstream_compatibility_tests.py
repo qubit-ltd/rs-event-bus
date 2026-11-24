@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -397,6 +398,249 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             self.assertEqual({package["name"] for package in snapshot["packages"]},
                              {"execution", "fixture", "leaf-one", "member-dev"})
             self.assertFalse((snapshot_root / "rs-external/untracked/leaf/Cargo.toml").exists())
+
+    def test_cargo_1_94_workspace_glob_matches_sibling_repository_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            vendors = []
+            for vendor_name, leaf_name in (("vendor-one", "leaf-one"),
+                                           ("vendor-two", "leaf-two")):
+                vendor = self.make_input_repository(parent / vendor_name, vendor_name)
+                leaf = vendor / leaf_name
+                leaf.mkdir()
+                (leaf / "Cargo.toml").write_text(
+                    f'[package]\nname="{leaf_name}"\nversion="0.1.0"\nedition="2021"\n'
+                    'workspace="../../rs-execution/workspace"\n')
+                (leaf / "src").mkdir()
+                (leaf / "src/lib.rs").write_text("")
+                subprocess.run(["git", "-C", str(vendor), "add", "-A"], check=True)
+                vendors.append(vendor)
+            unrelated = self.make_input_repository(parent / "other-vendor", "other-vendor")
+            ignored = unrelated / "leaf-ignored"
+            ignored.mkdir()
+            (ignored / "Cargo.toml").write_text(
+                '[package]\nname="leaf-ignored"\nversion="0.1.0"\nedition="2021"\n')
+            subprocess.run(["git", "-C", str(unrelated), "add", "-A"], check=True)
+            workspace = execution / "workspace"
+            workspace.mkdir()
+            execution_manifest = workspace / "Cargo.toml"
+            (execution_manifest).write_text(
+                '[workspace]\nmembers=["../../vendor-*/leaf-*"]\n')
+            (workspace / "Cargo.lock").write_text("")
+            subprocess.run(["git", "-C", str(execution), "add", "-A"], check=True)
+
+            source = json.loads(self._cargo_metadata_offline(execution_manifest).stdout)
+            self._cargo_metadata_offline(execution_manifest, locked=True)
+            source_members = {package["name"] for package in source["packages"]
+                              if package["id"] in source["workspace_members"]}
+            self.assertEqual(source_members, {"leaf-one", "leaf-two"})
+            discovered = set(discover_local_repositories(execution_manifest, parent, execution))
+            self.assertEqual(discovered, {execution.resolve(), *(vendor.resolve() for vendor in vendors)})
+            snapshot_root = base / "snapshot/siblings"
+            for repository in discovered:
+                copy_tracked_source(repository, snapshot_root / repository.relative_to(parent))
+            snapshot_manifest = snapshot_root / execution.name / "workspace/Cargo.toml"
+            snapshot = json.loads(self._cargo_metadata_offline(snapshot_manifest, locked=True).stdout)
+            snapshot_members = {package["name"] for package in snapshot["packages"]
+                                if package["id"] in snapshot["workspace_members"]}
+            self.assertEqual(snapshot_members, source_members)
+
+    def test_absolute_workspace_exclude_is_rejected_and_relative_exclude_snapshots(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            excluded = execution / "members/excluded"
+            excluded.mkdir(parents=True)
+            (excluded / "Cargo.toml").write_text(
+                '[package]\nname="excluded"\nversion="0.1.0"\nedition="2021"\n'
+                '[dev-dependencies]\nmissing={path="../../../../not-present"}\n')
+            (execution / "Cargo.lock").write_text("")
+            manifest = execution / "Cargo.toml"
+            manifest.write_text(
+                '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                '[workspace]\nexclude=["' + str(excluded) + '"]\n')
+            subprocess.run(["git", "-C", str(execution), "add", "-A"], check=True)
+            self._cargo_metadata_offline(manifest)
+            self._cargo_metadata_offline(manifest, locked=True)
+            with self.assertRaisesRegex(ValueError,
+                                        rf"absolute workspace exclude.*{manifest}.*{excluded}.*relative"):
+                discover_local_repositories(manifest, parent, execution)
+
+            manifest.write_text(
+                '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                '[workspace]\nexclude=["members/excluded"]\n')
+            discovered = set(discover_local_repositories(manifest, parent, execution))
+            self.assertEqual(discovered, {execution.resolve()})
+            snapshot = base / "snapshot/rs-execution"
+            copy_tracked_source(execution, snapshot)
+            snapshot_result = self._cargo_metadata_offline(snapshot / "Cargo.toml", locked=True)
+            graph = json.loads(snapshot_result.stdout)
+            self.assertEqual({package["name"] for package in graph["packages"]}, {"execution"})
+
+    def test_cargo_linked_manifest_paths_resolve_from_the_declaring_package(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            package = execution / "packages/consumer"
+            package.mkdir(parents=True)
+            target = execution / "linked/consumer/Cargo.toml"
+            target.parent.mkdir(parents=True)
+            target.write_text(
+                '[package]\nname="consumer"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\nlocal={path="../../dependencies/local"}\n')
+            (package / "Cargo.toml").symlink_to("../../linked/consumer/Cargo.toml")
+            (package / "src").mkdir()
+            (package / "src/lib.rs").write_text("")
+            dependency = execution / "dependencies/local"
+            dependency.mkdir(parents=True)
+            dependency_target = execution / "linked/local/Cargo.toml"
+            dependency_target.parent.mkdir(parents=True)
+            dependency_target.write_text(
+                '[package]\nname="local"\nversion="0.1.0"\nedition="2021"\n')
+            (dependency / "Cargo.toml").symlink_to("../../linked/local/Cargo.toml")
+            (dependency / "src").mkdir()
+            (dependency / "src/lib.rs").write_text("")
+            subprocess.run(["git", "-C", str(execution), "add", "-A"], check=True)
+            manifest = package / "Cargo.toml"
+            (execution / "Cargo.toml").write_text(
+                '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                '[workspace]\nmembers=["packages/consumer", "packages/ordinary"]\n')
+            ordinary = execution / "packages/ordinary"
+            ordinary.mkdir()
+            (ordinary / "Cargo.toml").write_text(
+                '[package]\nname="ordinary"\nversion="0.1.0"\nedition="2021"\n')
+            (ordinary / "src").mkdir()
+            (ordinary / "src/lib.rs").write_text("")
+            subprocess.run(["git", "-C", str(execution), "add", "-A"], check=True)
+            (execution / "Cargo.lock").write_text("")
+            subprocess.run(["git", "-C", str(execution), "add", "Cargo.toml"], check=True)
+            # The target-relative declaration is deliberately invalid. It is
+            # valid only when Cargo uses the package's declared manifest path.
+            self._cargo_metadata_offline(manifest)
+            self._cargo_metadata_offline(manifest, locked=True)
+            discovered = set(discover_local_repositories(manifest, parent, execution))
+            self.assertEqual(discovered, {execution.resolve()})
+            snapshot = base / "snapshot/rs-execution"
+            copy_tracked_source(execution, snapshot)
+            snapshot_manifest = snapshot / "packages/consumer/Cargo.toml"
+            source_graph = json.loads(self._cargo_metadata_offline(manifest, locked=True).stdout)
+            snapshot_graph = json.loads(self._cargo_metadata_offline(snapshot_manifest, locked=True).stdout)
+            self.assertEqual({package["name"] for package in snapshot_graph["packages"]},
+                             {package["name"] for package in source_graph["packages"]})
+
+    def test_cargo_linked_entry_manifest_uses_its_declared_workspace_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            workspace = execution / "workspace"
+            workspace.mkdir()
+            target = execution / "manifest-source/Cargo.toml"
+            target.parent.mkdir()
+            target.write_text('[workspace]\nmembers=["members/leaf"]\n')
+            (workspace / "Cargo.toml").symlink_to("../manifest-source/Cargo.toml")
+            (workspace / "Cargo.lock").write_text("")
+            leaf = workspace / "members/leaf"
+            leaf.mkdir(parents=True)
+            (leaf / "Cargo.toml").write_text(
+                '[package]\nname="leaf"\nversion="0.1.0"\nedition="2021"\n')
+            (leaf / "src").mkdir()
+            (leaf / "src/lib.rs").write_text("")
+            subprocess.run(["git", "-C", str(execution), "add", "-A"], check=True)
+
+            manifest = workspace / "Cargo.toml"
+            source = json.loads(self._cargo_metadata_offline(manifest).stdout)
+            self._cargo_metadata_offline(manifest, locked=True)
+            discovered = set(discover_local_repositories(manifest, parent, execution))
+            self.assertEqual(discovered, {execution.resolve()})
+            snapshot = base / "snapshot/rs-execution"
+            copy_tracked_source(execution, snapshot)
+            snapshot_graph = json.loads(self._cargo_metadata_offline(
+                snapshot / "workspace/Cargo.toml", locked=True).stdout)
+            self.assertEqual({package["name"] for package in snapshot_graph["packages"]},
+                             {package["name"] for package in source["packages"]})
+
+    def test_absolute_tracked_manifest_link_is_rejected_by_discovery_and_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            target = execution / "Cargo.toml"
+            declaration = execution / "linked/Cargo.toml"
+            declaration.parent.mkdir()
+            declaration.symlink_to(target)
+            subprocess.run(["git", "-C", str(execution), "add", "linked/Cargo.toml"], check=True)
+            with self.assertRaisesRegex(ValueError, "tracked symlink escapes snapshot"):
+                copy_tracked_source(execution, base / "snapshot")
+            with self.assertRaisesRegex(ValueError, "not present in tracked source view"):
+                discover_local_repositories(declaration, parent, execution)
+
+    def test_workspace_glob_skips_tracked_directory_removed_from_worktree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            manifest = execution / "Cargo.toml"
+            manifest.write_text(
+                '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                '[workspace]\nmembers=["members/*"]\n')
+            (execution / "Cargo.lock").write_text("")
+            kept = execution / "members/kept"
+            removed = execution / "members/removed"
+            for member, name in ((kept, "kept"), (removed, "removed")):
+                member.mkdir(parents=True)
+                (member / "Cargo.toml").write_text(
+                    f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2021"\n')
+                (member / "src").mkdir()
+                (member / "src/lib.rs").write_text("")
+            subprocess.run(["git", "-C", str(execution), "add", "-A"], check=True)
+            shutil.rmtree(removed)
+
+            source = json.loads(self._cargo_metadata_offline(manifest).stdout)
+            source_members = {package["name"] for package in source["packages"]
+                              if package["id"] in source["workspace_members"]}
+            self.assertEqual(source_members, {"execution", "kept"})
+            self._cargo_metadata_offline(manifest, locked=True)
+            discovered = set(discover_local_repositories(manifest, parent, execution))
+            self.assertEqual(discovered, {execution.resolve()})
+            snapshot = base / "snapshot/rs-execution"
+            copy_tracked_source(execution, snapshot)
+            graph = json.loads(self._cargo_metadata_offline(snapshot / "Cargo.toml", locked=True).stdout)
+            snapshot_members = {package["name"] for package in graph["packages"]
+                                if package["id"] in graph["workspace_members"]}
+            self.assertEqual(snapshot_members, source_members)
+
+            no_manifest = execution / "members/no-manifest"
+            no_manifest.mkdir()
+            (no_manifest / "README.md").write_text("matching directory, no manifest\n")
+            subprocess.run(["git", "-C", str(execution), "add", "members/no-manifest/README.md"],
+                           check=True)
+            source_result = subprocess.run(
+                ["cargo", "+1.94.0", "metadata", "--format-version", "1", "--offline",
+                 "--manifest-path", str(manifest)], cwd=execution, capture_output=True,
+                text=True, check=False)
+            self.assertEqual(set(discover_local_repositories(manifest, parent, execution)),
+                             {execution.resolve()})
+            shutil.rmtree(snapshot)
+            copy_tracked_source(execution, snapshot)
+            snapshot_result = subprocess.run(
+                ["cargo", "+1.94.0", "metadata", "--format-version", "1", "--offline",
+                 "--manifest-path", str(snapshot / "Cargo.toml")], cwd=snapshot,
+                capture_output=True, text=True, check=False)
+            self.assertEqual(snapshot_result.returncode, source_result.returncode,
+                             source_result.stderr + "\n" + snapshot_result.stderr)
+            if source_result.returncode:
+                self.assertIn("no-manifest", source_result.stderr)
 
     def test_workspace_glob_fixed_prefix_outside_sibling_boundary_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
