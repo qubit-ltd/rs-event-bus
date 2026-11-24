@@ -256,9 +256,9 @@ impl<T: Send + Sync + 'static> AsyncSubscription<T> {
     /// begun, continue driving shutdown and check its result, then resume
     /// consumption according to the provider's recovery contract. See the
     /// dead-letter guidance in the [English user
-    /// guide](https://github.com/qubit-ltd/rs-event-bus/blob/41a5a39c6f1226b6f2d9756ae823fd39864fceb4/doc/user_guide.md#keep-an-event-that-fails-for-good)
+    /// guide](https://github.com/qubit-ltd/rs-event-bus/blob/ec875d0d0041a5d84838695c027a574bb49fd79c/doc/user_guide.md#keep-an-event-that-fails-for-good)
     /// and [Chinese user
-    /// guide](https://github.com/qubit-ltd/rs-event-bus/blob/41a5a39c6f1226b6f2d9756ae823fd39864fceb4/doc/user_guide.zh_CN.md#%E4%BF%9D%E5%AD%98%E6%9C%80%E7%BB%88%E5%A4%84%E7%90%86%E5%A4%B1%E8%B4%A5%E7%9A%84%E4%BA%8B%E4%BB%B6).
+    /// guide](https://github.com/qubit-ltd/rs-event-bus/blob/ec875d0d0041a5d84838695c027a574bb49fd79c/doc/user_guide.zh_CN.md#%E4%BF%9D%E5%AD%98%E6%9C%80%E7%BB%88%E5%A4%84%E7%90%86%E5%A4%B1%E8%B4%A5%E7%9A%84%E4%BA%8B%E4%BB%B6).
     ///
     /// # Panics
     /// Panics if the session lease invariant is violated internally. If SPI
