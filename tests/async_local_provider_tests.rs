@@ -12,6 +12,7 @@ mod support;
 use std::any::TypeId;
 use std::env;
 use std::fs;
+use std::future::Future;
 use std::num::NonZeroU32;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -20,7 +21,10 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
+use std::task::Context;
 use std::task::Poll;
+use std::task::Wake;
+use std::task::Waker;
 use std::thread;
 use std::time::Duration;
 use std::time::SystemTime;
@@ -1223,6 +1227,18 @@ fn test_manual_clock_controls_finite_receive_deadline() {
 
 #[test]
 fn test_manual_clock_controls_delayed_async_local_delivery() {
+    struct NotificationCounter(AtomicUsize);
+
+    impl Wake for NotificationCounter {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     let clock = ManualMonotonicClock::new();
     let timer: Arc<dyn Timer> = Arc::new(ManualTimer::from_clock(&clock));
     let spi = AsyncLocalEventBusSpi::with_timer(&LocalEventBusConfig::new(), timer)
@@ -1250,23 +1266,59 @@ fn test_manual_clock_controls_delayed_async_local_delivery() {
         ReceiveOutcome::TimedOut
     ));
     let mut finite = Box::pin(receiver.receive(Duration::from_secs(3_600)));
-    assert!(poll_once(finite.as_mut()).is_pending());
+    let finite_notifications = Arc::new(NotificationCounter(AtomicUsize::new(0)));
+    let finite_waker = Waker::from(Arc::clone(&finite_notifications));
+    let mut finite_context = Context::from_waker(&finite_waker);
+    assert!(Future::poll(finite.as_mut(), &mut finite_context).is_pending());
+    let finite_baseline = finite_notifications.0.load(Ordering::Relaxed);
     clock
-        .advance(Duration::from_secs(3_600))
+        .advance(Duration::from_secs(3_599))
+        .expect("clock advances before receive deadline");
+    assert_eq!(
+        finite_baseline,
+        finite_notifications.0.load(Ordering::Relaxed),
+        "finite receive must not be notified before its timeout"
+    );
+    clock
+        .advance(Duration::from_secs(1))
         .expect("clock advances to receive deadline");
+    assert!(
+        finite_notifications.0.load(Ordering::Relaxed) > finite_baseline,
+        "finite receive must be notified before it is polled again"
+    );
     assert!(matches!(
-        poll_once(finite.as_mut()),
+        Future::poll(finite.as_mut(), &mut finite_context),
         Poll::Ready(Ok(ReceiveOutcome::TimedOut))
     ));
     drop(finite);
+    drop(finite_waker);
+    drop(finite_notifications);
     let mut receive = Box::pin(receiver.receive(Duration::MAX));
-    assert!(poll_once(receive.as_mut()).is_pending());
+    let delivery_notifications = Arc::new(NotificationCounter(AtomicUsize::new(0)));
+    let delivery_waker = Waker::from(Arc::clone(&delivery_notifications));
+    let mut delivery_context = Context::from_waker(&delivery_waker);
+    assert!(Future::poll(receive.as_mut(), &mut delivery_context).is_pending());
+    let delivery_baseline = delivery_notifications.0.load(Ordering::Relaxed);
     clock
-        .advance(Duration::from_secs(3_600))
+        .advance(Duration::from_secs(3_599))
+        .expect("clock advances before delivery time");
+    assert_eq!(
+        delivery_baseline,
+        delivery_notifications.0.load(Ordering::Relaxed),
+        "indefinite receive must not be notified before delivery"
+    );
+    clock
+        .advance(Duration::from_secs(1))
         .expect("clock advances to delivery time");
-    let Poll::Ready(Ok(ReceiveOutcome::Message(message))) = poll_once(receive.as_mut()) else {
+    assert!(
+        delivery_notifications.0.load(Ordering::Relaxed) > delivery_baseline,
+        "indefinite receive must be notified before it is polled again"
+    );
+    let Poll::Ready(Ok(ReceiveOutcome::Message(message))) = Future::poll(receive.as_mut(), &mut delivery_context)
+    else {
         panic!("event is delivered at its injected-clock deadline");
     };
+    drop(receive);
     assert!(
         matches!(message.payload(), TransportPayload::Native(payload) if payload.downcast_ref::<u32>() == Some(&42))
     );
