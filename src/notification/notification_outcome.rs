@@ -13,7 +13,10 @@ use crate::model::PublishReceipt;
 
 /// The result of constructing or publishing one queued notification.
 ///
-/// A `Published` receipt reports provider admission only. It does not imply
+/// `Published` contains the successful receipt returned by the publishing
+/// facade. A successful receipt can report an interceptor drop or a send
+/// without admission confirmation; inspect
+/// [`PublishReceipt::admission_outcome()`] to classify it. No outcome implies
 /// that a subscriber handler completed.
 ///
 /// # Examples
@@ -31,9 +34,11 @@ use crate::model::PublishReceipt;
 #[derive(Debug)]
 #[must_use]
 pub enum NotificationOutcome {
-    /// The provider returned an admission receipt.
+    /// The publishing facade returned a successful receipt.
     Published(
-        /// Provider admission result, without a handler completion guarantee.
+        /// The successful facade receipt, including interceptor drops and
+        /// sends without admission confirmation. Use
+        /// [`PublishReceipt::admission_outcome()`] to inspect its classification.
         PublishReceipt,
     ),
     /// Publication failed; inspect [`PublishFailure::effect()`] before deciding

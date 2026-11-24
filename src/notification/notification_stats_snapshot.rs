@@ -18,7 +18,13 @@
 /// counters classify those receipts; opaque acceptance does not reveal a
 /// destination count. The `admission_sent_unconfirmed` counter is separate
 /// from opaque acceptance. Each counter saturates at `u64::MAX`, so sums lose
-/// exactness after saturation.
+/// exactness after saturation. `published` counts successful receipts returned
+/// by the publishing facade, including interceptor drops and sends without
+/// admission confirmation. Use
+/// [`crate::model::PublishReceipt::admission_outcome()`] and the
+/// [`admission_dropped`](Self::admission_dropped) and
+/// [`admission_sent_unconfirmed`](Self::admission_sent_unconfirmed) counters to
+/// classify each receipt.
 ///
 /// # Examples
 ///
@@ -45,7 +51,11 @@ pub struct NotificationStatsSnapshot {
     pub(super) oversized_weight_rejections: u64,
     /// Number of attempts rejected because the publisher was closed.
     pub(super) queue_closed: u64,
-    /// Number of provider admission receipts returned to the worker.
+    /// Number of successful receipts returned by the publishing facade,
+    /// including interceptor drops and sends without admission confirmation.
+    /// Classify these receipts with
+    /// [`crate::model::PublishReceipt::admission_outcome()`] and the admission
+    /// counters.
     pub(super) published: u64,
     /// Number of facade or provider publication errors.
     pub(super) publish_errors: u64,
@@ -125,10 +135,15 @@ impl NotificationStatsSnapshot {
         self.queue_closed
     }
 
-    /// Returns the number of provider admission receipts observed.
+    /// Returns the number of successful receipts returned by the publishing
+    /// facade, including interceptor drops and sends without admission
+    /// confirmation. Use
+    /// [`crate::model::PublishReceipt::admission_outcome()`],
+    /// [`Self::admission_dropped()`], and
+    /// [`Self::admission_sent_unconfirmed()`] to classify the receipts.
     ///
     /// # Returns
-    /// The number of provider admission receipts returned to the worker.
+    /// The number of successful facade receipts returned to the worker.
     #[must_use]
     #[inline]
     pub const fn published(self) -> u64 {
