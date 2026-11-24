@@ -15,6 +15,7 @@ from scripts.check_downstream_compatibility import _cargo_config_patch_declarati
 from scripts.check_downstream_compatibility import cargo_config
 from scripts.downstream_source_snapshot import copy_tracked_source
 from scripts.check_downstream_compatibility import TESTS
+from scripts.check_downstream_compatibility import _glob_matches
 from scripts.check_downstream_compatibility import discover_local_repositories
 from scripts.check_downstream_compatibility import main
 from scripts.check_downstream_compatibility import metadata
@@ -26,6 +27,49 @@ from scripts.tests.process_test_support import wait_for_process_exit
 
 
 class DownstreamCompatibilityTests(unittest.TestCase):
+    def test_workspace_glob_matching_matches_cargo_path_segments(self):
+        self.assertTrue(_glob_matches("members/no-local", "members/[nk]o-local"))
+        self.assertTrue(_glob_matches("members/no-local", "./members/no-local"))
+        self.assertTrue(_glob_matches("members/no-local", "members/**/no-local"))
+        self.assertTrue(_glob_matches("members/deep/no-local", "members/**/no-local"))
+        self.assertFalse(_glob_matches("members/a/b/no-local", "members/*/no-local"))
+
+    def test_absolute_package_workspace_is_rejected_for_initial_and_external_packages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory) / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution-services", "execution")
+            external = self.make_input_repository(parent / "rs-external", "external")
+            fixture = execution / "tests/fixtures/consumer"
+            fixture.mkdir(parents=True)
+            manifest = fixture / "Cargo.toml"
+            manifest.write_text(
+                '[package]\nname="consumer"\nversion="0.1.0"\nedition="2021"\n'
+                f'workspace="{execution}"\n')
+            subprocess.run(["git", "-C", str(execution), "add", "-A"], check=True)
+            with patch("scripts.check_downstream_compatibility._workspace_root",
+                       side_effect=lambda path, data:
+                       (Path(path).parent / data.get("package", {}).get("workspace")).resolve()
+                       if isinstance(data.get("package", {}).get("workspace"), str) else None):
+                self.assertEqual(set(discover_local_repositories(manifest, parent, execution)),
+                                 {execution.resolve()})
+            with self.assertRaisesRegex(ValueError,
+                                        rf"package.workspace.*{manifest}.*{execution}"):
+                discover_local_repositories(manifest, parent, execution)
+
+            external_manifest = external / "Cargo.toml"
+            external_manifest.write_text(
+                '[package]\nname="external"\nversion="0.1.0"\nedition="2021"\n'
+                f'workspace="{external}"\n')
+            subprocess.run(["git", "-C", str(external), "add", "-A"], check=True)
+            fixture.joinpath("Cargo.toml").write_text(
+                '[package]\nname="consumer"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\nexternal={path="../../../../rs-external"}\n')
+            subprocess.run(["git", "-C", str(execution), "add", "-A"], check=True)
+            with self.assertRaisesRegex(ValueError,
+                                        rf"package.workspace.*{external_manifest}.*{external}"):
+                discover_local_repositories(fixture / "Cargo.toml", parent, execution)
+
     def test_legacy_cli_and_help_do_not_require_tomllib(self):
         original_import = builtins.__import__
 
@@ -132,16 +176,25 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             parent = Path(directory) / "siblings"
             parent.mkdir()
             execution = self.make_input_repository(parent / "rs-execution-services", "execution")
-            names = ("path", "direct", "target", "dev", "build")
+            names = ("path", "direct", "target", "dev", "build", "target-build",
+                     "inherited-dev")
             repos = {name: self.make_input_repository(parent / f"rs-{name}", name)
                      for name in names}
             manifest = execution / "Cargo.toml"
             manifest.write_text(
                 '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                '[workspace]\n[workspace.dependencies]\n'
+                'inherited-dev={path="../rs-inherited-dev"}\n'
                 '[dependencies]\npath="0.1.0"\ndirect={path="../rs-direct"}\n'
                 "[target.'cfg(unix)'.dependencies]\ntarget={path='../rs-target'}\n"
-                '[dev_dependencies]\ndev={path="../rs-dev"}\n'
-                '[build_dependencies]\nbuild={path="../rs-build"}\n'
+                "[target.'cfg(unix)'.build-dependencies]\ntarget-build={path='../rs-target-build'}\n"
+                "[target.'cfg(unix)'.build_dependencies]\n"
+                "target-build-legacy={path='../missing-target-build'}\n"
+                '[dev-dependencies]\ndev={path="../rs-dev"}\n'
+                'inherited-dev={workspace=true}\n'
+                '[dev_dependencies]\ndev-legacy={path="../missing-dev-legacy"}\n'
+                '[build-dependencies]\nbuild={path="../rs-build"}\n'
+                '[build_dependencies]\nbuild-legacy={path="../missing-build-legacy"}\n'
                 '[patch.crates-io]\npath={path="../rs-path"}\n')
             (execution / "Cargo.lock").write_text("")
             for root in (execution, *repos.values()):
@@ -197,6 +250,99 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             self._cargo_metadata_offline(snapshot_manifest, locked=True)
             self.assertFalse((snapshot / execution.name / "members/untracked/Cargo.toml").exists())
 
+    def test_cargo_1_94_workspace_member_globs_include_only_tracked_member_dev_inputs(self):
+        cases = (("members/[nk]o-local", ("members/no-local",)),
+                 ("./members/no-local", ("members/no-local",)),
+                 ("members/**/no-local", ("members/no-local", "members/deep/no-local")))
+        for pattern, member_paths in cases:
+            with self.subTest(pattern=pattern), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                parent = base / "siblings"
+                parent.mkdir()
+                execution = self.make_input_repository(parent / "rs-execution", "execution")
+                (execution / "Cargo.toml").write_text(
+                    '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                    f'[workspace]\nmembers=["{pattern}"]\n')
+                dependencies = {}
+                for index, member_path in enumerate(member_paths):
+                    member = execution / member_path
+                    member.mkdir(parents=True)
+                    dep_name = f"member-dev-{index}"
+                    dependency = self.make_input_repository(parent / f"rs-{dep_name}", dep_name)
+                    (dependency / "Cargo.toml").write_text(
+                        f'[package]\nname="{dep_name}"\nversion="0.1.0"\n'
+                        'edition="2021"\n')
+                    (member / "Cargo.toml").write_text(
+                        f'[package]\nname="member-{index}"\nversion="0.1.0"\n'
+                        'edition="2021"\n'
+                        f'[dev-dependencies]\n{dep_name}={{path="{os.path.relpath(dependency, member)}"}}\n')
+                    (member / "src").mkdir()
+                    (member / "src/lib.rs").write_text("")
+                    dependencies[dep_name] = dependency
+                (execution / "Cargo.lock").write_text("")
+                for repository in (execution, *dependencies.values()):
+                    subprocess.run(["git", "-C", str(repository), "add", "-A"], check=True)
+
+                manifest = execution / "Cargo.toml"
+                source = json.loads(self._cargo_metadata_offline(manifest).stdout)
+                self._cargo_metadata_offline(manifest, locked=True)
+                member_ids = set(source["workspace_members"])
+                source_members = {item["name"] for item in source["packages"]
+                                  if item["id"] in member_ids}
+                self.assertEqual(source_members, {"execution", *(f"member-{i}"
+                                                                  for i in range(len(member_paths)))})
+                discovered = set(discover_local_repositories(manifest, parent, execution))
+                self.assertEqual(discovered, {execution.resolve(), *(root.resolve()
+                                                                     for root in dependencies.values())})
+                snapshot_root = base / "snapshot/siblings"
+                for repository in discovered:
+                    copy_tracked_source(repository, snapshot_root / repository.relative_to(parent))
+                snapshot_manifest = snapshot_root / execution.name / "Cargo.toml"
+                snapshot = json.loads(self._cargo_metadata_offline(snapshot_manifest, locked=True).stdout)
+                self.assertEqual({item["name"] for item in snapshot["packages"]},
+                                 {"execution", *(f"member-{i}" for i in range(len(member_paths))),
+                                  *dependencies.keys()})
+
+    def test_cargo_1_94_explicit_cross_sibling_member_contributes_dev_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            external = self.make_input_repository(parent / "rs-external", "external")
+            member_dev = self.make_input_repository(parent / "rs-member-dev", "member-dev")
+            (execution / "Cargo.toml").write_text(
+                '[workspace]\nmembers=["../rs-external/member"]\n')
+            (execution / "Cargo.lock").write_text("")
+            member = external / "member"
+            member.mkdir()
+            (member / "Cargo.toml").write_text(
+                '[package]\nname="external-member"\nversion="0.1.0"\nedition="2021"\n'
+                'workspace="../../rs-execution"\n'
+                '[dev-dependencies]\nmember-dev={path="../../rs-member-dev"}\n')
+            (member / "src").mkdir()
+            (member / "src/lib.rs").write_text("")
+            (member_dev / "Cargo.toml").write_text(
+                '[package]\nname="member-dev"\nversion="0.1.0"\nedition="2021"\n')
+            for repository in (execution, external, member_dev):
+                subprocess.run(["git", "-C", str(repository), "add", "-A"], check=True)
+
+            manifest = execution / "Cargo.toml"
+            source = json.loads(self._cargo_metadata_offline(manifest).stdout)
+            self._cargo_metadata_offline(manifest, locked=True)
+            self.assertEqual({package["name"] for package in source["packages"]},
+                             {"external-member", "member-dev"})
+            discovered = set(discover_local_repositories(manifest, parent, execution))
+            self.assertEqual(discovered,
+                             {execution.resolve(), external.resolve(), member_dev.resolve()})
+            snapshot_root = base / "snapshot/siblings"
+            for repository in discovered:
+                copy_tracked_source(repository, snapshot_root / repository.relative_to(parent))
+            snapshot = json.loads(self._cargo_metadata_offline(
+                snapshot_root / execution.name / "Cargo.toml", locked=True).stdout)
+            self.assertEqual({package["name"] for package in snapshot["packages"]},
+                             {"external-member", "member-dev"})
+
     def test_cargo_1_94_workspace_exclude_uses_literal_paths(self):
         for pattern, expected in (("members/no-*", {"no-local", "no-glob"}),
                                   ("./members/no-local", {"no-glob"}),
@@ -250,6 +396,26 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,
                                         r"Cargo.toml.*tracked source.*members/required/Cargo.toml"):
                 discover_local_repositories(root_manifest, parent, execution)
+
+    def test_explicit_workspace_member_outside_sibling_boundary_is_rejected_before_tracking(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory) / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            root_manifest = execution / "Cargo.toml"
+            root_manifest.write_text(
+                '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
+                '[workspace]\nmembers=["../../../outside/member"]\n')
+            def tracked(path):
+                if Path(path).resolve() == root_manifest.resolve():
+                    return True
+                raise AssertionError("out-of-bound member was checked for tracking")
+
+            with patch("scripts.check_downstream_compatibility._tracked_file",
+                       side_effect=tracked):
+                with self.assertRaisesRegex(ValueError,
+                                            r"workspace member.*escapes sibling boundary.*outside/member"):
+                    discover_local_repositories(root_manifest, parent, execution)
 
     def test_initial_package_workspace_root_is_boundary_checked_before_read(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -662,8 +828,22 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             cargo_home = base / "cargo-home"
             env = os.environ.copy()
             env["CARGO_HOME"] = str(cargo_home)
+            preparer = base / "git-cache-preparer"
+            preparer.mkdir()
+            (preparer / "Cargo.toml").write_text(
+                '[package]\nname="git-cache-preparer"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\npatched={git="file://' + str(git_patch) + '"}\n')
+            (preparer / "src").mkdir()
+            (preparer / "src/main.rs").write_text("fn main() {}\n")
+            prepare_env = env.copy()
+            prepare_env.pop("CARGO_NET_OFFLINE", None)
+            prepared = subprocess.run(
+                ["cargo", "+1.94.0", "metadata", "--format-version", "1", "--manifest-path",
+                 str(preparer / "Cargo.toml")], cwd=preparer, env=prepare_env,
+                capture_output=True, text=True, check=False)
+            self.assertEqual(prepared.returncode, 0, prepared.stderr)
             command = ["cargo", "+1.94.0", "metadata", "--format-version", "1",
-                       "--manifest-path", str(manifest)]
+                       "--offline", "--manifest-path", str(manifest)]
             result = subprocess.run(command, cwd=execution, env=env, capture_output=True,
                                     text=True, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -682,7 +862,7 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             snapshot_root = base / "snapshot/siblings"
             copy_tracked_source(execution, snapshot_root / execution.name)
             locked = subprocess.run(
-                ["cargo", "+1.94.0", "metadata", "--format-version", "1", "--locked",
+                ["cargo", "+1.94.0", "metadata", "--format-version", "1", "--offline", "--locked",
                  "--manifest-path", str(snapshot_root / execution.name / "Cargo.toml")],
                 cwd=snapshot_root / execution.name, env=env, capture_output=True, text=True,
                 check=False)
@@ -763,13 +943,16 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             execution = self.make_input_repository(parent / "rs-execution-services", "execution")
             external = self.make_input_repository(parent / "rs-external-dependency", "external")
             member_dep = self.make_input_repository(parent / "rs-member-dev-dependency", "member-dev")
-            for repository, name in ((external, "external"), (member_dep, "member-dev")):
+            external_build = self.make_input_repository(parent / "rs-external-build", "external-build")
+            for repository, name in ((external, "external"), (member_dep, "member-dev"),
+                                     (external_build, "external-build")):
                 (repository / "Cargo.toml").write_text(
                     f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2021"\n')
                 (repository / "Cargo.lock").write_text("")
             (external / "Cargo.toml").write_text(
                 '[package]\nname="external"\nversion="0.1.0"\nedition="2021"\n'
-                '[dev-dependencies]\nmissing-dev={path="../missing-external-dev"}\n')
+                '[dev-dependencies]\nmissing-dev={path="../missing-external-dev"}\n'
+                '[build_dependencies]\nexternal-build={path="../rs-external-build"}\n')
             fixture = execution / "tests/fixtures/ioc_application_consumer"
             fixture.mkdir(parents=True)
             (fixture / "Cargo.toml").write_text(
@@ -788,7 +971,7 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             root_manifest.write_text(
                 '[workspace]\nmembers=["tests/fixtures/ioc_application_consumer", "members/other"]\n')
             (execution / "Cargo.lock").write_text("")
-            for root in (execution, external, member_dep):
+            for root in (execution, external, member_dep, external_build):
                 subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
                 subprocess.run(["git", "-C", str(root), "commit", "-qm", "cargo fixture"],
                                check=True)
@@ -801,7 +984,8 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                                        if item["name"] == "member-dev")["manifest_path"]),
                              member_dep / "Cargo.toml")
             discovered = set(discover_local_repositories(source, parent, execution))
-            self.assertEqual(discovered, {execution.resolve(), external.resolve(), member_dep.resolve()})
+            self.assertEqual(discovered, {execution.resolve(), external.resolve(), member_dep.resolve(),
+                                          external_build.resolve()})
             snapshots_root = base / "snapshot/siblings"
             for repository in discovered:
                 copy_tracked_source(repository, snapshots_root / repository.relative_to(parent))
@@ -875,6 +1059,87 @@ class DownstreamCompatibilityTests(unittest.TestCase):
                            if item["name"] == "config-dependency")
             self.assertEqual(Path(package["manifest_path"]),
                              snapshots_root / dependency.name / "Cargo.toml")
+
+    def test_cargo_config_patch_path_survives_nearer_metadata_and_nearer_path_wins(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "siblings"
+            parent.mkdir()
+            execution = self.make_input_repository(parent / "rs-execution", "execution")
+            outer = self.make_input_repository(parent / "rs-outer", "patched")
+            inner = self.make_input_repository(parent / "rs-inner", "patched")
+            for repository in (outer, inner):
+                (repository / "Cargo.toml").write_text(
+                    '[package]\nname="patched"\nversion="0.1.0"\nedition="2021"\n')
+            fixture = execution / "tests/fixtures/consumer"
+            fixture.mkdir(parents=True)
+            (fixture / "Cargo.toml").write_text(
+                '[package]\nname="consumer"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\npatched="0.1.0"\n')
+            (fixture / "src").mkdir()
+            (fixture / "src/lib.rs").write_text("")
+            (execution / "Cargo.toml").write_text(
+                '[workspace]\nmembers=["tests/fixtures/consumer"]\n')
+            (execution / "Cargo.lock").write_text("")
+            outer_config = execution / ".cargo/config.toml"
+            outer_config.parent.mkdir()
+            outer_config.write_text(
+                '[patch.crates-io]\npatched={path="../rs-outer"}\n')
+            inner_config = fixture / ".cargo/config.toml"
+            inner_config.parent.mkdir()
+            inner_config.write_text(
+                '[patch.crates-io]\npatched={version="=0.1.0"}\n')
+            for repository in (execution, outer, inner):
+                subprocess.run(["git", "-C", str(repository), "add", "-A"], check=True)
+
+            def graph():
+                result = subprocess.run(
+                    ["cargo", "+1.94.0", "metadata", "--format-version", "1", "--offline",
+                     "--manifest-path", str(fixture / "Cargo.toml")], cwd=fixture,
+                    capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return json.loads(result.stdout)
+
+            first = graph()
+            self.assertEqual(Path(next(package["manifest_path"] for package in first["packages"]
+                                        if package["name"] == "patched")), outer / "Cargo.toml")
+            discovered = set(discover_local_repositories(fixture / "Cargo.toml", parent, execution))
+            self.assertEqual(discovered, {execution.resolve(), outer.resolve()})
+            self._cargo_metadata_offline(fixture / "Cargo.toml", locked=True)
+            source_lock = (execution / "Cargo.lock").read_bytes()
+            first_snapshot_root = base / "first-snapshot/siblings"
+            for repository in discovered:
+                copy_tracked_source(repository, first_snapshot_root / repository.relative_to(parent))
+            first_snapshot_manifest = (first_snapshot_root / execution.name /
+                                       "tests/fixtures/consumer/Cargo.toml")
+            first_snapshot = json.loads(self._cargo_metadata_offline(
+                first_snapshot_manifest, locked=True).stdout)
+            self.assertEqual(Path(next(package["manifest_path"] for package in first_snapshot["packages"]
+                                       if package["name"] == "patched")),
+                             first_snapshot_root / outer.name / "Cargo.toml")
+            self.assertEqual((execution / "Cargo.lock").read_bytes(), source_lock)
+
+            inner_config.write_text(
+                '[patch.crates-io]\npatched={path="../../../../rs-inner", version="=0.1.0"}\n')
+            subprocess.run(["git", "-C", str(execution), "add", str(inner_config)], check=True)
+            second = graph()
+            self.assertEqual(Path(next(package["manifest_path"] for package in second["packages"]
+                                        if package["name"] == "patched")), inner / "Cargo.toml")
+            discovered = set(discover_local_repositories(fixture / "Cargo.toml", parent, execution))
+            self.assertEqual(discovered, {execution.resolve(), inner.resolve()})
+            self._cargo_metadata_offline(fixture / "Cargo.toml", locked=True)
+            source_lock = (execution / "Cargo.lock").read_bytes()
+            second_snapshot_root = base / "second-snapshot/siblings"
+            for repository in discovered:
+                copy_tracked_source(repository, second_snapshot_root / repository.relative_to(parent))
+            second_snapshot_manifest = (second_snapshot_root / execution.name /
+                                        "tests/fixtures/consumer/Cargo.toml")
+            second_snapshot = json.loads(self._cargo_metadata_offline(
+                second_snapshot_manifest, locked=True).stdout)
+            self.assertEqual(Path(next(package["manifest_path"] for package in second_snapshot["packages"]
+                                       if package["name"] == "patched")),
+                             second_snapshot_root / inner.name / "Cargo.toml")
+            self.assertEqual((execution / "Cargo.lock").read_bytes(), source_lock)
 
     def test_execution_services_rejects_missing_and_out_of_bounds_path_with_manifest(self):
         with tempfile.TemporaryDirectory() as directory:

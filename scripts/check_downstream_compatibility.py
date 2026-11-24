@@ -196,15 +196,17 @@ def _manifest_paths(data, *, include_dev=True):
 
 
 def _dependency_sections(data, *, include_dev=True):
-    """Yield dependency tables from normal, target-specific, and workspace scope."""
-    sections = ("dependencies", "dev-dependencies", "build-dependencies") if include_dev else (
-        "dependencies", "build-dependencies")
-    names = set(sections) | ({"dev_dependencies", "build_dependencies"} if include_dev else set())
-    for section in names:
-        yield data.get(section, {})
-    for target in data.get("target", {}).values():
-        for section in names:
-            yield target.get(section, {})
+    """Yield Cargo's selected dependency table per category and scope."""
+    categories = (("dependencies",), ("build-dependencies", "build_dependencies"))
+    if include_dev:
+        categories = (("dependencies",), ("dev-dependencies", "dev_dependencies"),
+                      ("build-dependencies", "build_dependencies"))
+    for scope in (data, *data.get("target", {}).values()):
+        for aliases in categories:
+            for name in aliases:
+                if name in scope:
+                    yield scope[name]
+                    break
 
 
 _TRACKED_FILES = {}
@@ -252,7 +254,11 @@ def _workspace_root(manifest, data):
     """Find the workspace Cargo uses for this package, respecting nested roots."""
     package = data.get("package", {})
     if isinstance(package.get("workspace"), str):
-        return (manifest.parent / package["workspace"]).resolve()
+        declared = package["workspace"]
+        if Path(declared).is_absolute():
+            raise ValueError(
+                f"absolute package.workspace in {manifest}: {declared}")
+        return (manifest.parent / declared).resolve()
     if "workspace" in data:
         return manifest.parent
     tomllib = __import__("tomllib")
@@ -274,24 +280,46 @@ def _workspace_root(manifest, data):
 def _glob_matches(path, pattern):
     import re
     pattern = pattern.strip("/")
-    parts = []
-    index = 0
-    while index < len(pattern):
-        char = pattern[index]
-        if char == "*":
-            if index + 1 < len(pattern) and pattern[index + 1] == "*":
-                parts.append(".*")
-                index += 2
+    while pattern.startswith("./"):
+        pattern = pattern[2:]
+    # Cargo's ** segment may match zero directories; ordinary * and ? stay
+    # within one path segment, while [abc] and [a-z] are character classes.
+    segments = pattern.split("/")
+    expression = []
+    for index, segment in enumerate(segments):
+        if segment == "**":
+            if index and segments[index - 1] != "**":
+                expression.append("/")
+            if index == len(segments) - 1:
+                expression.append("(?:[^/]+(?:/|$))*")
             else:
-                parts.append("[^/]*")
-                index += 1
-        elif char == "?":
-            parts.append("[^/]")
-            index += 1
-        else:
-            parts.append(re.escape(char))
-            index += 1
-    return re.fullmatch("".join(parts), path) is not None
+                expression.append("(?:[^/]+/)*")
+            continue
+        if index and segments[index - 1] != "**":
+            expression.append("/")
+        part = []
+        cursor = 0
+        while cursor < len(segment):
+            char = segment[cursor]
+            if char == "*":
+                part.append("[^/]*")
+            elif char == "?":
+                part.append("[^/]")
+            elif char == "[":
+                close = segment.find("]", cursor + 1)
+                if close >= 0:
+                    chars = segment[cursor + 1:close]
+                    if chars.startswith("!"):
+                        chars = "^" + chars[1:]
+                    part.append("[" + chars + "]")
+                    cursor = close
+                else:
+                    part.append(r"\[")
+            else:
+                part.append(re.escape(char))
+            cursor += 1
+        expression.append("".join(part))
+    return re.fullmatch("".join(expression), path) is not None
 
 
 def _literal_workspace_path(pattern):
@@ -459,7 +487,7 @@ def _config_patch_declarations(config_path, data):
         if isinstance(packages, dict):
             for name, package in packages.items():
                 if isinstance(package, dict):
-                    yield (registry, name), package.get("path")
+                    yield (registry, name), package
 
 
 def _manifest_patch_declarations(manifest, data):
@@ -480,47 +508,56 @@ def _workspace_member_manifests(root, root_data):
         result = [root / "Cargo.toml"] if "package" in root_data else []
         _WORKSPACE_MEMBER_CACHE[root] = result
         return list(result)
-    repository = _repo_for(root)
-    if repository is None:
-        result = []
-        for current, directories, files in os.walk(root):
-            directories[:] = [name for name in directories if name not in {".git", "target"}]
-            if "Cargo.toml" in files and _is_workspace_member(Path(current), root, root_data):
-                result.append(Path(current) / "Cargo.toml")
-        _WORKSPACE_MEMBER_CACHE[root] = result
-        return list(result)
+    workspace = root_data["workspace"]
     root_manifest = root / "Cargo.toml"
+    repository = _repo_for(root)
+    sibling_boundary = repository.parent if repository is not None else root.parent
     excludes = [_literal_workspace_path(pattern)
-                for pattern in root_data["workspace"].get("exclude", [])]
-    for member in root_data["workspace"].get("members", []):
-        if any(marker in member for marker in "*?"):
+                for pattern in workspace.get("exclude", [])]
+    explicit_manifests = []
+    for member in workspace.get("members", []):
+        if any(marker in member for marker in "*?["):
             continue
         relative = _literal_workspace_path(member)
         if not relative or any(relative == excluded or
                                relative.startswith(excluded.rstrip("/") + "/")
                                for excluded in excludes):
             continue
-        candidate = root / relative
+        candidate = (root / relative).resolve()
+        try:
+            candidate.relative_to(sibling_boundary.resolve())
+        except ValueError as error:
+            raise ValueError(
+                f"workspace member declared in {root_manifest} escapes sibling boundary: "
+                f"{member} -> {candidate}") from error
         member_manifest = candidate if candidate.name == "Cargo.toml" else candidate / "Cargo.toml"
         if not _tracked_file(member_manifest):
             raise ValueError(
                 f"workspace member declared in {root_manifest} is not present in tracked source: "
                 f"{member_manifest}")
+        explicit_manifests.append(member_manifest)
+    if repository is None:
+        result = []
+        for current, directories, files in os.walk(root):
+            directories[:] = [name for name in directories if name not in {".git", "target"}]
+            if "Cargo.toml" in files and _is_workspace_member(Path(current), root, root_data):
+                result.append(Path(current) / "Cargo.toml")
+        result.extend(manifest for manifest in explicit_manifests if manifest not in result)
+        _WORKSPACE_MEMBER_CACHE[root] = result
+        return list(result)
     tracked_manifests = [repository / relative for relative in _tracked_files(repository)
                          if relative.name == "Cargo.toml" and
                          (repository / relative).parent.is_relative_to(root)]
+    # Explicit sibling members were validated before tracked-file access.
+    tracked_manifests.extend(manifest for manifest in explicit_manifests
+                             if manifest not in tracked_manifests)
     by_directory = {manifest.parent.resolve(): manifest for manifest in tracked_manifests}
-    workspace = root_data["workspace"]
-    excludes = [_literal_workspace_path(pattern) for pattern in workspace.get("exclude", [])]
 
     def eligible(directory):
         try:
             relative = directory.relative_to(root).as_posix()
         except ValueError:
-            return False
-        if any(relative == excluded or relative.startswith(excluded.rstrip("/") + "/")
-               for excluded in excludes):
-            return False
+            relative = None
         manifest = by_directory.get(directory.resolve())
         if manifest is None:
             return False
@@ -528,17 +565,21 @@ def _workspace_member_manifests(root, root_data):
             package_data = __import__("tomllib").loads(_read_manifest(manifest))
         except (OSError, __import__("tomllib").TOMLDecodeError):
             return False
-        if "workspace" in package_data:
-            return False
         package_workspace = package_data.get("package", {}).get("workspace")
-        return not isinstance(package_workspace, str) or \
-            (directory / package_workspace).resolve() == root.resolve()
+        if relative is None:
+            return ("workspace" not in package_data and
+                    isinstance(package_workspace, str) and
+                    (directory / package_workspace).resolve() == root.resolve())
+        return _is_workspace_member(directory, root, root_data)
 
     members = {root.resolve()} if "package" in root_data else set()
     for member in workspace.get("members", []):
         for manifest in _workspace_glob_manifests(root, member):
             if eligible(manifest.parent.resolve()):
                 members.add(manifest.parent.resolve())
+    for manifest in explicit_manifests:
+        if eligible(manifest.parent.resolve()):
+            members.add(manifest.parent.resolve())
 
     tomllib = __import__("tomllib")
     pending = list(members)
@@ -621,15 +662,21 @@ def discover_local_repositories(manifest, sibling_root, source_root=None, *,
 
     config_paths = _cargo_config_paths(manifest, source_root)
     effective_config_patches = {}
-    for config_path in config_paths:
+    for config_path in reversed(config_paths):
         try:
             config_data = tomllib.loads(_read_manifest(config_path))
         except (OSError, tomllib.TOMLDecodeError) as error:
             raise ValueError(f"cannot read Cargo config {config_path}: {error}") from error
-        # Config files closer to the selected manifest override farther files.
-        for key, relative in _config_patch_declarations(config_path, config_data):
-            effective_config_patches.setdefault(
-                key, (config_path, relative, config_path.parent.parent, relative is not None))
+        # Cargo merges patch package tables by key and field. A closer config
+        # that only adds version metadata does not erase a farther path.
+        for key, package in _config_patch_declarations(config_path, config_data):
+            relative = package.get("path")
+            if isinstance(relative, str):
+                effective_config_patches[key] = (
+                    config_path, relative, config_path.parent.parent, True)
+            elif any(field in package for field in ("git", "registry", "registry-index")):
+                effective_config_patches[key] = (
+                    config_path, None, config_path.parent.parent, False)
     effective_patches.update(effective_config_patches)
     for registry_name, relative in (cli_patches or {}).items():
         effective_patches[registry_name] = (manifest, str(relative), Path(relative).parent, True)
@@ -646,6 +693,7 @@ def discover_local_repositories(manifest, sibling_root, source_root=None, *,
         for member_manifest in _workspace_member_manifests(initial_root.parent, initial_root_data)
     }
     for member_manifest in workspace_members:
+        repositories.add(_repository_root(member_manifest.parent, boundary))
         pending_manifests.append((member_manifest, True))
     if not pending_manifests:
         pending_manifests.append((manifest, True))
