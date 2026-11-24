@@ -4,12 +4,14 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from scripts.downstream_source_snapshot import copy_tracked_source
 from scripts.downstream_source_snapshot import is_tracked_snapshot_file
 from scripts.downstream_source_snapshot import tracked_source_files
 from scripts.downstream_source_snapshot import validate_tracked_snapshot_file
 from scripts.downstream_source_snapshot import validate_tracked_config_snapshot_file
+from scripts.downstream_source_snapshot import TrackedSourceView
 
 
 class DownstreamSourceSnapshotTests(unittest.TestCase):
@@ -44,6 +46,83 @@ class DownstreamSourceSnapshotTests(unittest.TestCase):
             self.assertFalse((destination / "deleted.rs").exists())
             self.assertFalse((destination / "untracked.rs").exists())
             self.assertFalse((destination / "target").exists())
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symbolic links are unavailable")
+    def test_copy_rejects_untracked_parent_link_before_inspecting_tracked_leaf(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            root = self.make_repository(base / "source")
+            outside = base / "outside"
+            outside.mkdir()
+            (outside / "lib.rs").write_text("different untracked bytes\n")
+            import shutil
+            shutil.rmtree(root / "src")
+            (root / "src").symlink_to(outside, target_is_directory=True)
+            original_lstat = Path.lstat
+
+            def observe_leaf(path, *args, **kwargs):
+                if path == root / "src/lib.rs":
+                    self.fail("tracked leaf was inspected before its parent link was rejected")
+                return original_lstat(path, *args, **kwargs)
+
+            with patch.object(Path, "lstat", observe_leaf):
+                with self.assertRaisesRegex(ValueError, r"src/lib\.rs.*src"):
+                    copy_tracked_source(root, base / "snapshot")
+
+    def test_copy_builds_one_tracked_view_and_new_copies_see_worktree_changes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            root = self.make_repository(base / "source")
+            (root / "Cargo.toml").write_text(
+                '[package]\nname="snapshot-root"\nversion="0.1.0"\nedition="2021"\n')
+            (root / "crates/one").mkdir(parents=True)
+            (root / "crates/one/Cargo.toml").write_text(
+                '[package]\nname="snapshot-one"\nversion="0.1.0"\nedition="2021"\n')
+            (root / "crates/two").mkdir(parents=True)
+            (root / "crates/two/Cargo.toml").write_text(
+                '[package]\nname="snapshot-two"\nversion="0.1.0"\nedition="2021"\n')
+            subprocess.run(["git", "-C", str(root), "add", "Cargo.toml", "crates"], check=True)
+            original = TrackedSourceView._snapshot_members
+            with patch.object(TrackedSourceView, "_snapshot_members", autospec=True,
+                              side_effect=original) as scan:
+                copy_tracked_source(root, base / "first")
+                self.assertEqual(scan.call_count, 1)
+            (root / "src/lib.rs").write_text("new operation sees this edit\n")
+            (root / "Cargo.lock").unlink()
+            copy_tracked_source(root, base / "second")
+            self.assertEqual((base / "second/src/lib.rs").read_text(),
+                             "new operation sees this edit\n")
+            self.assertFalse((base / "second/Cargo.lock").exists())
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symbolic links are unavailable")
+    def test_untracked_parent_link_rejection_is_shared_by_source_and_cargo_inputs(self):
+        for relative, parent_relative in ((Path("src/lib.rs"), Path("src")),
+                                          (Path(".cargo/config.toml"), Path(".cargo"))):
+            with self.subTest(declaration=relative), tempfile.TemporaryDirectory() as temp:
+                base = Path(temp)
+                root = self.make_repository(base / "source")
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("tracked input bytes\n")
+                subprocess.run(["git", "-C", str(root), "add", str(relative)], check=True)
+                outside = base / "outside"
+                outside.mkdir()
+                (outside / target.name).write_text("different target bytes\n")
+                import shutil
+                shutil.rmtree(root / parent_relative)
+                (root / parent_relative).symlink_to(outside, target_is_directory=True)
+                original_lstat = Path.lstat
+
+                def observe_leaf(path, *args, **kwargs):
+                    if path == target:
+                        self.fail(f"{relative} was inspected before {parent_relative} was rejected")
+                    return original_lstat(path, *args, **kwargs)
+
+                with patch.object(Path, "lstat", observe_leaf):
+                    with self.assertRaises(ValueError) as raised:
+                        copy_tracked_source(root, base / "snapshot")
+                self.assertIn(relative.as_posix(), str(raised.exception))
+                self.assertIn(parent_relative.as_posix(), str(raised.exception))
 
     def test_config_snapshot_classifies_missing_and_non_directory_components(self):
         with tempfile.TemporaryDirectory() as temp:
