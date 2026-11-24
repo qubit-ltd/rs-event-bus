@@ -503,28 +503,27 @@ pub(crate) mod tests {
 
     struct CountingAllocator;
 
-    static ALLOCATION_COUNT: AtomicUsize = AtomicUsize::new(0);
-
     std::thread_local! {
         static COUNT_ALLOCATIONS: Cell<bool> = const { Cell::new(false) };
+        static ALLOCATION_COUNT: Cell<usize> = const { Cell::new(0) };
     }
 
     fn record_allocation() {
         let _ = COUNT_ALLOCATIONS.try_with(|enabled| {
             if enabled.get() {
-                ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
+                let _ = ALLOCATION_COUNT.try_with(|count| count.set(count.get() + 1));
             }
         });
     }
 
     pub(crate) fn start_allocation_count() {
-        ALLOCATION_COUNT.store(0, Ordering::Relaxed);
+        ALLOCATION_COUNT.with(|count| count.set(0));
         COUNT_ALLOCATIONS.with(|enabled| enabled.set(true));
     }
 
     pub(crate) fn stop_allocation_count() -> usize {
         COUNT_ALLOCATIONS.with(|enabled| enabled.set(false));
-        ALLOCATION_COUNT.load(Ordering::Relaxed)
+        ALLOCATION_COUNT.with(Cell::get)
     }
 
     unsafe impl GlobalAlloc for CountingAllocator {
@@ -646,12 +645,9 @@ pub(crate) mod tests {
     fn test_catch_async_panic_adds_one_allocation_after_future_is_created() {
         let future: SpiFuture<'static, Result<(), DeliveryError>> = Box::pin(async { Ok(()) });
 
-        COUNT_ALLOCATIONS.with(|enabled| enabled.set(false));
-        ALLOCATION_COUNT.store(0, Ordering::Relaxed);
-        COUNT_ALLOCATIONS.with(|enabled| enabled.set(true));
+        start_allocation_count();
         let caught = catch_async_panic(future);
-        COUNT_ALLOCATIONS.with(|enabled| enabled.set(false));
-        let allocations = ALLOCATION_COUNT.load(Ordering::Relaxed);
+        let allocations = stop_allocation_count();
         drop(caught);
 
         assert_eq!(
