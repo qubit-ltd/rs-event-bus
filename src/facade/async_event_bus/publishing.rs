@@ -16,17 +16,14 @@ use crate::PublishError;
 use crate::PublishFailure;
 use crate::PublishMetricsSnapshot;
 use crate::error::CheckedPublishError;
-use crate::error::ConfigurationError;
-use crate::error::EventBusError;
 use crate::facade::async_subscription::BusContextFuture;
+use crate::facade::internal::publish_pipeline_error;
 use crate::model::AdmissionRequirement;
 use crate::model::BatchPublishResult;
-use crate::model::EventId;
 use crate::model::PublishEffect;
 use crate::model::PublishReceipt;
 use crate::model::PublishRequest;
 use crate::model::Topic;
-use crate::pipeline::PipelineFailure;
 use crate::spi::PublishVisibility;
 
 impl AsyncEventBus {
@@ -287,28 +284,4 @@ impl AsyncEventBus {
         }
         BatchPublishResult::new(results)
     }
-}
-
-/// Maps a pipeline failure to public publish error variants.
-///
-/// # Parameters
-/// - `event_id`: identity of the original publication used in the terminal
-///   failure.
-/// - `failure`: failure produced by publisher pipeline execution.
-///
-/// # Returns
-/// The corresponding public publish error.
-pub(in crate::facade) fn publish_pipeline_error(event_id: EventId, failure: PipelineFailure) -> PublishFailure {
-    let effect = failure.publish_effect();
-    let cause = match failure.into_error() {
-        EventBusError::Configuration(error) => PublishError::Configuration(error),
-        EventBusError::Capability(error) => PublishError::Capability(error),
-        EventBusError::Codec(error) => PublishError::Codec(error),
-        EventBusError::Publish(error) => error,
-        other => PublishError::Configuration(ConfigurationError::InvalidField {
-            field: "publish_pipeline",
-            message: other.to_string().into(),
-        }),
-    };
-    PublishFailure::new(event_id, effect, cause)
 }

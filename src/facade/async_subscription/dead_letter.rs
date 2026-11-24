@@ -14,7 +14,7 @@ use qubit_retry::AsyncRetry;
 use qubit_retry::RetryCancellationToken;
 use qubit_retry::RetryPolicy;
 
-use crate::facade::async_event_bus::publishing::publish_pipeline_error;
+use crate::facade::internal::publish_pipeline_error;
 use crate::facade::async_subscription::AsyncEventBusInner;
 use crate::model::DeadLetterAdmissionPolicy;
 use crate::model::DeadLetterEvent;

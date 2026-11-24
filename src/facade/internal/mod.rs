@@ -16,6 +16,9 @@ pub(super) use lifecycle_state::LifecycleState;
 mod header_validation;
 pub(crate) use header_validation::validate_headers;
 
+mod publish_pipeline_error;
+pub(super) use publish_pipeline_error::publish_pipeline_error;
+
 mod bus_context_guard;
 mod close_failure_ledger;
 mod erased_middleware_list;
