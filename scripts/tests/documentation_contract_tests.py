@@ -234,6 +234,40 @@ class DocumentationContractTests(unittest.TestCase):
             "[Migration](doc/migration.md)\n[missing](src/missing.rs)\n", encoding="utf-8")
         self.assertFalse(checker.check(self.root, self.listing))
 
+    def test_bilingual_example_links_must_exist_and_be_packaged(self):
+        (self.root / "examples").mkdir()
+        self._migration_pages()
+        for readme, migration, example in (("README.md", "doc/migration.md", "local_minimal.rs"),
+                                           ("README.zh_CN.md", "doc/migration.zh_CN.md",
+                                            "async_local_minimal.rs")):
+            (self.root / readme).write_text(
+                f"[Migration]({migration})\n[example](examples/{example})\n",
+                encoding="utf-8")
+        self.assertFalse(checker.check(self.root, self.listing))
+        output = StringIO()
+        with redirect_stderr(output):
+            checker.check_explicit_source_links(self.root)
+        self.assertIn("examples/local_minimal.rs does not exist as a file", output.getvalue())
+        self.assertIn("examples/async_local_minimal.rs does not exist as a file", output.getvalue())
+
+        for example in ("local_minimal.rs", "async_local_minimal.rs"):
+            (self.root / "examples" / example).write_text("// example\n", encoding="utf-8")
+        output = StringIO()
+        with redirect_stderr(output):
+            self.assertFalse(checker.check(self.root, self.listing))
+        self.assertIn(
+            "README.md: local link target examples/local_minimal.rs is not included in the Cargo package list",
+            output.getvalue())
+        self.assertIn(
+            "README.zh_CN.md: local link target examples/async_local_minimal.rs is not included in the Cargo package list",
+            output.getvalue())
+
+        with self.listing.open("a", encoding="utf-8") as package_list:
+            package_list.write("examples/local_minimal.rs\nexamples/async_local_minimal.rs\n")
+        (self.root / "doc/design.md").write_text(
+            "[example](../examples/local_minimal.rs#main)\n", encoding="utf-8")
+        self.assertTrue(checker.check(self.root, self.listing))
+
     def test_explicit_source_link_that_escapes_repository_is_rejected(self):
         (self.root / "doc/design.md").write_text(
             "[outside](../../outside.rs)\n", encoding="utf-8")

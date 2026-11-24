@@ -18,7 +18,7 @@ from markdown_headings import (heading_lines_from_tokens, heading_titles, link_l
 DOCUMENTS = ("README.md", "README.zh_CN.md", "doc/user_guide.md", "doc/user_guide.zh_CN.md",
              "doc/design.md", "doc/design.zh_CN.md")
 MIGRATION_PAGES = ("doc/migration.md", "doc/migration.zh_CN.md")
-SOURCE_LINK_ROOTS = ("src", "tests", "benches", "fuzz")
+SOURCE_LINK_ROOTS = ("src", "tests", "benches", "fuzz", "examples")
 MIGRATION_GUIDES = {
     "doc/migration.md": ("doc/user_guide.md", "migrate-from-020-to-021"),
     "doc/migration.zh_CN.md": ("doc/user_guide.zh_CN.md", "从-020-迁移到-021"),
@@ -87,6 +87,8 @@ def normalized_local_path(document, destination, parts=None):
     if normalized == ".." or normalized.startswith("../"):
         return None
     if normalized.startswith("scripts/") or normalized == "scripts":
+        return normalized
+    if normalized.startswith("examples/") or normalized == "examples":
         return normalized
     if normalized.startswith(".infra/") or normalized == ".infra":
         return normalized
