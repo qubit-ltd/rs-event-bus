@@ -64,6 +64,79 @@ class ProjectHookGraphTests(unittest.TestCase):
             self.assertEqual(failing.returncode, 23, failing.stderr)
             self.assertIn("hook-marker", failing.stdout)
 
+    def test_real_project_hook_prepares_documentation_dependencies_only_in_github_actions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "project"
+            scripts = root / "scripts"
+            (scripts / "tests").mkdir(parents=True)
+            hook = scripts / "project-ci-check.sh"
+            shutil.copy(ROOT / "scripts/project-ci-check.sh", hook)
+            hook.chmod(0o755)
+
+            fake_bin = Path(directory) / "bin"
+            fake_bin.mkdir()
+            cargo = fake_bin / "cargo"
+            cargo.write_text(
+                '#!/usr/bin/env bash\n'
+                'set -euo pipefail\n'
+                'if [[ ${1:-} == package ]]; then printf "Cargo.toml\\n"; fi\n',
+                encoding="utf-8",
+            )
+            cargo.chmod(0o755)
+            python = fake_bin / "python3"
+            python.write_text(
+                '#!/usr/bin/env bash\n'
+                'if [[ ${1:-} == -c ]]; then printf "3.12.3\\n"; exit 0; fi\n'
+                'exit 0\n',
+                encoding="utf-8",
+            )
+            python.chmod(0o755)
+
+            args_record = Path(directory) / "documentation-args"
+            docs_runner = scripts / "run-documentation-checks.sh"
+            docs_runner.write_text(
+                '#!/usr/bin/env bash\n'
+                'set -euo pipefail\n'
+                'printf "%s\\0" "$@" > "$DOCUMENTATION_ARGS_RECORD"\n'
+                'exit "${DOCUMENTATION_EXIT:-0}"\n',
+                encoding="utf-8",
+            )
+            docs_runner.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update({
+                "PATH": f"{fake_bin}{os.pathsep}{environment['PATH']}",
+                "DOCUMENTATION_ARGS_RECORD": str(args_record),
+            })
+
+            def invoke(github_actions=None, docs_exit="0"):
+                environment.pop("GITHUB_ACTIONS", None)
+                if github_actions is not None:
+                    environment["GITHUB_ACTIONS"] = github_actions
+                environment["DOCUMENTATION_EXIT"] = docs_exit
+                args_record.unlink(missing_ok=True)
+                result = subprocess.run(
+                    ["bash", str(hook)], env=environment, capture_output=True,
+                    text=True, check=False,
+                )
+                args = args_record.read_bytes().rstrip(b"\0").split(b"\0")
+                return result, args
+
+            for actions, expected_prefix in (("true", [b"--prepare", b"contract"]),
+                                             (None, [b"contract"]),
+                                             ("false", [b"contract"])):
+                with self.subTest(github_actions=actions):
+                    result, args = invoke(actions)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(args[:len(expected_prefix)], expected_prefix)
+                    self.assertEqual(len(args), len(expected_prefix) + 1)
+                    self.assertFalse(Path(args[-1].decode()).exists(),
+                                     "the package list must be removed after documentation checks")
+
+            failed, failed_args = invoke("true", docs_exit="19")
+            self.assertEqual(failed.returncode, 19, failed.stderr)
+            self.assertFalse(Path(failed_args[-1].decode()).exists(),
+                             "the package list must be removed after documentation failure")
+
     def test_hook_rejects_python_below_311_before_tests_and_accepts_supported_python(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

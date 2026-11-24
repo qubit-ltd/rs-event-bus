@@ -16,7 +16,11 @@ package_list=$(mktemp)
 trap 'rm -f "$package_list"' EXIT
 cargo package --list --locked --allow-dirty --manifest-path "$project_root/Cargo.toml" > "$package_list"
 python3 -B "$project_root/scripts/check_performance_evidence.py" --package-list "$package_list"
-"$project_root/scripts/run-documentation-checks.sh" contract "$package_list"
+documentation_check_args=(contract "$package_list")
+if [[ ${GITHUB_ACTIONS:-} == true ]]; then
+    documentation_check_args=(--prepare "${documentation_check_args[@]}")
+fi
+"$project_root/scripts/run-documentation-checks.sh" "${documentation_check_args[@]}"
 rm -f "$package_list"
 trap - EXIT
 python3 -B -m unittest discover -s "$project_root/scripts/tests" -p '*graph_tests.py'
