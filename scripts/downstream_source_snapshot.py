@@ -71,9 +71,14 @@ def validate_tracked_snapshot_file(source, declaration, tracked=None):
         raise ValueError(f"declaration is not tracked: {relative.as_posix()}")
     pending = list(relative.parts)
     current = source
-    visited = set()
+    active_links = set()
+    link_expansions = 0
+    max_link_expansions = 40
     while pending:
         part = pending.pop(0)
+        if isinstance(part, tuple):
+            active_links.remove(part[1])
+            continue
         if part in ("", "."):
             continue
         if part == "..":
@@ -89,16 +94,19 @@ def validate_tracked_snapshot_file(source, declaration, tracked=None):
         if current.is_symlink():
             if rel not in tracked:
                 raise ValueError(f"untracked symlink hop: {label}")
-            if current in visited:
+            if current in active_links:
                 raise ValueError(f"symlink cycle at {label}")
-            visited.add(current)
+            link_expansions += 1
+            if link_expansions > max_link_expansions:
+                raise ValueError(f"symlink expansion limit exceeded ({max_link_expansions} hops) at {label}")
+            active_links.add(current)
             target = Path(os.readlink(current))
             if target.is_absolute():
                 raise ValueError(f"absolute symlink target at {label}: {target}")
-            pending = list(target.parts) + pending
+            pending = list(target.parts) + [("end-link", current)] + pending
             current = current.parent
             continue
-        if pending and not current.is_dir():
+        if any(not isinstance(next_part, tuple) for next_part in pending) and not current.is_dir():
             raise FileNotFoundError(f"missing path component at {label}")
     try:
         target_stat = current.stat()
