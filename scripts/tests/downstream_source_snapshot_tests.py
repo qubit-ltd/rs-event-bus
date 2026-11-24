@@ -83,6 +83,47 @@ class DownstreamSourceSnapshotTests(unittest.TestCase):
             self.assertEqual(os.readlink(destination / "src/current.rs"), "lib.rs")
 
     @unittest.skipUnless(hasattr(os, "symlink"), "symbolic links are unavailable")
+    def test_revisiting_a_tracked_directory_link_is_snapshot_safe_and_cargo_parseable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.make_repository(Path(temp) / "source")
+            (root / "real").mkdir()
+            (root / "real" / "actual.toml").write_text(
+                '[package]\nname="fixture"\nversion="0.1.0"\nedition="2024"\n'
+                '[lib]\npath="../src/lib.rs"\n'
+            )
+            (root / "alias").symlink_to("real", target_is_directory=True)
+            (root / "Cargo.toml").symlink_to("alias/../alias/actual.toml")
+            subprocess.run(
+                ["git", "-C", str(root), "add", "Cargo.toml", "alias", "real/actual.toml"],
+                check=True,
+            )
+            subprocess.run(
+                ["cargo", "generate-lockfile", "--offline", "--manifest-path", str(root / "Cargo.toml")],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(["git", "-C", str(root), "add", "Cargo.lock"], check=True)
+            tracked = set(tracked_source_files(root))
+            declaration = root / "Cargo.toml"
+
+            validate_tracked_snapshot_file(root, declaration, tracked)
+            self.assertTrue(is_tracked_snapshot_file(root, declaration, tracked))
+            destination = Path(temp) / "snapshot"
+            copy_tracked_source(root, destination)
+            self.assertEqual(os.readlink(destination / "Cargo.toml"), "alias/../alias/actual.toml")
+            self.assertEqual(os.readlink(destination / "alias"), "real")
+
+            for extra_args in ([], ["--locked"]):
+                subprocess.run(
+                    ["cargo", "metadata", "--offline", "--format-version", "1", "--manifest-path",
+                     str(destination / "Cargo.toml"), *extra_args],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symbolic links are unavailable")
     def test_discovery_rejects_untracked_intermediate_manifest_link(self):
         with tempfile.TemporaryDirectory() as temp:
             root = self.make_repository(Path(temp) / "source")
@@ -96,6 +137,59 @@ class DownstreamSourceSnapshotTests(unittest.TestCase):
             self.assertFalse(is_tracked_snapshot_file(root, declaration, tracked))
             with self.assertRaisesRegex(ValueError, "middle.toml"):
                 validate_tracked_snapshot_file(root, declaration, tracked)
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symbolic links are unavailable")
+    def test_accepts_an_ordinary_chain_of_tracked_manifest_links(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.make_repository(Path(temp) / "source")
+            (root / "real.toml").write_text('[package]\nname="fixture"\n')
+            (root / "middle.toml").symlink_to("real.toml")
+            (root / "Cargo.toml").symlink_to("middle.toml")
+            subprocess.run(
+                ["git", "-C", str(root), "add", "Cargo.toml", "middle.toml", "real.toml"],
+                check=True,
+            )
+            tracked = set(tracked_source_files(root))
+
+            self.assertTrue(is_tracked_snapshot_file(root, root / "Cargo.toml", tracked))
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symbolic links are unavailable")
+    def test_rejects_a_self_referencing_manifest_link(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.make_repository(Path(temp) / "source")
+            (root / "Cargo.toml").symlink_to("Cargo.toml")
+            subprocess.run(["git", "-C", str(root), "add", "Cargo.toml"], check=True)
+
+            with self.assertRaisesRegex(ValueError, "cycle.*Cargo.toml"):
+                validate_tracked_snapshot_file(root, root / "Cargo.toml")
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symbolic links are unavailable")
+    def test_reports_expansion_limit_separately_from_a_link_cycle(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.make_repository(Path(temp) / "source")
+            (root / "real.toml").write_text('[package]\nname="fixture"\n')
+            (root / "Cargo.toml").symlink_to("link0.toml")
+            for index in range(41):
+                target = f"link{index + 1}.toml" if index < 40 else "real.toml"
+                (root / f"link{index}.toml").symlink_to(target)
+            subprocess.run(
+                ["git", "-C", str(root), "add", "Cargo.toml", "link*.toml", "real.toml"],
+                check=True,
+            )
+
+            with self.assertRaisesRegex(ValueError, "expansion limit exceeded.*40 hops"):
+                validate_tracked_snapshot_file(root, root / "Cargo.toml")
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symbolic links are unavailable")
+    def test_rejects_an_absolute_manifest_link_target(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.make_repository(Path(temp) / "source")
+            (root / "Cargo.toml").symlink_to(root / "real.toml")
+            (root / "real.toml").write_text('[package]\nname="fixture"\n')
+            subprocess.run(["git", "-C", str(root), "add", "Cargo.toml", "real.toml"], check=True)
+
+            with self.assertRaisesRegex(ValueError, "absolute symlink target.*Cargo.toml"):
+                validate_tracked_snapshot_file(root, root / "Cargo.toml")
 
     @unittest.skipUnless(hasattr(os, "symlink"), "symbolic links are unavailable")
     def test_snapshot_rejects_manifest_chain_through_untracked_intermediate(self):
