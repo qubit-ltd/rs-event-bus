@@ -122,6 +122,15 @@ def run(command, *, cwd, env, label, print_stdout=True, timeout=TIMEOUT_SECONDS)
         return stdout
 
 
+def _cargo_env(target: Path) -> dict[str, str]:
+    """Return the caller environment with Cargo outputs isolated under target."""
+    target = target.absolute()
+    env = os.environ.copy()
+    env["CARGO_TARGET_DIR"] = str(target)
+    env["CARGO_BUILD_BUILD_DIR"] = str(target / "build")
+    return env
+
+
 def _cargo_config_patch_declarations(core, redis=None):
     patches = [("crates-io", "qubit-event-bus", Path(core))]
     if redis is not None:
@@ -211,8 +220,7 @@ def metadata(root, features, core, redis, target, *, expected_redis=None,
         command.append("--all-features")
     elif features:
         command.extend(["--features", features])
-    env = os.environ.copy()
-    env["CARGO_TARGET_DIR"] = str(target)
+    env = _cargo_env(target)
 
     allowed_workspace_roots = (allowed_workspace_roots if allowed_workspace_roots is not None
                                else (root,))
@@ -269,8 +277,7 @@ def run_downstream_checks(roots, core, target_root, *, include_execution_service
                      allowed_local_roots=allowed_local_roots,
                      allowed_workspace_roots=allowed_workspace_roots)
             checked_manifests.add(key)
-        env = os.environ.copy()
-        env["CARGO_TARGET_DIR"] = str(target)
+        env = _cargo_env(target)
         arguments = (["--all-features"] if config.all_features else
                      (["--features", config.features] if config.features else []))
         arguments.extend(["--test", config.target, config.test_name])
