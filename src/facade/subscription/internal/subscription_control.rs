@@ -263,6 +263,8 @@ impl SubscriptionControl {
         }
         #[cfg(not(test))]
         self.cancelled.store(true, Ordering::Release);
+        #[cfg(test)]
+        crate::internal::test_wait_probe::announce("sync_cancel_requested");
     }
 
     /// Enables an opt-in trace for this subscription alone.
