@@ -122,7 +122,9 @@ def copy_tracked_source(source: Path, destination: Path) -> None:
     else:
         destination.mkdir(parents=True)
 
-    for relative in tracked_source_files(source):
+    tracked_entries = tracked_source_files(source)
+    tracked = set(tracked_entries)
+    for relative in tracked_entries:
         label = relative.as_posix()
         source_path = source / relative
         try:
@@ -139,6 +141,17 @@ def copy_tracked_source(source: Path, destination: Path) -> None:
             continue
         except OSError as error:
             raise ValueError(f"cannot inspect tracked path {label}: {error}") from error
+
+        is_cargo_input = (relative.name == "Cargo.toml" or
+                          relative.parts[-2:] in ((".cargo", "config"),
+                                                  (".cargo", "config.toml")))
+        if is_cargo_input:
+            if stat.S_ISLNK(info.st_mode) and Path(os.readlink(source_path)).is_absolute():
+                raise ValueError(f"tracked symlink escapes snapshot: {label}")
+            try:
+                validate_tracked_snapshot_file(source, source_path, tracked)
+            except (OSError, ValueError) as error:
+                raise ValueError(f"tracked Cargo input is not snapshot-safe: {label}: {error}") from error
 
         destination_path = destination / relative
         parent = destination_path.parent
