@@ -80,10 +80,11 @@ impl AsyncEventBus {
     /// Dropping a pending wait only cancels this observer; it does not change
     /// delivery ownership or grant leadership over the tracked deliveries.
     /// Cancelling a pending wait drops its registered signal waker and optional
-    /// timer while scoped to this bus, so cleanup cannot start same-bus shutdown.
-    /// A callback polled for this bus cannot wait for this operation: it
-    /// receives [`LifecycleError::WouldDeadlock`] even when no matching
-    /// delivery is active, because the guard is scoped to the whole bus poll.
+    /// timer while scoped to this bus, so cleanup cannot start same-bus
+    /// shutdown. A callback polled for this bus cannot wait for this
+    /// operation: it receives [`LifecycleError::WouldDeadlock`] even when
+    /// no matching delivery is active, because the guard is scoped to the
+    /// whole bus poll.
     ///
     /// # Type Parameters
     /// - `T`: Topic payload type.

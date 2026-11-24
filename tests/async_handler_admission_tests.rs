@@ -748,8 +748,13 @@ fn test_dropping_pending_received_wait_releases_last_waker_during_active_deliver
     drop(observer);
 
     assert!(
-        matches!(*observed.lock().expect("drop probe observation"), Some(Poll::Pending)),
-        "last registered waker reentry observes the active delivery without taking ownership"
+        matches!(
+            *observed.lock().expect("drop probe observation"),
+            Some(Poll::Ready(Err(LifecycleError::WouldDeadlock {
+                operation: "wait_for_received_deliveries"
+            })))
+        ),
+        "last registered waker reentry is rejected while the wait is being dropped"
     );
 
     let mut timed_observer = Box::pin(bus.wait_for_received_deliveries(&topic, Some(Duration::from_secs(1))));
@@ -763,9 +768,11 @@ fn test_dropping_pending_received_wait_releases_last_waker_during_active_deliver
     assert!(
         matches!(
             *timer_observed.lock().expect("timer drop observation"),
-            Some(Poll::Pending)
+            Some(Poll::Ready(Err(LifecycleError::WouldDeadlock {
+                operation: "wait_for_received_deliveries"
+            })))
         ),
-        "timer future drop reentry observes the active delivery without taking ownership"
+        "timer future drop reentry is rejected while the wait is being dropped"
     );
 
     resume_tx.send(()).expect("resume handler");
