@@ -2949,7 +2949,8 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             execution = siblings / "rs-execution-services"
             ioc = execution / "tests/fixtures/ioc_application_consumer"
             for root in (redis, task, ioc):
-                root.mkdir(parents=True)
+                (root / "src").mkdir(parents=True)
+                (root / "src/lib.rs").write_text("pub fn fixture() {}\n")
             (base / "Cargo.toml").write_text(
                 '[workspace]\nmembers = ["sources/redis", '
                 '"sources/siblings/rs-execution-services/tests/fixtures/'
@@ -3061,7 +3062,8 @@ class DownstreamCompatibilityTests(unittest.TestCase):
 
                     with patch("scripts.check_downstream_compatibility.run",
                                side_effect=only_allow_locate):
-                        with self.assertRaisesRegex(RuntimeError, "outside"):
+                        expected_error = ("missing-external.lock" if dangling else "outside")
+                        with self.assertRaisesRegex(RuntimeError, expected_error):
                             metadata(root, None, base / "core", None, base / "target",
                                      allowed_workspace_roots=(root,))
 
@@ -3115,7 +3117,7 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             real_manifest = root / "real.toml"
             real_manifest.write_text(
                 '[package]\nname="manifest-link-fixture"\nversion="0.1.0"\n'
-                'edition="2021"\n')
+                'edition="2021"\n[dependencies]\nqubit-event-bus="0.21"\n')
             (root / "Cargo.toml").symlink_to(real_manifest.name)
             core = base / "core"
             (core / "src").mkdir(parents=True)
@@ -3127,7 +3129,8 @@ class DownstreamCompatibilityTests(unittest.TestCase):
 
             with patch.dict(os.environ, {"CARGO_NET_OFFLINE": "true"}):
                 metadata(root, None, core, None, base / "target",
-                         allowed_workspace_roots=(root,))
+                         allowed_workspace_roots=(root,),
+                         allowed_local_roots=(root,))
 
             self.assertTrue((root / "Cargo.lock").is_file())
 
