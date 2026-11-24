@@ -419,6 +419,26 @@ for document, heading, marker, label in (
     assert result.returncode != 0 and f"{label}: anchor" in result.stdout + result.stderr, result.stdout + result.stderr
     assert "content drift" not in result.stdout + result.stderr, result.stdout + result.stderr
 
+def move_required_heading_into_quoted_fence(root, document, heading):
+    path = root / document
+    text = path.read_text(encoding="utf-8")
+    original = f"## {heading}\n"
+    quoted = f"> ```\n> {original.rstrip()}\n> ```\n"
+    assert original in text
+    path.write_text(text.replace(original, quoted, 1), encoding="utf-8")
+
+
+for document, heading, label in (
+    ("doc/user_guide.md", "Keep an event that fails for good", "English user guide"),
+    ("doc/user_guide.zh_CN.md", "保存最终处理失败的事件", "Chinese user guide"),
+):
+    result = run_case(lambda _root: None, args=SNAPSHOT_ARGS, snapshot=True,
+                      snapshot_content_mutator=lambda root, document=document, heading=heading:
+                      move_required_heading_into_quoted_fence(root, document, heading))
+    assert result.returncode != 0 and f"{label}: anchor" in result.stdout + result.stderr, result.stdout + result.stderr
+    assert "content drift" not in result.stdout + result.stderr, result.stdout + result.stderr
+
+
 def add_invalid_backtick_fence_info_before_real_headings(root):
     for document, heading in (
         ("doc/user_guide.md", "Keep an event that fails for good"),

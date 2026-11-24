@@ -199,6 +199,16 @@ Local providers also support an optional declared-weight budget. Supply a `Publi
 
 Run these repository commands from the root of a full Git checkout; crate archives do not include `scripts/` or `.infra/`.
 
+The documentation checks use pinned Python tools. Prepare and activate the environment once before running the project checks locally:
+
+```bash
+python3 -m venv "$HOME/.venvs/rs-event-bus-doc-check"
+source "$HOME/.venvs/rs-event-bus-doc-check/bin/activate"
+python -m pip install -r scripts/requirements-doc-check.txt
+```
+
+In offline environments, activate a virtual environment where these pinned tools are already installed.
+
 ```bash
 # Run tests with the default feature set
 cargo test
@@ -211,6 +221,13 @@ cargo test --all-features
 
 # Project-specific checks for this crate
 ./scripts/project-ci-check.sh
+
+# Documentation checks only, with an already prepared environment
+package_list=$(mktemp)
+cargo package --list --locked --allow-dirty > "$package_list"
+./scripts/run-documentation-checks.sh contract "$package_list"
+rm -f "$package_list"
+./scripts/run-documentation-checks.sh examples
 
 # Check code coverage
 ./.infra/bin/coverage.sh

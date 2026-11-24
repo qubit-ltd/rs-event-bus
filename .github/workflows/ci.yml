@@ -51,8 +51,7 @@ jobs:
     uses: qubit-ltd/rs-infra-ci/.github/workflows/github-ci.yml@main
     with:
       verify-extra-script: |
-        python3 scripts/check_documentation_examples.py --check-snapshot-content --fetch-snapshot
-        python3 scripts/test_documentation_examples.py
+        scripts/run-documentation-checks.sh --prepare examples --fetch-snapshot
         cargo +1.94.0 run --locked --example local_delivery
         cargo +1.94.0 test --locked --manifest-path tests/fixtures/documentation_consumer/Cargo.toml
         cargo_json=$(mktemp)

@@ -194,6 +194,16 @@ local 可选用声明权重预算：为每种发布的原生载荷 `T` 配置 `P
 
 以下仓库命令须在完整 Git checkout 根目录运行；crate 解包目录不包含 `scripts/` 和 `.infra/`。
 
+文档检查使用固定版本的 Python 工具。本地运行项目检查前，先准备并激活一次虚拟环境：
+
+```bash
+python3 -m venv "$HOME/.venvs/rs-event-bus-doc-check"
+source "$HOME/.venvs/rs-event-bus-doc-check/bin/activate"
+python -m pip install -r scripts/requirements-doc-check.txt
+```
+
+离线环境可激活一个已安装这两个固定版本工具的虚拟环境。
+
 ```bash
 # 使用默认 feature 集运行测试
 cargo test
@@ -206,6 +216,13 @@ cargo test --all-features
 
 # 本 crate 项目检查
 ./scripts/project-ci-check.sh
+
+# 仅运行文档检查，要求已准备好环境
+package_list=$(mktemp)
+cargo package --list --locked --allow-dirty > "$package_list"
+./scripts/run-documentation-checks.sh contract "$package_list"
+rm -f "$package_list"
+./scripts/run-documentation-checks.sh examples
 
 # 检查代码覆盖率
 ./.infra/bin/coverage.sh

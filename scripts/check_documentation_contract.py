@@ -10,7 +10,8 @@ from urllib.parse import unquote, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from markdown_headings import heading_lines, heading_titles, lines_outside_fences
+from markdown_headings import (heading_lines, heading_lines_from_tokens, heading_titles,
+                               link_lines, link_lines_from_tokens, parse_markdown)
 
 
 DOCUMENTS = ("README.md", "README.zh_CN.md", "doc/user_guide.md", "doc/user_guide.zh_CN.md",
@@ -43,21 +44,35 @@ GUIDE_TOC_ENTRIES = {
         "非阻塞地请求停机",
     ),
 }
-LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+_printed_url_errors = set()
+
+
+def markdown_link_lines(text):
+    """Yield located CommonMark links, preserving parser-resolved references."""
+    yield from link_lines(text)
 
 
 def markdown_links(text):
-    """Yield link destinations outside fenced code blocks."""
-    for _line_number, line in lines_outside_fences(text):
-        for match in LINK.finditer(line):
-            destination = match.group(1).strip()
-            if not destination:
-                continue
-            yield destination.split(maxsplit=1)[0].strip("<>")
+    """Compatibility wrapper yielding destinations without source locations."""
+    for _line_number, destination in markdown_link_lines(text):
+        yield destination
 
 
-def normalized_local_path(document, destination):
-    parts = urlsplit(destination)
+def _url_parts(document, line_number, destination, errors):
+    try:
+        return urlsplit(destination)
+    except ValueError as error:
+        errors.append((f"{document}:{line_number + 1}",
+                       f"target {destination!r}: {error}"))
+        return None
+
+
+def normalized_local_path(document, destination, parts=None):
+    if parts is None:
+        try:
+            parts = urlsplit(destination)
+        except ValueError:
+            return None
     if parts.scheme or parts.netloc or not parts.path:
         return None
     raw = unquote(parts.path).replace("\\", "/")
@@ -73,6 +88,7 @@ def normalized_local_path(document, destination):
 
 
 def check(root, package_list):
+    _printed_url_errors.clear()
     try:
         packaged = {line.strip().replace("\\", "/").removeprefix("./")
                     for line in package_list.read_text(encoding="utf-8").splitlines() if line.strip()}
@@ -86,15 +102,29 @@ def check(root, package_list):
         except (OSError, UnicodeError) as error:
             errors.append((document, f"cannot read document: {error}"))
             continue
-        for destination in markdown_links(text):
-            local = normalized_local_path(document, destination)
+        for line_number, destination in markdown_link_lines(text):
+            parts = _url_parts(document, line_number, destination, errors)
+            if parts is None:
+                continue
+            local = normalized_local_path(document, destination, parts)
             if local is not None and local not in packaged:
                 errors.append((document, f"local link target {local} is not included in the Cargo package list"))
+    _print_errors(errors)
+    ok = not errors
+    ok = check_explicit_source_links(root) and ok
+    ok = check_migration_contract(root, package_list) and ok
+    ok = check_guide_toc_contract(root) and ok
+    return ok
+
+
+def _print_errors(errors):
     for document, message in errors:
+        if message.startswith("target "):
+            key = (document, message)
+            if key in _printed_url_errors:
+                continue
+            _printed_url_errors.add(key)
         print(f"{document}: {message}", file=sys.stderr)
-    return (not errors and check_explicit_source_links(root) and
-            check_migration_contract(root, package_list) and
-            check_guide_toc_contract(root))
 
 
 def check_guide_toc_contract(root):
@@ -107,7 +137,8 @@ def check_guide_toc_contract(root):
             errors.append((document, f"cannot read guide TOC: {error}"))
             continue
         lines = text.splitlines()
-        headings = list(heading_lines(text))
+        tokens = parse_markdown(text)
+        headings = list(heading_lines_from_tokens(tokens))
         toc_start = next((line_number for line_number, level, title in headings
                           if level == 2 and title in ("Contents", "目录")), None)
         if toc_start is None:
@@ -115,16 +146,19 @@ def check_guide_toc_contract(root):
             continue
         toc_end = next((line_number for line_number, _level, _title in headings
                         if line_number > toc_start), len(lines))
-        toc = "\n".join(lines[toc_start + 1:toc_end])
-        toc_links = set(markdown_links(toc))
-        anchors = _heading_anchors(text)
+        toc_links = set()
+        for line_number, destination in link_lines_from_tokens(tokens):
+            if toc_start < line_number < toc_end:
+                parts = _url_parts(document, line_number, destination, errors)
+                if parts is not None:
+                    toc_links.add(destination)
+        anchors = _anchors_for_titles(title for _line, _level, title in headings)
         for anchor in required_anchors:
             if f"#{anchor}" not in toc_links:
                 errors.append((document, f"missing TOC entry for #{anchor}"))
             if anchor not in anchors:
                 errors.append((document, f"TOC target heading #{anchor} does not exist"))
-    for document, message in errors:
-        print(f"{document}: {message}", file=sys.stderr)
+    _print_errors(errors)
     return not errors
 
 
@@ -138,8 +172,10 @@ def check_explicit_source_links(root):
         except (OSError, UnicodeError) as error:
             errors.append((document, f"cannot read document for source links: {error}"))
             continue
-        for destination in markdown_links(text):
-            parts = urlsplit(destination)
+        for line_number, destination in markdown_link_lines(text):
+            parts = _url_parts(document, line_number, destination, errors)
+            if parts is None:
+                continue
             if parts.scheme or parts.netloc or not parts.path or "*" in parts.path:
                 continue
             raw = unquote(parts.path).replace("\\", "/")
@@ -159,8 +195,7 @@ def check_explicit_source_links(root):
                 continue
             if not candidate.is_file():
                 errors.append((document, f"source link target {relative} does not exist as a file"))
-    for document, message in errors:
-        print(f"{document}: {message}", file=sys.stderr)
+    _print_errors(errors)
     return not errors
 
 
@@ -173,8 +208,12 @@ def _packaged_paths(package_list):
 
 
 def _heading_anchors(text):
+    return _anchors_for_titles(heading_titles(text))
+
+
+def _anchors_for_titles(titles):
     anchors = set()
-    for title in heading_titles(text):
+    for title in titles:
         # GitHub-style heading IDs: lowercase, remove punctuation, spaces become hyphens.
         title = title.lower()
         title = re.sub(r"[^\w\- ]", "", title, flags=re.UNICODE)
@@ -183,7 +222,10 @@ def _heading_anchors(text):
 
 
 def _is_local_link_to(destination, path, fragment=None):
-    parts = urlsplit(destination)
+    try:
+        parts = urlsplit(destination)
+    except ValueError:
+        return False
     return (not parts.scheme and not parts.netloc and parts.path == path and
             (fragment is None or parts.fragment == fragment))
 
@@ -201,6 +243,8 @@ def check_migration_contract(root, package_list):
             continue
         if page not in packaged:
             errors.append((page, "migration page is not included in the Cargo package list"))
+        for line_number, destination in markdown_link_lines(contents[page]):
+            _url_parts(page, line_number, destination, errors)
     for page, peer in ((MIGRATION_PAGES[0], MIGRATION_PAGES[1]),
                        (MIGRATION_PAGES[1], MIGRATION_PAGES[0])):
         text = contents.get(page)
@@ -230,8 +274,7 @@ def check_migration_contract(root, package_list):
         target = "doc/migration.md" if readme == "README.md" else "doc/migration.zh_CN.md"
         if not any(_is_local_link_to(link, target) for link in markdown_links(readme_text)):
             errors.append((readme, f"missing migration entry link to {target}"))
-    for document, message in errors:
-        print(f"{document}: {message}", file=sys.stderr)
+    _print_errors(errors)
     return not errors
 
 

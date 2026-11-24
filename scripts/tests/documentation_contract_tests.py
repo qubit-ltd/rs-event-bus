@@ -1,6 +1,8 @@
 """Regression tests for package-local documentation links."""
 
 import importlib.util
+from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
 import tempfile
 import unittest
@@ -107,6 +109,50 @@ class DocumentationContractTests(unittest.TestCase):
     def test_backtick_in_fence_info_does_not_hide_later_real_heading(self):
         text = "````example with `backticks`\n## Visible heading\n"
         self.assertIn("Visible heading", list(checker.heading_titles(text)))
+
+    def test_commonmark_headings_and_links_ignore_code_and_comments(self):
+        text = ("<!--\n## hidden comment\n-->\n"
+                "> ```md\n> ## hidden quote fence\n> ```\n"
+                "\t## hidden tab indent\n"
+                "- item\n\n        ## hidden list code\n"
+                "   ## Visible heading\n"
+                "`[fake](scripts/missing.py)` [real](<scripts/tool.py>)\n")
+        self.assertEqual(list(checker.heading_titles(text)), ["Visible heading"])
+        self.assertEqual([destination for _line, destination in checker.markdown_link_lines(text)],
+                         ["scripts/tool.py"])
+
+    def test_markdown_link_destinations_keep_parentheses_and_angle_bracket_spaces(self):
+        text = "[parentheses](src/name_(part).rs) [space](<src/file name.rs>)\n"
+        self.assertEqual(list(checker.markdown_links(text)), [
+            "src/name_(part).rs", "src/file name.rs",
+        ])
+
+    def test_markdown_reference_links_resolve_across_toc_scope(self):
+        guide = self.root / "doc/user_guide.md"
+        text = guide.read_text(encoding="utf-8")
+        text = text.replace("](#run-the-redis-order-examples)", "][orders]", 1)
+        guide.write_text(text + "\n[orders]: #run-the-redis-order-examples\n", encoding="utf-8")
+        self.assertTrue(checker.check_guide_toc_contract(self.root))
+
+    def test_bad_url_reports_location_and_continues_collecting(self):
+        (self.root / "README.md").write_text(
+            "[bad](http://[)\n[missing](scripts/missing.py)\n", encoding="utf-8")
+        (self.root / "README.zh_CN.md").write_text(
+            "[missing](scripts/also-missing.py)\n", encoding="utf-8")
+        output = StringIO()
+        with redirect_stderr(output):
+            self.assertFalse(checker.check(self.root, self.listing))
+        diagnostics = output.getvalue()
+        self.assertEqual(diagnostics.count("README.md:1: target 'http://['"), 1)
+        self.assertIn("README.md: local link target scripts/missing.py", diagnostics)
+        self.assertIn("README.zh_CN.md: local link target scripts/also-missing.py", diagnostics)
+
+    def test_reference_style_missing_source_link_is_checked(self):
+        (self.root / "src").mkdir()
+        (self.root / "doc/design.md").write_text(
+            "[missing source][implementation]\n\n[implementation]: ../src/missing.rs\n",
+            encoding="utf-8")
+        self.assertFalse(checker.check_explicit_source_links(self.root))
 
     def test_fence_ends_when_its_list_or_quote_container_ends(self):
         list_text = "- example:\n\n    ```md\n    [hidden](scripts/not-packaged.py)\n[visible](scripts/tool.py)\n"
