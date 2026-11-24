@@ -2,6 +2,7 @@
 """Validate downstream projects from tracked-source snapshots."""
 
 import argparse
+from contextvars import ContextVar
 import json
 import os
 from pathlib import Path
@@ -16,7 +17,7 @@ try:
     from scripts.downstream_source_snapshot import copy_tracked_source
     from scripts.downstream_source_snapshot import is_tracked_snapshot_file
     from scripts.downstream_source_snapshot import validate_tracked_config_snapshot_file
-    from scripts.downstream_source_snapshot import tracked_source_files
+    from scripts.downstream_source_snapshot import TrackedSourceView
     from scripts.downstream_source_snapshot import tracked_snapshot_directory_identity
     from scripts.downstream_source_snapshot import validate_tracked_snapshot_file
     from scripts.run_conformance_watchdog import process_group_options
@@ -26,7 +27,7 @@ except ModuleNotFoundError:
     from downstream_source_snapshot import copy_tracked_source
     from downstream_source_snapshot import is_tracked_snapshot_file
     from downstream_source_snapshot import validate_tracked_config_snapshot_file
-    from downstream_source_snapshot import tracked_source_files
+    from downstream_source_snapshot import TrackedSourceView
     from downstream_source_snapshot import tracked_snapshot_directory_identity
     from downstream_source_snapshot import validate_tracked_snapshot_file
     from run_conformance_watchdog import process_group_options
@@ -224,8 +225,8 @@ def _dependency_sections(data, *, include_dev=True):
                     break
 
 
-_TRACKED_FILES = {}
-_WORKSPACE_MEMBER_CACHE = {}
+_TRACKED_VIEWS = ContextVar("tracked_source_views", default=None)
+_WORKSPACE_MEMBER_CACHE = ContextVar("workspace_member_cache", default=None)
 
 
 def _repo_for(path):
@@ -241,10 +242,22 @@ def _repo_for(path):
 
 
 def _tracked_files(root):
+    return _tracked_view(root).tracked
+
+
+def _tracked_view(root):
     root = Path(root).resolve()
-    if root not in _TRACKED_FILES:
-        _TRACKED_FILES[root] = set(tracked_source_files(root))
-    return _TRACKED_FILES[root]
+    views = _TRACKED_VIEWS.get()
+    if views is None:
+        return TrackedSourceView(root)
+    if root not in views:
+        views[root] = TrackedSourceView(root)
+    return views[root]
+
+
+def _workspace_cache():
+    cache = _WORKSPACE_MEMBER_CACHE.get()
+    return cache if cache is not None else {}
 
 
 def _tracked_file(path):
@@ -271,7 +284,7 @@ def _tracked_file(path):
     if not os.path.lexists(path):
         return False
     try:
-        validate_tracked_snapshot_file(root, path, _tracked_files(root))
+        validate_tracked_snapshot_file(root, path, view=_tracked_view(root))
     except (OSError, ValueError) as error:
         raise ValueError(f"invalid tracked file {path}: {error}") from error
     return True
@@ -290,7 +303,7 @@ def _validate_manifest_path(path):
             f"manifest declaration is not present in tracked source view: {declaration} "
             f"(repository boundary: {repository})")
     try:
-        validate_tracked_snapshot_file(repository, declaration, _tracked_files(repository))
+        validate_tracked_snapshot_file(repository, declaration, view=_tracked_view(repository))
     except (OSError, ValueError, RuntimeError) as error:
         try:
             attempted_target = declaration.resolve(strict=True)
@@ -628,7 +641,8 @@ def _cargo_config_paths(manifest, source_root):
     source_root = source_root.resolve()
     if not (source_root / ".git").exists():
         return []
-    tracked_files = _tracked_files(source_root)
+    view = _tracked_view(source_root)
+    tracked_files = view.tracked
     current = manifest.parent.resolve()
     configs = []
     while True:
@@ -637,7 +651,7 @@ def _cargo_config_paths(manifest, source_root):
                 candidate = current / ".cargo" / name
                 if candidate.relative_to(source_root) in tracked_files:
                     if validate_tracked_config_snapshot_file(
-                            source_root, candidate, tracked_files) is not None:
+                            source_root, candidate, view=view) is not None:
                         configs.append(candidate)
                         break
         if current == source_root or current.parent == current:
@@ -646,7 +660,7 @@ def _cargo_config_paths(manifest, source_root):
     return configs
 
 
-def _cargo_config_sources(config_path, source_root, *, stack=()):
+def _cargo_config_sources(config_path, source_root, *, stack=(), view=None):
     """Expand tracked, repository-local Cargo config includes before their parent."""
     config_path = Path(config_path)
     source_root = Path(source_root).resolve()
@@ -656,9 +670,10 @@ def _cargo_config_sources(config_path, source_root, *, stack=()):
         config_path.relative_to(source_root)
     except ValueError as error:
         raise ValueError(f"Cargo config is outside its source repository: {config_path}") from error
-    tracked = _tracked_files(source_root)
+    view = view or _tracked_view(source_root)
+    tracked = view.tracked
     try:
-        visible_config = validate_tracked_config_snapshot_file(source_root, config_path, tracked)
+        visible_config = validate_tracked_config_snapshot_file(source_root, config_path, view=view)
         if visible_config is None:
             raise FileNotFoundError(f"Cargo config is not present in tracked source view: {config_path}")
     except FileNotFoundError:
@@ -666,7 +681,7 @@ def _cargo_config_sources(config_path, source_root, *, stack=()):
     except (OSError, ValueError) as error:
         raise ValueError(f"Cargo config is not snapshot-safe: {config_path}: {error}") from error
     try:
-        declaration_dir = tracked_snapshot_directory_identity(source_root, config_path, tracked)
+        declaration_dir = tracked_snapshot_directory_identity(source_root, config_path, view=view)
     except (OSError, ValueError) as error:
         raise ValueError(f"Cargo config declaration directory is not snapshot-safe: {config_path}: {error}") from error
     stack_entry = (visible_config, config_path, declaration_dir)
@@ -707,7 +722,7 @@ def _cargo_config_sources(config_path, source_root, *, stack=()):
                 f"Cargo config include escapes source repository in {config_path}: {include}") from error
         try:
             visible_include = validate_tracked_config_snapshot_file(
-                source_root, included, tracked,
+                source_root, included, view=view,
                 require_directory=include.endswith(("/", "/.")))
         except (OSError, ValueError) as error:
             reason = str(error).replace(
@@ -725,7 +740,7 @@ def _cargo_config_sources(config_path, source_root, *, stack=()):
                 f"required Cargo config include missing in {config_path}: {include}")
         try:
             sources.extend(_cargo_config_sources(
-                included, source_root, stack=(*stack, stack_entry)))
+                included, source_root, stack=(*stack, stack_entry), view=view))
         except FileNotFoundError as error:
             if optional:
                 continue
@@ -759,12 +774,13 @@ def _workspace_member_manifests(root, root_data, sibling_boundary=None):
     sibling_boundary = (Path(sibling_boundary).resolve() if sibling_boundary is not None else
                         repository.parent.resolve() if repository is not None else root.parent.resolve())
     cache_key = (root, sibling_boundary)
-    cached = _WORKSPACE_MEMBER_CACHE.get(cache_key)
+    workspace_cache = _workspace_cache()
+    cached = workspace_cache.get(cache_key)
     if cached is not None:
         return list(cached)
     if "workspace" not in root_data:
         result = [root / "Cargo.toml"] if "package" in root_data else []
-        _WORKSPACE_MEMBER_CACHE[cache_key] = result
+        workspace_cache[cache_key] = result
         return list(result)
     workspace = root_data["workspace"]
     root_manifest = root / "Cargo.toml"
@@ -817,7 +833,7 @@ def _workspace_member_manifests(root, root_data, sibling_boundary=None):
                     Path(current), root, root_data, glob_manifests=glob_manifests):
                 result.append(Path(current) / "Cargo.toml")
         result.extend(manifest for manifest in explicit_manifests if manifest not in result)
-        _WORKSPACE_MEMBER_CACHE[cache_key] = result
+        _workspace_cache()[cache_key] = result
         return list(result)
     tracked_manifests = [repository / relative for relative in _tracked_files(repository)
                          if relative.name == "Cargo.toml" and
@@ -873,7 +889,7 @@ def _workspace_member_manifests(root, root_data, sibling_boundary=None):
                 members.add(dependency)
                 pending.append(dependency)
     result = [by_directory[member] for member in sorted(members) if member in by_directory]
-    _WORKSPACE_MEMBER_CACHE[cache_key] = result
+    _workspace_cache()[cache_key] = result
     return list(result)
 
 
@@ -887,16 +903,14 @@ def _repository_root(path, boundary):
     return path
 
 
-def discover_local_repositories(manifest, sibling_root, source_root=None, *,
-                                cli_patches=None):
+def _discover_local_repositories(manifest, sibling_root, source_root=None, *,
+                                 cli_patches=None):
     """Find sibling repositories required by an IoC fixture's local paths and patches."""
     # Keep the declared manifest path: Cargo resolves relative declarations
     # from this package directory even when Cargo.toml is an internal link.
     manifest = Path(os.path.abspath(manifest))
     boundary = Path(sibling_root).resolve()
     source_root = Path(source_root).resolve() if source_root else manifest.parents[3]
-    _TRACKED_FILES.clear()
-    _WORKSPACE_MEMBER_CACHE.clear()
     if not manifest.is_file():
         raise ValueError(f"manifest does not exist: {manifest}")
     repositories = {source_root}
@@ -940,7 +954,7 @@ def discover_local_repositories(manifest, sibling_root, source_root=None, *,
             # Compatibility with callers that replace the expansion helper.
             config_path = Path(config_source)
             physical_config_path = validate_tracked_config_snapshot_file(
-                source_root, config_path)
+                source_root, config_path, view=_tracked_view(source_root))
             if physical_config_path is None:
                 continue
         try:
@@ -1037,6 +1051,19 @@ def discover_local_repositories(manifest, sibling_root, source_root=None, *,
                                  for relative in _inherited_workspace_paths(
                                      data, workspace_data, include_dev=selected_member))
     return sorted(repositories)
+
+
+def discover_local_repositories(manifest, sibling_root, source_root=None, *,
+                                cli_patches=None):
+    """Discover repositories with tracked views scoped to this call."""
+    view_token = _TRACKED_VIEWS.set({})
+    workspace_token = _WORKSPACE_MEMBER_CACHE.set({})
+    try:
+        return _discover_local_repositories(
+            manifest, sibling_root, source_root, cli_patches=cli_patches)
+    finally:
+        _WORKSPACE_MEMBER_CACHE.reset(workspace_token)
+        _TRACKED_VIEWS.reset(view_token)
 
 
 def _resolve_local_path(relative, base, declaration, boundary):

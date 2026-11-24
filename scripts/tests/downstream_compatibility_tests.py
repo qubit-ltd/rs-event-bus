@@ -19,6 +19,8 @@ from scripts.check_downstream_compatibility import _workspace_member_manifests
 from scripts.check_downstream_compatibility import cargo_config
 from scripts.downstream_source_snapshot import copy_tracked_source
 from scripts.downstream_source_snapshot import tracked_source_files
+from scripts.downstream_source_snapshot import TrackedSourceView
+from scripts.downstream_source_snapshot import tracked_snapshot_directory_identity
 from scripts.check_downstream_compatibility import TESTS
 from scripts.check_downstream_compatibility import _glob_matches
 from scripts.check_downstream_compatibility import discover_local_repositories
@@ -221,9 +223,26 @@ class DownstreamCompatibilityTests(unittest.TestCase):
             manifest.write_text(
                 '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'
                 '[dependencies]\nfirst={path="../rs-first"}\n')
-            subprocess.run(["git", "-C", str(execution), "add", "Cargo.toml"], check=True)
-            self.assertEqual(set(discover_local_repositories(manifest, parent, execution)),
-                             {execution.resolve(), first.resolve()})
+            cargo_dir = execution / ".cargo"
+            (cargo_dir / "nested").mkdir(parents=True)
+            (cargo_dir / "config.toml").write_text(
+                'include=["one.toml", "nested/two.toml"]\n')
+            (cargo_dir / "one.toml").write_text("[patch]\n")
+            (cargo_dir / "nested/two.toml").write_text("[patch]\n")
+            subprocess.run(["git", "-C", str(execution), "add", "Cargo.toml", ".cargo"], check=True)
+            original_scan = TrackedSourceView._snapshot_members
+            with patch.object(TrackedSourceView, "_snapshot_members", autospec=True,
+                              side_effect=original_scan) as scan, \
+                    patch("scripts.check_downstream_compatibility.tracked_snapshot_directory_identity",
+                          wraps=tracked_snapshot_directory_identity) as identities:
+                self.assertEqual(set(discover_local_repositories(manifest, parent, execution)),
+                                 {execution.resolve(), first.resolve()})
+                scanned_roots = [call.args[0].source for call in scan.call_args_list]
+                self.assertEqual(scanned_roots.count(execution.resolve()), 1)
+                self.assertEqual(scanned_roots.count(first.resolve()), 1)
+                self.assertEqual(identities.call_count, 3)
+                self.assertEqual(len({id(call.kwargs["view"])
+                                      for call in identities.call_args_list}), 1)
 
             manifest.write_text(
                 '[package]\nname="execution"\nversion="0.1.0"\nedition="2021"\n'

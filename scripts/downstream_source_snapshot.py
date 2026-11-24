@@ -49,24 +49,60 @@ def tracked_source_files(source):
     return _tracked_entries(source)
 
 
-def _snapshot_members(source, tracked):
-    """Return copyable tracked leaves and their snapshot-created parent directories."""
-    leaves = set()
-    directories = {Path(".")}
-    for relative in tracked:
-        try:
-            info = (source / relative).lstat()
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-        if not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
-            continue
-        leaves.add(relative)
-        for parent in relative.parents:
-            directories.add(parent)
-    return leaves, directories
+class TrackedSourceView:
+    """One operation's validated view of tracked files visible in the worktree."""
+
+    def __init__(self, source, tracked=None):
+        self.source = Path(source).resolve(strict=True)
+        self.entries = list(_tracked_entries(self.source) if tracked is None else tracked)
+        self.tracked = set(self.entries)
+        self.leaves, self.directories = self._snapshot_members()
+
+    def _snapshot_members(self):
+        leaves = set()
+        directories = {Path(".")}
+        for relative in self.entries:
+            # Check the lexical parent chain before lstat on the leaf: lstat follows
+            # symlinks in parent components, which could expose an untracked tree.
+            current = self.source
+            hidden = False
+            for part in relative.parts[:-1]:
+                current = current / part
+                try:
+                    parent_info = current.lstat()
+                except (FileNotFoundError, NotADirectoryError):
+                    hidden = True
+                    break
+                parent_rel = current.relative_to(self.source)
+                if stat.S_ISLNK(parent_info.st_mode):
+                    if parent_rel not in self.tracked:
+                        raise ValueError(
+                            f"tracked declaration {relative.as_posix()} has untracked symlink "
+                            f"path component: {parent_rel.as_posix()}")
+                    try:
+                        resolved = current.resolve(strict=True)
+                        resolved.relative_to(self.source)
+                    except (OSError, ValueError, RuntimeError) as error:
+                        raise ValueError(
+                            f"invalid tracked path parent symlink: {parent_rel.as_posix()}: {error}") from error
+                    if not resolved.is_dir():
+                        hidden = True
+                        break
+            if hidden:
+                continue
+            try:
+                info = (self.source / relative).lstat()
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            if not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+                continue
+            leaves.add(relative)
+            for parent in relative.parents:
+                directories.add(parent)
+        return leaves, directories
 
 
-def tracked_snapshot_directory_identity(source, declaration, tracked=None):
+def tracked_snapshot_directory_identity(source, declaration, tracked=None, *, view=None):
     """Resolve a declaration's parent by walking only directories visible in a snapshot."""
     source = Path(source).resolve(strict=True)
     declaration = Path(declaration)
@@ -76,8 +112,8 @@ def tracked_snapshot_directory_identity(source, declaration, tracked=None):
         relative = declaration.parent.relative_to(source)
     except ValueError as error:
         raise ValueError(f"declaration is outside owning repository: {declaration}") from error
-    tracked = set(tracked_source_files(source)) if tracked is None else set(tracked)
-    _leaves, directories = _snapshot_members(source, tracked)
+    view = view or TrackedSourceView(source, tracked)
+    tracked, directories = view.tracked, view.directories
     current = source
     for part in relative.parts:
         if part in ("", "."):
@@ -116,20 +152,20 @@ def is_tracked_snapshot_file(source, declaration, tracked=None):
     return True
 
 
-def validate_tracked_snapshot_file(source, declaration, tracked=None):
+def validate_tracked_snapshot_file(source, declaration, tracked=None, *, view=None):
     """Validate every link traversed by a file declaration for snapshot safety."""
-    return _validate_tracked_snapshot_file(source, declaration, tracked)
+    return _validate_tracked_snapshot_file(source, declaration, tracked, view=view)
 
 
-def validate_tracked_config_snapshot_file(source, declaration, tracked=None, *, require_directory=False):
+def validate_tracked_config_snapshot_file(source, declaration, tracked=None, *, require_directory=False, view=None):
     """Validate a Cargo config path, returning None when its final file is absent from a snapshot."""
     return _validate_tracked_snapshot_file(
         source, declaration, tracked, allow_missing_final=True,
-        require_directory=require_directory)
+        require_directory=require_directory, view=view)
 
 
 def _validate_tracked_snapshot_file(source, declaration, tracked=None, *, allow_missing_final=False,
-                                    require_directory=False):
+                                    require_directory=False, view=None):
     """Validate a path component by component as it would appear in a snapshot."""
     source = Path(source).resolve(strict=True)
     declaration = Path(declaration)
@@ -139,8 +175,8 @@ def _validate_tracked_snapshot_file(source, declaration, tracked=None, *, allow_
         relative = declaration.relative_to(source)
     except ValueError:
         raise ValueError(f"declaration is outside owning repository: {declaration}")
-    tracked = set(tracked_source_files(source)) if tracked is None else tracked
-    leaves, directories = _snapshot_members(source, tracked)
+    view = view or TrackedSourceView(source, tracked)
+    tracked, leaves, directories = view.tracked, view.leaves, view.directories
     if relative not in tracked and not allow_missing_final:
         raise ValueError(f"declaration is not tracked: {relative.as_posix()}")
     pending = list(relative.parts)
@@ -246,9 +282,10 @@ def copy_tracked_source(source: Path, destination: Path) -> None:
     else:
         destination.mkdir(parents=True)
 
-    tracked_entries = tracked_source_files(source)
-    tracked = set(tracked_entries)
-    copyable_leaves, _directories = _snapshot_members(source, tracked)
+    view = TrackedSourceView(source)
+    tracked_entries = view.entries
+    tracked = view.tracked
+    copyable_leaves = view.leaves
     for relative in tracked_entries:
         source_path = source / relative
         try:
@@ -284,9 +321,9 @@ def copy_tracked_source(source: Path, destination: Path) -> None:
                 raise ValueError(f"tracked symlink escapes snapshot: {label}")
             try:
                 if relative.parts[-2:] in ((".cargo", "config"), (".cargo", "config.toml")):
-                    validate_tracked_config_snapshot_file(source, source_path, tracked)
+                    validate_tracked_config_snapshot_file(source, source_path, tracked, view=view)
                 else:
-                    validate_tracked_snapshot_file(source, source_path, tracked)
+                    validate_tracked_snapshot_file(source, source_path, tracked, view=view)
             except (OSError, ValueError) as error:
                 raise ValueError(f"tracked Cargo input is not snapshot-safe: {label}: {error}") from error
 
