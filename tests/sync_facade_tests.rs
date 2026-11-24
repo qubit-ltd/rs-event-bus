@@ -5264,7 +5264,7 @@ fn test_unconfirmed_dead_letter_send_is_not_republished_or_settled() {
     let (failure_tx, failure_rx) = mpsc::sync_channel(1);
     let failure_observer = bus.observe_diagnostics(move |diagnostic| {
         if matches!(diagnostic, Diagnostic::DeliveryFailed { event_id, .. } if event_id == &observed_event_id) {
-            let _ = failure_tx.send(());
+            let _ = failure_tx.try_send(());
         }
     });
     backend.unconfirmed_publish_call(2);
@@ -5315,7 +5315,7 @@ fn test_dead_letter_forward_exhaustion_leaves_the_source_token_unsettled() {
     let (failure_tx, failure_rx) = mpsc::sync_channel(1);
     let failure_observer = bus.observe_diagnostics(move |diagnostic| {
         if matches!(diagnostic, Diagnostic::DeliveryFailed { event_id, .. } if event_id == &observed_event_id) {
-            let _ = failure_tx.send(());
+            let _ = failure_tx.try_send(());
         }
     });
     backend.fail_publish_call(2);
